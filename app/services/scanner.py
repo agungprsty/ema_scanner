@@ -1,65 +1,92 @@
-import ccxt
+import logging
 import pandas as pd
 from datetime import timedelta
-from app.services.telegram_bot import send_alert
+from ..core.config import TOTAL_SIGNALS
 
-def scan_crossovers():
-    print("🚀 Memulai pendeteksian Golden & Death Cross...")
-    exchange = ccxt.binanceusdm({
-        'enableRateLimit': True,
-        'options': {'defaultType': 'future'}
-    })
+# Konfigurasi Logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-    try:
-        markets = exchange.load_markets()
-        # Filter: Hanya USDT linear futures yang aktif
-        symbols = [
-            symbol for symbol, market in markets.items()
-            if market.get('linear') and market.get('active') and market.get('quote') == 'USDT'
-        ]
+class TradingBot:
+    def __init__(self, exchange):
+        self.exchange = exchange
+        self.limit_signals = TOTAL_SIGNALS
 
-        # Ambil volume untuk filter likuiditas
-        tickers = exchange.fetch_tickers()
-        liquid_symbols = [s for s in symbols if tickers.get(s, {}).get('quoteVolume', 0) > 10_000_000]
-    except Exception as e:
-        print(f"❌ Gagal memuat market: {e}")
-        return
-
-    notifikasi = []
-    
-    for symbol in liquid_symbols:
+    async def fetch_and_scan(self, symbol):
+        """Fungsi tunggal untuk ambil data + analisa per koin."""
         try:
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=100)
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df = df.iloc[:-1] # Ambil candle yang sudah CLOSED
+            ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe='1h', limit=50)
+            if not ohlcv or len(ohlcv) < 30: return None
 
-            if len(df) < 50: continue
-
-            # Indikator EMA 7 & 25
+            df = pd.DataFrame(ohlcv, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
             df['ema_fast'] = df['close'].ewm(span=7, adjust=False).mean()
             df['ema_slow'] = df['close'].ewm(span=25, adjust=False).mean()
 
-            prev, curr = -2, -1
-
-            # Logika Crossover
-            is_golden = (df['ema_fast'].iloc[prev] <= df['ema_slow'].iloc[prev] and 
-                        df['ema_fast'].iloc[curr] > df['ema_slow'].iloc[curr])
+            prev, curr = df.iloc[-2], df.iloc[-1]
             
-            is_death = (df['ema_fast'].iloc[prev] >= df['ema_slow'].iloc[prev] and 
-                        df['ema_fast'].iloc[curr] < df['ema_slow'].iloc[curr])
+            # Logika Crossover
+            side = None
+            if prev['ema_fast'] <= prev['ema_slow'] and curr['ema_fast'] > curr['ema_slow']:
+                side = 'LONG'
+            elif prev['ema_fast'] >= prev['ema_slow'] and curr['ema_fast'] < curr['ema_slow']:
+                side = 'SHORT'
 
-            waktu_wib = (pd.to_datetime(df['timestamp'].iloc[curr], unit='ms') + 
-                        timedelta(hours=7)).strftime('%Y-%m-%d %H:%M WIB')
+            if side:
+                return self.create_signal_data(symbol, side, curr)
+        
+        except Exception as e:
+            logging.error(f"Gagal memproses {symbol}: {str(e)}", exc_info=True)
+            return None
+        
+    def create_signal_data(self, symbol, side, row):
+        """
+        Menggunakan strategi Asymmetric Bets:
+        - Stop Loss Ketat: 1.5% (Proteksi modal)
+        - TP 1: 4.5% (RR 1:3) -> Amankan profit sebagian
+        - TP 2: 10.0% (RR 1:6.6) -> Menangkap tren besar (Asymmetric Upside)
+        """
+        entry_price = row['close']
+        
+        # Parameter Risk/Reward
+        risk_pct = 0.015      # 1.5% Risk
+        reward_1_pct = 0.045  # 4.5% Reward (1:3)
+        reward_2_pct = 0.10   # 10.0% Reward (1:6.6+)
 
-            if is_golden:
-                notifikasi.append(f"<b>🟢 GOLDEN CROSS</b>\nSymbol: <b>{symbol}</b>\nTime: {waktu_wib}")
-            elif is_death:
-                notifikasi.append(f"<b>🔴 DEATH CROSS</b>\nSymbol: <b>{symbol}</b>\nTime: {waktu_wib}")
-
-        except: continue
-
-    if notifikasi:
-        header = "🔔 <b>EMA CROSSOVER 1H (7/25)</b>\n" + ("━"*20) + "\n\n"
-        send_alert(header + "\n\n".join(notifikasi))
-    else:
-        print("✅ Scan selesai: Tidak ada crossover baru.")
+        if side == 'LONG':
+            stop_loss = entry_price * (1 - risk_pct)
+            take_profit_1 = entry_price * (1 + reward_1_pct)
+            take_profit_2 = entry_price * (1 + reward_2_pct)
+        else:  # SHORT
+            stop_loss = entry_price * (1 + risk_pct)
+            take_profit_1 = entry_price * (1 - reward_1_pct)
+            take_profit_2 = entry_price * (1 - reward_2_pct)
+        
+        waktu = (pd.to_datetime(row['ts'], unit='ms') + timedelta(hours=7)).strftime('%Y-%m-%d %H:%M WIB')
+        
+        return {
+            "symbol": symbol.split(':')[0],
+            "side": side,
+            "entry": f"{entry_price:,.4f}",
+            "tp1": f"{take_profit_1:,.4f}",
+            "tp2": f"{take_profit_2:,.4f}",
+            "sl": f"{stop_loss:,.4f}",
+            "time": waktu
+        }
+    
+    def format_combined_message(self, signals):
+        """Menggabungkan banyak sinyal ke dalam satu bubble chat."""
+        
+        header = "🔔 <b>EMA CROSSOVER 1H (7/25)</b>\n"
+        header += "<i>Strategi: Asymmetric Bets (RR 1:3)</i>\n"
+        header += "━━━━━━━━━━━━━━━\n\n"
+        
+        body = ""
+        for s in signals:
+            icon = "🟢" if s['side'] == "LONG" else "🔴"
+            body += f"{icon} {s['side']} <b>${s['symbol']}</b> NOW ⚡️\n"
+            body += f"📍 Entry: {s['entry']}\n"
+            body += f"💰 TP: {s['tp1']} - {s['tp2']}\n"
+            body += f"⛔ SL: {s['sl']}\n"
+            body += "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+            
+        footer = f"\nTime: {signals[0]['time']}"
+        return header + body + footer
