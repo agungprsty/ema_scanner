@@ -8,7 +8,13 @@ def scan_crossovers():
     print("🚀 Memulai pendeteksian Golden & Death Cross...")
     exchange = ccxt.binanceusdm({
         'enableRateLimit': True,
-        'options': {'defaultType': 'future'}
+        'options': {'defaultType': 'future'},
+        "urls": {
+            "api": {
+                "fapiPublic": "https://fapi.binance.me",
+                "fapiPrivate": "https://fapi.binance.me"
+            }
+        }
     })
 
     try:
