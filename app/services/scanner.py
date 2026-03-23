@@ -1,20 +1,13 @@
 import ccxt
 import pandas as pd
 from datetime import timedelta
-from zoneinfo import ZoneInfo
 from app.services.telegram_bot import send_alert
 
 def scan_crossovers():
     print("🚀 Memulai pendeteksian Golden & Death Cross...")
     exchange = ccxt.binanceusdm({
         'enableRateLimit': True,
-        'options': {'defaultType': 'future'},
-        "urls": {
-            "api": {
-                "fapiPublic": "https://fapi.binance.me",
-                "fapiPrivate": "https://fapi.binance.me"
-            }
-        }
+        'options': {'defaultType': 'future'}
     })
 
     try:
