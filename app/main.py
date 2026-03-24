@@ -1,7 +1,7 @@
 import time
 import asyncio
 import ccxt.async_support as ccxt
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from app.services.scanner import TradingBot
 from app.services.telegram_bot import send_telegram
 
@@ -12,11 +12,14 @@ def root():
     return {"status": "running", "version": "v1.0.0"}
 
 @app.get("/api/manual-scan")
-async def manual_scan():
+async def manual_scan(
+    timeframe: str = Query("1h", description="Timeframe trading (contoh: 15m, 1h, 4h)"),
+    limit: int = Query(50, description="Jumlah candle yang ditarik untuk kalkulasi EMA")
+):
     # 1. Inisialisasi Exchange
     start_time = time.perf_counter()
     exchange = ccxt.binanceusdm({'enableRateLimit': True, 'options': {'defaultType': 'future'}})
-    bot = TradingBot(exchange)
+    bot = TradingBot(exchange, timeframe=timeframe, limit=limit)
     
     try:
         # 2. Filter Market
@@ -25,7 +28,7 @@ async def manual_scan():
         
         # Ambil tickers secara paralel untuk filter volume
         tickers = await exchange.fetch_tickers()
-        liquid_symbols = [s for s in all_symbols if tickers.get(s, {}).get('quoteVolume', 0) > 10_000_000]
+        liquid_symbols = [s for s in all_symbols if tickers.get(s, {}).get('quoteVolume', 0) > 50_000_000]
         
         # 3. Scanning Paralel
         tasks = [bot.fetch_and_scan(s) for s in liquid_symbols]

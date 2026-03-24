@@ -7,17 +7,25 @@ from ..core.config import TOTAL_SIGNALS
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class TradingBot:
-    def __init__(self, exchange):
+    def __init__(self, exchange, timeframe:str = "1h", limit:int = 50):
         self.exchange = exchange
+        self.exchange_timeframe = timeframe
+        self.exchange_limit = limit
         self.limit_signals = TOTAL_SIGNALS
 
     async def fetch_and_scan(self, symbol):
         """Fungsi tunggal untuk ambil data + analisa per koin."""
         try:
-            ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe='1h', limit=50)
+            ohlcv = await self.exchange.fetch_ohlcv(
+                symbol,
+                timeframe=self.exchange_timeframe,
+                limit=self.exchange_limit
+            )
+
             if not ohlcv or len(ohlcv) < 30: return None
 
             df = pd.DataFrame(ohlcv, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
+            df = df.iloc[:-1] # Membuang candle yang sedang berjalan
             df['ema_fast'] = df['close'].ewm(span=7, adjust=False).mean()
             df['ema_slow'] = df['close'].ewm(span=25, adjust=False).mean()
 
@@ -75,7 +83,7 @@ class TradingBot:
     def format_combined_message(self, signals):
         """Menggabungkan banyak sinyal ke dalam satu bubble chat."""
         
-        header = "🔔 <b>EMA CROSSOVER 1H (7/25)</b>\n"
+        header = f"🔔 <b>EMA CROSSOVER {self.exchange_timeframe.upper()} (7/25)</b>\n"
         header += "<i>Strategi: Asymmetric Bets (RR 1:3)</i>\n"
         header += "━━━━━━━━━━━━━━━\n\n"
         
