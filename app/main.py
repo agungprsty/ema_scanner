@@ -19,9 +19,11 @@ def root():
 @app.get("/api/manual-scan")
 async def manual_scan(
     indicator: Annotated[str, Query(description="Select indicator: 'ema' or 'macd'")] = "ema",
-    timeframe: Annotated[str | None, Query(description="Trading timeframe (e.g., 15m, 1h, 4h)")] = None,
-    limit: Annotated[int | None, Query(description="Number of candles to fetch")] = None,
-    total_signal: Annotated[int | None, Query(description="Number of signals to retrieve")] = None,
+    timeframe: Annotated[str, Query(description="Trading timeframe (e.g., 15m, 1h, 4h)")] = "1h",
+    limit: Annotated[int, Query(description="Number of candles to fetch")] = 100,
+    volume_m: Annotated[int, Query( description="Volume threshold in Millions (1 - 100)", ge=1, le=100)] = 50,
+    total_signal: Annotated[int, Query(description="Number of signals to retrieve")] = 5,
+    send_to_telegram: Annotated[bool, Query(description="Flag to send results to Telegram")] = True,
 ):
     """
     Manual scan endpoint supporting two indicators:
@@ -36,16 +38,6 @@ async def manual_scan(
             "status": "error",
             "message": "The 'indicator' parameter must be either 'ema' or 'macd'"
         }
-    
-    # Set default values
-    if timeframe is None:
-        timeframe = "1h"
-    
-    if limit is None:
-        limit = 100
-
-    if total_signal is None:
-        total_signal = 5
 
     # 1. Init Exchange
     start_time = time.perf_counter()
@@ -71,9 +63,10 @@ async def manual_scan(
         
         # Filter liquid symbols (volume > 50 juta)
         tickers = await exchange.fetch_tickers()
+        volume_threshold = volume_m * 1_000_000
         liquid_symbols = [
             s for s in all_symbols 
-            if tickers.get(s, {}).get('quoteVolume', 0) > 50_000_000
+            if tickers.get(s, {}).get('quoteVolume', 0) > volume_threshold
         ]
 
         # 3. Scanning Paralel
@@ -86,7 +79,7 @@ async def manual_scan(
         # 5. Batasi sesuai TOTAL_SIGNALS
         final_signals = active_signals[:scanner.limit_signals]
 
-        if final_signals:
+        if final_signals and send_to_telegram:
             combined_message = scanner.format_combined_message(final_signals)
             await send_telegram(combined_message)
 
