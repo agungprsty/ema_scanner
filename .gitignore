@@ -12,3 +12,5 @@ venv*
 # IDE and editor
 .vscode/
 .idea/
+
+test.py

@@ -1,17 +1,16 @@
 import logging
 import pandas as pd
 from datetime import timedelta
-from ..core.config import TOTAL_SIGNALS
 
 # Konfigurasi Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class TradingBot:
-    def __init__(self, exchange, timeframe:str = "1h", limit:int = 50):
+    def __init__(self, exchange, timeframe: str, limit: int, total_signal: int):
         self.exchange = exchange
         self.exchange_timeframe = timeframe
         self.exchange_limit = limit
-        self.limit_signals = TOTAL_SIGNALS
+        self.limit_signals = total_signal
 
     async def fetch_and_scan(self, symbol):
         """Fungsi tunggal untuk ambil data + analisa per koin."""
@@ -52,7 +51,8 @@ class TradingBot:
         - TP 1: 4.5% (RR 1:3) -> Amankan profit sebagian
         - TP 2: 10.0% (RR 1:6.6) -> Menangkap tren besar (Asymmetric Upside)
         """
-        entry_price = row['close']
+        # Entry price: lebih menunggu pullback (lebih dekat ke EMA25)
+        entry_price = (row['ema_fast'] * 0.4) + (row['ema_slow'] * 0.6)
         
         # Parameter Risk/Reward
         risk_pct = 0.015      # 1.5% Risk

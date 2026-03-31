@@ -1,11 +1,16 @@
 import time
+import logging
 import asyncio
+from typing import Annotated
 import ccxt.async_support as ccxt
 from fastapi import FastAPI, Query
 from app.services.scanner import TradingBot
+from app.services.macd_scanner import MACDScanner
 from app.services.telegram_bot import send_telegram
 
 app = FastAPI(title="Crypto Crossover Bot")
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 @app.get("/")
 def root():
@@ -13,34 +18,76 @@ def root():
 
 @app.get("/api/manual-scan")
 async def manual_scan(
-    timeframe: str = Query("1h", description="Timeframe trading (contoh: 15m, 1h, 4h)"),
-    limit: int = Query(50, description="Jumlah candle yang ditarik untuk kalkulasi EMA")
+    indicator: Annotated[str, Query(description="Select indicator: 'ema' or 'macd'")] = "ema",
+    timeframe: Annotated[str | None, Query(description="Trading timeframe (e.g., 15m, 1h, 4h)")] = None,
+    limit: Annotated[int | None, Query(description="Number of candles to fetch")] = None,
+    total_signal: Annotated[int | None, Query(description="Number of signals to retrieve")] = None,
 ):
-    # 1. Inisialisasi Exchange
-    start_time = time.perf_counter()
-    exchange = ccxt.binanceusdm({'enableRateLimit': True, 'options': {'defaultType': 'future'}})
-    bot = TradingBot(exchange, timeframe=timeframe, limit=limit)
+    """
+    Manual scan endpoint supporting two indicators:
+    - indicator=ema   → EMA Crossover 7/25 (Asymmetric Bets)
+    - indicator=macd  → MACD Crossover 12/26/9 + EMA7 + ADX Filter
+    """
+
+    # Indicator validation
+    indicator = indicator.lower().strip()
+    if indicator not in ["ema", "macd"]:
+        return {
+            "status": "error",
+            "message": "The 'indicator' parameter must be either 'ema' or 'macd'"
+        }
     
+    # Set default values
+    if timeframe is None:
+        timeframe = "1h"
+    
+    if limit is None:
+        limit = 100
+
+    if total_signal is None:
+        total_signal = 5
+
+    # 1. Init Exchange
+    start_time = time.perf_counter()
+    exchange = ccxt.binanceusdm({
+        'enableRateLimit': True, 
+        'options': {'defaultType': 'future'}
+    })
+
     try:
+        if indicator == "macd":
+            scanner = MACDScanner(exchange, timeframe=timeframe, limit=limit, total_signal=total_signal)
+            scanner_type = "MACD Crossover (12/26/9 + EMA7 + ADX Filter)"
+        else:
+            scanner = TradingBot(exchange, timeframe=timeframe, limit=limit, total_signal=total_signal)
+            scanner_type = "EMA Crossover (7/25) - Asymmetric Bets"
+
         # 2. Filter Market
         markets = await exchange.load_markets()
-        all_symbols = [s for s, m in markets.items() if m.get('active') and m.get('quote') == 'USDT']
+        all_symbols = [
+            s for s, m in markets.items() 
+            if m.get('active') and m.get('quote') == 'USDT'
+        ]
         
-        # Ambil tickers secara paralel untuk filter volume
+        # Filter liquid symbols (volume > 50 juta)
         tickers = await exchange.fetch_tickers()
-        liquid_symbols = [s for s in all_symbols if tickers.get(s, {}).get('quoteVolume', 0) > 50_000_000]
-        
+        liquid_symbols = [
+            s for s in all_symbols 
+            if tickers.get(s, {}).get('quoteVolume', 0) > 50_000_000
+        ]
+
         # 3. Scanning Paralel
-        tasks = [bot.fetch_and_scan(s) for s in liquid_symbols]
+        tasks = [scanner.fetch_and_scan(s) for s in liquid_symbols]
         raw_results = await asyncio.gather(*tasks)
 
-        # 4. Filter hanya yang menghasilkan sinyal (bukan None)
+        # 4. Filter sinyal valid
         active_signals = [msg for msg in raw_results if msg is not None]
         
-        # 5. Kirim Notifikasi (Sesuai limit TOTAL_SIGNALS)
-        final_signals = active_signals[:bot.limit_signals]
+        # 5. Batasi sesuai TOTAL_SIGNALS
+        final_signals = active_signals[:scanner.limit_signals]
+
         if final_signals:
-            combined_message = bot.format_combined_message(final_signals)
+            combined_message = scanner.format_combined_message(final_signals)
             await send_telegram(combined_message)
 
         # 6. Hitung durasi eksekusi
@@ -48,11 +95,23 @@ async def manual_scan(
 
         return {
             "status": "success",
+            "indicator": indicator.upper(),
+            "scanner_type": scanner_type,
+            "timeframe": timeframe,
+            "limit": limit,
             "execution_time": execution_time,
             "total_scanned": len(liquid_symbols),
             "signals_found": len(active_signals),
             "signals_sent": len(final_signals),
             "data": final_signals
+        }
+
+    except Exception as e:
+        logging.error(f"Error in manual scan (indicator={indicator}): {str(e)}", exc_info=True)
+        return {
+            "status": "error",
+            "indicator": indicator,
+            "message": str(e)
         }
     finally:
         await exchange.close()
