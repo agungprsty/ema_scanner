@@ -13,4 +13,4 @@ venv*
 .vscode/
 .idea/
 
-test.py
+test*.py
