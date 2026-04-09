@@ -24,8 +24,7 @@ class TradingBot:
             if not ohlcv or len(ohlcv) < 30: return None
 
             df = pd.DataFrame(ohlcv, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
-            df = df.iloc[:-1] # Membuang candle yang sedang berjalan
-            df['ema_fast'] = df['close'].ewm(span=7, adjust=False).mean()
+            df['ema_fast'] = df['close'].ewm(span=5, adjust=False).mean()
             df['ema_slow'] = df['close'].ewm(span=50, adjust=False).mean()
 
             prev, curr = df.iloc[-2], df.iloc[-1]
@@ -83,7 +82,7 @@ class TradingBot:
     def format_combined_message(self, signals):
         """Menggabungkan banyak sinyal ke dalam satu bubble chat."""
         
-        header = f"🔔 <b>EMA CROSSOVER {self.exchange_timeframe.upper()} (7/50)</b>\n"
+        header = f"🔔 <b>EMA CROSSOVER {self.exchange_timeframe.upper()} (5/50)</b>\n"
         header += "<i>Strategi: Asymmetric Bets (RR 1:3)</i>\n"
         header += "━━━━━━━━━━━━━━━\n\n"
         
