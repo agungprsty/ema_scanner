@@ -28,7 +28,7 @@ async def manual_scan(
 ):
     """
     Manual scan endpoint supporting two indicators:
-    - indicator=ema   → EMA Crossover 7/25 (Asymmetric Bets)
+    - indicator=ema   → EMA Crossover 15/50 (Asymmetric Bets)
     - indicator=macd  → MACD Crossover 12/26/9 + EMA7 + ADX Filter
     """
 
@@ -53,7 +53,7 @@ async def manual_scan(
             scanner_type = "MACD Crossover (12/26/9 + EMA7 + ADX Filter)"
         else:
             scanner = TradingBot(exchange, timeframe=timeframe, limit=limit, total_signal=total_signal)
-            scanner_type = "EMA Crossover (7/25) - Asymmetric Bets"
+            scanner_type = "EMA Crossover (15/50) - Asymmetric Bets"
 
         # 2. Filter Market
         markets = await exchange.load_markets()
