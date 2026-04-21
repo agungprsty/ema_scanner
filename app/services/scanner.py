@@ -24,6 +24,7 @@ class TradingBot:
             if not ohlcv or len(ohlcv) < 30: return None
 
             df = pd.DataFrame(ohlcv, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
+            df = df.iloc[:-1] # Membuang candle yang sedang berjalan
             df['ema_fast'] = df['close'].ewm(span=15, adjust=False).mean()
             df['ema_slow'] = df['close'].ewm(span=50, adjust=False).mean()
 
