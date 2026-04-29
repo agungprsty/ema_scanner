@@ -30,7 +30,7 @@ class MACDScanner:
 
             # === INDIKATOR TAMBAHAN ===
             macd = df.ta.macd(fast=12, slow=26, signal=9)
-            df['EMA7'] = df.ta.ema(length=7)
+            df['EMA15'] = df.ta.ema(length=15)
             adx_df = df.ta.adx(length=14)
             df['ATR'] = df.ta.atr(length=14)
 
@@ -39,7 +39,7 @@ class MACDScanner:
 
             # Bersihkan NaN
             df = df.dropna(subset=['MACD_12_26_9', 'MACDs_12_26_9', 'MACDh_12_26_9', 
-                                    'EMA7', 'ADX_14', 'ATR']).reset_index(drop=True)
+                                    'EMA15', 'ADX_14', 'ATR']).reset_index(drop=True)
 
             if len(df) < 2:
                 return None
@@ -50,7 +50,7 @@ class MACDScanner:
 
             m_col, s_col = 'MACD_12_26_9', 'MACDs_12_26_9'
             price = curr['close']
-            ema_val = curr['EMA7']
+            ema_val = curr['EMA15']
             adx_val = curr['ADX_14']
 
             # Logika Crossover MACD
@@ -76,7 +76,7 @@ class MACDScanner:
                 side = 'SHORT'
                 reason = "TRENDING + STRONG MOMENTUM"
             else:
-                return None  # Reject filter EMA7
+                return None  # Reject filter EMA15
 
             return self.create_signal_data(symbol, side, curr, reason)
 
@@ -122,7 +122,7 @@ class MACDScanner:
         """Menggabungkan banyak sinyal ke dalam satu bubble chat (mirip scanner.py)."""
         
         header = f"🔔 <b>MACD CROSSOVER {self.exchange_timeframe.upper()} (12/26/9)</b>\n"
-        header += "<i>Strategi: Trending + EMA7 Filter (ADX > 15)</i>\n"
+        header += "<i>Strategi: Trending + EMA15 Filter (ADX > 15)</i>\n"
         header += "━━━━━━━━━━━━━━━\n\n"
         
         body = ""

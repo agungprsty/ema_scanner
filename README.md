@@ -1,6 +1,6 @@
 # 🚀 Crypto Crossover Bot (Asymmetric Strategy)
 
-Bot pemindai market Crypto Futures (Binance) berbasis Python yang mendeteksi **Golden Cross** dan **Death Cross** pada EMA 7 & 25 secara real-time. Dirancang khusus untuk berjalan efisien di lingkungan *Serverless* seperti Vercel.
+Bot pemindai market Crypto Futures (Binance) berbasis Python yang mendeteksi **Golden Cross** dan **Death Cross** pada EMA 15 & 100 secara real-time. Dirancang khusus untuk berjalan efisien di lingkungan *Serverless* seperti Vercel.
 
 ## ✨ Fitur Utama
 - **⚡ High-Performance Scanning**: Menggunakan `asyncio` untuk memproses ratusan token dalam hitungan detik.

@@ -21,14 +21,14 @@ def root():
 async def manual_scan(
     indicator: Annotated[str, Query(description="Select indicator: 'ema' or 'macd'")] = "ema",
     timeframe: Annotated[str, Query(description="Trading timeframe (e.g., 15m, 1h, 4h)")] = "1h",
-    limit: Annotated[int, Query(description="Number of candles to fetch")] = 100,
+    limit: Annotated[int, Query(description="Number of candles to fetch")] = 200,
     volume_m: Annotated[int, Query( description="Volume threshold in Millions (1 - 100)", ge=1, le=100)] = 50,
     total_signal: Annotated[int, Query(description="Number of signals to retrieve")] = 5,
     send_to_telegram: Annotated[bool, Query(description="Flag to send results to Telegram")] = True,
 ):
     """
     Manual scan endpoint supporting two indicators:
-    - indicator=ema   → EMA Crossover 15/50 (Asymmetric Bets)
+    - indicator=ema   → EMA Crossover 15/100 (Asymmetric Bets)
     - indicator=macd  → MACD Crossover 12/26/9 + EMA7 + ADX Filter
     """
 
@@ -53,7 +53,7 @@ async def manual_scan(
             scanner_type = "MACD Crossover (12/26/9 + EMA7 + ADX Filter)"
         else:
             scanner = TradingBot(exchange, timeframe=timeframe, limit=limit, total_signal=total_signal)
-            scanner_type = "EMA Crossover (15/50) - Asymmetric Bets"
+            scanner_type = "EMA Crossover (15/100) - Asymmetric Bets"
 
         # 2. Filter Market
         markets = await exchange.load_markets()

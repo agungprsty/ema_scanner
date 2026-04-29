@@ -21,11 +21,11 @@ class TradingBot:
                 limit=self.exchange_limit
             )
 
-            if not ohlcv or len(ohlcv) < 30: return None
+            if not ohlcv or len(ohlcv) < 100: return None
 
             df = pd.DataFrame(ohlcv, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
-            # df = df.iloc[:-1] # Membuang candle yang sedang berjalan
-            df['ema_fast'] = df['close'].ewm(span=23, adjust=False).mean()
+            df = df.iloc[:-1] # Membuang candle yang sedang berjalan
+            df['ema_fast'] = df['close'].ewm(span=15, adjust=False).mean()
             df['ema_slow'] = df['close'].ewm(span=100, adjust=False).mean()
 
             prev, curr = df.iloc[-2], df.iloc[-1]
