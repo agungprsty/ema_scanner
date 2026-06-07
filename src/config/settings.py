@@ -1,3 +1,4 @@
+import json
 import os
 from dotenv import load_dotenv
 
@@ -7,6 +8,7 @@ load_dotenv()
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
 BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 BINANCE_PRIVATE_KEY_PATH = os.getenv("BINANCE_PRIVATE_KEY_PATH")
+BINANCE_PRIVATE_KEY = os.getenv("BINANCE_PRIVATE_KEY")
 BINANCE_PRIVATE_KEY_PASSPHRASE = os.getenv("BINANCE_PRIVATE_KEY_PASSPHRASE", "")
 
 # Telegram
@@ -14,7 +16,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # Firebase
-FIREBASE_CRED_PATH = os.getenv("FIREBASE_CRED_PATH", "firebase-credentials.json")
+FIREBASE_CRED_PATH = os.getenv("FIREBASE_CRED_PATH") or ""
+FIREBASE_CRED_JSON = os.getenv("FIREBASE_CRED_JSON")
 
 # Mode
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() in ("true", "1", "yes")

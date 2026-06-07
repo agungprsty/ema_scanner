@@ -4,16 +4,28 @@ from datetime import datetime, timezone
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-from src.config.settings import FIREBASE_CRED_PATH
+from src.config.settings import FIREBASE_CRED_PATH, FIREBASE_CRED_JSON
 
 _db = None
+
+
+def _load_cred():
+    if FIREBASE_CRED_JSON:
+        import json
+        return credentials.Certificate(json.loads(FIREBASE_CRED_JSON))
+    if FIREBASE_CRED_PATH:
+        return credentials.Certificate(FIREBASE_CRED_PATH)
+    raise RuntimeError(
+        "Firebase credentials not configured. "
+        "Set FIREBASE_CRED_JSON or FIREBASE_CRED_PATH in environment."
+    )
 
 
 def init_firebase() -> None:
     global _db
     if _db is not None:
         return
-    cred = credentials.Certificate(FIREBASE_CRED_PATH)
+    cred = _load_cred()
     firebase_admin.initialize_app(cred)
     _db = firestore.client()
 
