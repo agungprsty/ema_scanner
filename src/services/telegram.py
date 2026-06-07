@@ -22,9 +22,11 @@ async def send_alert(message: str, parse_mode: str = "HTML") -> None:
 
     try:
         async with httpx.AsyncClient() as client:
-            await client.post(url, data=payload)
+            resp = await client.post(url, data=payload)
+            if resp.status_code != 200:
+                logger.error("Telegram API error %s: %s", resp.status_code, resp.text)
     except Exception as e:
-        logger.error("Failed to send Telegram alert: %s", e)
+        logger.error("Failed to send Telegram alert: %s", e, exc_info=True)
 
 
 def send_alert_async(message: str, parse_mode: str = "HTML") -> None:

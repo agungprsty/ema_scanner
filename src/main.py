@@ -180,20 +180,20 @@ async def scan(
                 step_size=step_size,
             )
 
+            trade_id = create_trade(
+                symbol=spec.symbol,
+                side=spec.side,
+                tf=f"{timeframe}/{mtf}/{htf}",
+                entry=float(spec.entry),
+                sl=float(spec.stop_loss),
+                tp=float(spec.take_profit),
+                qty=float(spec.quantity),
+                atr=sig.atr,
+            )
+
             if is_dry_run:
                 status_msg = "DRY RUN"
             else:
-                trade_id = create_trade(
-                    symbol=spec.symbol,
-                    side=spec.side,
-                    tf=f"{timeframe}/{mtf}/{htf}",
-                    entry=float(spec.entry),
-                    sl=float(spec.stop_loss),
-                    tp=float(spec.take_profit),
-                    qty=float(spec.quantity),
-                    atr=sig.atr,
-                )
-
                 resp = await asyncio.to_thread(place_limit_order, client, spec)
                 if resp and resp.get("orderId"):
                     order_id = resp["orderId"]
@@ -203,9 +203,14 @@ async def scan(
                     update_trade_status(trade_id, "PENDING")
                     status_msg = "SETUP CALL"
 
+            pct_sl = abs(float(spec.entry) - float(spec.stop_loss)) / float(spec.entry) * 100
+            pct_tp = abs(float(spec.take_profit) - float(spec.entry)) / float(spec.entry) * 100
             msg = (
-                f"[{mode_label}] [{status_msg}] {spec.side} {spec.symbol}\n"
-                f"Entry: {spec.entry} | SL: {spec.stop_loss} | TP: {spec.take_profit}\n"
+                f"{mode_label} | {status_msg}\n"
+                f"{spec.side} {spec.symbol}\n"
+                f"Entry: {spec.entry}\n"
+                f"SL: {spec.stop_loss} ({pct_sl:.2f}%)\n"
+                f"TP: {spec.take_profit} ({pct_tp:.2f}%)\n"
                 f"Qty: {spec.quantity}"
             )
             if send_telegram:

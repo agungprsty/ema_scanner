@@ -119,7 +119,7 @@ def calculate_position(
     # Round prices to tick_size
     tick_dec = Decimal(str(tick_size))
     entry_rounded = (entry / tick_dec).to_integral_value() * tick_dec
-    sl_rounded = (sl / tick_dec).to_integral_value() * tick_dec
+    sl_rounded = (Decimal(str(sl_price)) / tick_dec).to_integral_value() * tick_dec
     tp_rounded = (tp / tick_dec).to_integral_value() * tick_dec
     tp1_rounded = (tp1 / tick_dec).to_integral_value() * tick_dec
 
