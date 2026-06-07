@@ -1,150 +1,177 @@
 import logging
-
 from dataclasses import dataclass
+
 import pandas as pd
 
-logger = logging.getLogger(__name__)
+from src.config.settings import (
+    ADX_MIN, SIGNAL_COOLDOWN_CANDLES,
+    ATR_SL_MULTIPLIER, ATR_TP_MULTIPLIER,
+    PULLBACK_EMA_LENGTH,
+    RSI_LONG_MAX, RSI_LONG_MIN, RSI_SHORT_MIN, RSI_SHORT_MAX,
+    PULLBACK_DISTANCE_PCT, VOLUME_RATIO_MAX,
+)
 
-_LOG_NEAR_MISS = True
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class Signal:
     symbol: str
     side: str
-    current_price: float
-    pullback_price: float
+    entry_price: float
+    sl_price: float
+    tp_price: float
     atr: float
+    timestamp: str
+    reason: str
 
 
-def _near_miss_log(
-    symbol: str,
-    side: str,
-    adx: float,
-    gc: bool,
-    dc: bool,
-    vol_ok: bool,
-    rsi: float,
-    rsi_ok: bool,
-    bias: str,
-    missing: list[str],
-):
-    logger.info(
-        "NEAR MISS %-5s %s — adx=%.1f gc=%s dc=%s vol=%s "
-        "rsi=%.1f(%s) bias=%s | missing: %s",
-        side, symbol, adx,
-        "✓" if gc else "✗", "✓" if dc else "✗",
-        "✓" if vol_ok else "✗",
-        rsi, "✓" if rsi_ok else "✗", bias,
-        ", ".join(missing),
-    )
+def _detect_reversal_candle(row: dict, prev: dict, side: str) -> bool:
+    if side == "LONG":
+        return row["close"] > row["open"]
+    else:
+        return row["close"] < row["open"]
 
 
-def evaluate(
+def hard_filter_checklist(
     df: pd.DataFrame,
     btc_bias: str,
+    btc_strength: float,
     symbol: str,
-    df_htf: pd.DataFrame | None = None,
+    df_macro: pd.DataFrame | None = None,
+    cooldown_map: dict[str, int] | None = None,
+    current_index: int = 0,
 ) -> Signal | None:
-    if df is None or len(df) < 12:
+    if df is None or len(df) < 50:
         return None
+
+    if cooldown_map is not None:
+        last_idx = cooldown_map.get(symbol, -SIGNAL_COOLDOWN_CANDLES)
+        if current_index - last_idx < SIGNAL_COOLDOWN_CANDLES:
+            return None
 
     curr = df.iloc[-1]
-
-    adx_curr = curr["ADX_14"]
-    if adx_curr <= 25:
+    if len(df) >= 2:
+        prev = df.iloc[-2]
+    else:
         return None
 
-    ema15_curr = curr["EMA15"]
-    ema100_curr = curr["EMA100"]
-    vol_curr = curr["volume"]
-    sma_vol20 = curr["SMA_VOL20"]
-    rsi = curr["RSI"]
-    
-    macd_hist = curr.get("MACDh_12_26_9", 0)
+    close = curr["close"]
+    ema_pullback = curr.get(f"EMA{PULLBACK_EMA_LENGTH}", 0)
+    atr = curr.get("ATR", 0)
+    rsi = curr.get("RSI", 50)
+    adx = curr.get("ADX_14", 0)
+    vol_ratio = curr.get("VOLUME_RATIO", 0)
 
-    # Check for recent golden cross (within last 5 candles) and ensure EMA15 > EMA100 now
-    recent_golden_cross = (ema15_curr > ema100_curr) and any(
-        (df["EMA15"].iloc[-i-1] <= df["EMA100"].iloc[-i-1]) and (df["EMA15"].iloc[-i] > df["EMA100"].iloc[-i])
-        for i in range(1, min(6, len(df)))
+    if any(pd.isna(v) for v in [ema_pullback, atr, rsi, adx]):
+        return None
+
+    long_passed = _check_long(
+        close, ema_pullback, rsi, adx, vol_ratio,
+        btc_bias, btc_strength, curr, prev,
     )
-
-    # Check for recent death cross (within last 5 candles) and ensure EMA15 < EMA100 now
-    recent_death_cross = (ema15_curr < ema100_curr) and any(
-        (df["EMA15"].iloc[-i-1] >= df["EMA100"].iloc[-i-1]) and (df["EMA15"].iloc[-i] < df["EMA100"].iloc[-i])
-        for i in range(1, min(6, len(df)))
-    )
-
-    volume_surge = vol_curr > sma_vol20
-
-    # HTF directional filter
-    htf_bullish = True
-    htf_bearish = True
-    if df_htf is not None and len(df_htf) >= 2:
-        htf_close = df_htf["close"].iloc[-1]
-        htf_ema100 = df_htf["EMA100"].iloc[-1] if "EMA100" in df_htf.columns else None
-        if htf_ema100 is not None and not pd.isna(htf_ema100):
-            htf_bullish = htf_close > htf_ema100
-            htf_bearish = htf_close < htf_ema100
-
-    # --- LONG signal ---
-    if recent_golden_cross and volume_surge and rsi < 65 and btc_bias == "BULLISH" and htf_bullish and macd_hist > 0:
+    if long_passed:
+        sl = close - atr * ATR_SL_MULTIPLIER
+        tp = close + atr * ATR_TP_MULTIPLIER
         return Signal(
-            symbol=symbol,
-            side="LONG",
-            current_price=curr["close"],
-            pullback_price=curr["EMA15"],
-            atr=curr["ATR"],
+            symbol=symbol, side="LONG",
+            entry_price=close, sl_price=sl, tp_price=tp,
+            atr=atr, timestamp=str(df.index[-1]),
+            reason="hard_filter_long",
         )
 
-    # --- SHORT signal ---
-    if recent_death_cross and volume_surge and rsi > 35 and btc_bias == "BEARISH" and htf_bearish and macd_hist < 0:
+    short_passed = _check_short(
+        close, ema_pullback, rsi, adx, vol_ratio,
+        btc_bias, btc_strength, curr, prev,
+    )
+    if short_passed:
+        sl = close + atr * ATR_SL_MULTIPLIER
+        tp = close - atr * ATR_TP_MULTIPLIER
         return Signal(
-            symbol=symbol,
-            side="SHORT",
-            current_price=curr["close"],
-            pullback_price=curr["EMA15"],
-            atr=curr["ATR"],
-        )
-
-    if not _LOG_NEAR_MISS:
-        return None
-
-    # LONG near-miss
-    if btc_bias == "BULLISH" and recent_golden_cross:
-        missing = []
-        if not htf_bullish:
-            missing.append("htf_bearish")
-        if not volume_surge:
-            missing.append("vol_surge")
-        if not (rsi < 65):
-            missing.append(f"rsi({rsi:.1f}>=65)")
-        if missing:
-            _near_miss_log(symbol, "LONG", adx_curr, recent_golden_cross, recent_death_cross,
-                           volume_surge, rsi, rsi < 65, btc_bias, missing)
-        return None
-
-    # SHORT near-miss
-    if btc_bias == "BEARISH" and recent_death_cross:
-        missing = []
-        if not htf_bearish:
-            missing.append("htf_bullish")
-        if not volume_surge:
-            missing.append("vol_surge")
-        if not (rsi > 35):
-            missing.append(f"rsi({rsi:.1f}<=35)")
-        if missing:
-            _near_miss_log(symbol, "SHORT", adx_curr, recent_golden_cross, recent_death_cross,
-                           volume_surge, rsi, rsi > 35, btc_bias, missing)
-        return None
-
-    ema15_pct_from_100 = abs(ema15_curr - ema100_curr) / ema100_curr * 100
-    if ema15_pct_from_100 < 0.5:
-        direction = "gc-pending" if ema15_curr > ema100_curr else "dc-pending"
-        logger.info(
-            "NEAR MISS %-5s %s — ema15/100 gap=%.3f%% adx_curr=%.1f vol=%s rsi=%.1f",
-            direction, symbol, ema15_pct_from_100,
-            adx_curr, "✓" if volume_surge else "✗", rsi,
+            symbol=symbol, side="SHORT",
+            entry_price=close, sl_price=sl, tp_price=tp,
+            atr=atr, timestamp=str(df.index[-1]),
+            reason="hard_filter_short",
         )
 
     return None
+
+
+def _check_long(
+    close: float, ema_pb: float,
+    rsi: float, adx: float, vol_ratio: float,
+    btc_bias: str, btc_strength: float,
+    curr: pd.Series, prev: pd.Series,
+) -> bool:
+    if btc_bias == "BEARISH":
+        return False
+
+    # Layer 1 — 4h MACRO: EMA50 > EMA200
+    ema50_4h = curr.get("EMA50_4h")
+    ema200_4h = curr.get("EMA200_4h")
+    if any(pd.isna(v) for v in [ema50_4h, ema200_4h]):
+        return False
+    if ema50_4h <= ema200_4h:
+        return False
+
+    # Layer 2 — 1h TREND: close > EMA20
+    close_1h = curr.get("close_1h")
+    ema20_1h = curr.get("EMA20_1h")
+    if any(pd.isna(v) for v in [close_1h, ema20_1h]):
+        return False
+    if close_1h <= ema20_1h:
+        return False
+
+    # Layer 3 — 15m ENTRY: pullback ke EMA20
+    dist_to_ema = (ema_pb - close) / ema_pb * 100
+    if not (0 <= dist_to_ema <= PULLBACK_DISTANCE_PCT):
+        return False
+    if not (RSI_LONG_MIN <= rsi <= RSI_LONG_MAX):
+        return False
+    if vol_ratio > VOLUME_RATIO_MAX:
+        return False
+    if adx < ADX_MIN:
+        return False
+    if not _detect_reversal_candle(dict(curr), dict(prev), "LONG"):
+        return False
+    return True
+
+
+def _check_short(
+    close: float, ema_pb: float,
+    rsi: float, adx: float, vol_ratio: float,
+    btc_bias: str, btc_strength: float,
+    curr: pd.Series, prev: pd.Series,
+) -> bool:
+    if btc_bias == "BULLISH":
+        return False
+
+    # Layer 1 — 4h MACRO: EMA50 < EMA200
+    ema50_4h = curr.get("EMA50_4h")
+    ema200_4h = curr.get("EMA200_4h")
+    if any(pd.isna(v) for v in [ema50_4h, ema200_4h]):
+        return False
+    if ema50_4h >= ema200_4h:
+        return False
+
+    # Layer 2 — 1h TREND: close < EMA20
+    close_1h = curr.get("close_1h")
+    ema20_1h = curr.get("EMA20_1h")
+    if any(pd.isna(v) for v in [close_1h, ema20_1h]):
+        return False
+    if close_1h >= ema20_1h:
+        return False
+
+    # Layer 3 — 15m ENTRY: pullback up to EMA20
+    dist_to_ema = (close - ema_pb) / ema_pb * 100
+    if not (0 <= dist_to_ema <= PULLBACK_DISTANCE_PCT):
+        return False
+    if not (RSI_SHORT_MIN <= rsi <= RSI_SHORT_MAX):
+        return False
+    if vol_ratio > VOLUME_RATIO_MAX:
+        return False
+    if adx < ADX_MIN:
+        return False
+    if not _detect_reversal_candle(dict(curr), dict(prev), "SHORT"):
+        return False
+    return True

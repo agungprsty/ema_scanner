@@ -3,17 +3,19 @@ import logging
 import time
 from contextlib import asynccontextmanager
 
+import pandas as pd
 from fastapi import FastAPI, Query
 from typing import Annotated
 
 from src.config.settings import (
     TOTAL_SIGNALS, VOLUME_THRESHOLD_USD, RISK_PER_TRADE_PERCENT, DRY_RUN,
+    BTC_STRENGTH_MIN, MAX_TOTAL_RISK_PCT, MAX_DAILY_LOSS_PCT,
 )
 from src.data_feed.binance_client import create_futures_client
 from src.data_feed.ohlcv import fetch_klines
-from src.data_feed.macro_filter import compute_btc_bias
+from src.data_feed.macro_filter import compute_btc_bias, BtcBias
 from src.strategy.indicators import compute_indicators
-from src.strategy.blueprint import evaluate, Signal
+from src.strategy.blueprint import hard_filter_checklist, Signal
 from src.risk_manager.calculator import calculate_position
 from src.execution.order import place_limit_order
 from src.services.firebase import init_firebase, create_trade, update_trade_status
@@ -46,14 +48,15 @@ app = FastAPI(title="Crypto Blueprint Bot", lifespan=lifespan)
 @app.get("/")
 def root():
     mode = "DRY_RUN" if DRY_RUN else "PRODUCTION"
-    return {"status": "running", "version": "v3.0.0", "mode": mode, "strategy": "Blueprint V3 (MTF + Breakout + Breakeven)"}
+    return {"status": "running", "version": "v7.0.0", "mode": mode, "strategy": "Day Trader MTF (15m/1h/4h)"}
 
 
 @app.get("/api/scan")
 async def scan(
-    timeframe: Annotated[str, Query(description="Entry timeframe (LTF)")] = "1h",
-    htf: Annotated[str, Query(description="Trend timeframe (HTF)")] = "4h",
-    limit: Annotated[int, Query(description="Candles to fetch")] = 200,
+    timeframe: Annotated[str, Query(description="Entry timeframe (LTF)")] = "15m",
+    mtf: Annotated[str, Query(description="Middle timeframe (trend)")] = "1h",
+    htf: Annotated[str, Query(description="Macro timeframe (filter)")] = "4h",
+    limit: Annotated[int, Query(description="Candles to fetch for LTF")] = 500,
     volume_m: Annotated[int, Query(description="Volume threshold (M)")] = 50,
     send_telegram: Annotated[bool, Query(description="Send to Telegram")] = True,
     dry_run: Annotated[bool | None, Query(description="Override dry-run mode")] = None,
@@ -69,8 +72,11 @@ async def scan(
             return {"status": "error", "message": "Failed to fetch BTC data"}
         btc_bias = compute_btc_bias(btc_df)
 
-        if btc_bias == "NEUTRAL":
+        if btc_bias.side == "NEUTRAL":
             return {"status": "skipped", "btc_bias": "NEUTRAL", "message": "No clear BTC bias"}
+
+        if btc_bias.strength < BTC_STRENGTH_MIN:
+            return {"status": "skipped", "btc_bias": btc_bias.side, "strength": btc_bias.strength, "message": "BTC bias too weak"}
 
         exchange_info = await asyncio.to_thread(client.exchange_info)
         symbols_meta = {}
@@ -86,8 +92,12 @@ async def scan(
             and s["symbol"] in symbols_meta
         ]
 
+        mid_limit = max(300, limit // 4)
+        macro_limit = max(300, limit // 16)
+
+        signal_cooldown: dict[str, int] = {}
         signals: list[Signal] = []
-        for sym in liquid_symbols:
+        for idx, sym in enumerate(liquid_symbols):
             df_ltf = await asyncio.to_thread(fetch_klines, client, sym, timeframe, limit)
             if df_ltf is None:
                 continue
@@ -95,13 +105,46 @@ async def scan(
             if df_ltf is None:
                 continue
 
-            df_htf = await asyncio.to_thread(fetch_klines, client, sym, htf, 100)
-            if df_htf is not None:
-                df_htf = compute_indicators(df_htf)
+            df_mid = await asyncio.to_thread(fetch_klines, client, sym, mtf, mid_limit)
+            if df_mid is not None:
+                df_mid = compute_indicators(df_mid)
 
-            sig = evaluate(df_ltf, btc_bias, sym, df_htf=df_htf)
+            df_macro = await asyncio.to_thread(fetch_klines, client, sym, htf, macro_limit)
+            if df_macro is not None:
+                df_macro = compute_indicators(df_macro)
+
+            df = df_ltf.copy()
+            has_mid = df_mid is not None and "EMA20" in df_mid.columns
+            has_macro = df_macro is not None and "EMA50" in df_macro.columns and "EMA200" in df_macro.columns
+
+            if has_mid:
+                mid_cols = df_mid[["timestamp", "close", "EMA20"]].dropna().rename(
+                    columns={"close": "close_1h", "EMA20": "EMA20_1h"})
+                df = pd.merge_asof(df, mid_cols, on="timestamp", direction="backward")
+            if has_macro:
+                macro_cols = df_macro[["timestamp", "close", "EMA50", "EMA200"]].dropna().rename(
+                    columns={"close": "close_4h", "EMA50": "EMA50_4h", "EMA200": "EMA200_4h"})
+                df = pd.merge_asof(df, macro_cols, on="timestamp", direction="backward")
+
+            if has_mid and has_macro:
+                df = df.dropna(subset=["close_1h", "EMA20_1h", "EMA50_4h", "EMA200_4h"])
+            elif has_mid:
+                df = df.dropna(subset=["close_1h", "EMA20_1h"])
+
+            if len(df) < 50:
+                continue
+
+            sig = hard_filter_checklist(
+                df=df,
+                btc_bias=btc_bias.side,
+                btc_strength=btc_bias.strength,
+                symbol=sym,
+                cooldown_map=signal_cooldown,
+                current_index=idx,
+            )
             if sig:
                 signals.append(sig)
+                signal_cooldown[sym] = idx
             if len(signals) >= TOTAL_SIGNALS:
                 break
 
@@ -128,8 +171,9 @@ async def scan(
             spec = calculate_position(
                 symbol=sig.symbol,
                 side=sig.side,
-                entry_price=sig.breakout_price,
-                atr=sig.atr,
+                entry_price=float(sig.entry_price),
+                sl_price=float(sig.sl_price),
+                tp_price=float(sig.tp_price),
                 balance=balance,
                 risk_pct=RISK_PER_TRADE_PERCENT,
                 tick_size=tick_size,
@@ -142,7 +186,7 @@ async def scan(
                 trade_id = create_trade(
                     symbol=spec.symbol,
                     side=spec.side,
-                    tf=f"{timeframe}/{htf}",
+                    tf=f"{timeframe}/{mtf}/{htf}",
                     entry=float(spec.entry),
                     sl=float(spec.stop_loss),
                     tp=float(spec.take_profit),
@@ -172,18 +216,21 @@ async def scan(
                 "symbol": spec.symbol,
                 "side": spec.side,
                 "entry": float(spec.entry),
-                "breakout_price": sig.breakout_price,
                 "stop_loss": float(spec.stop_loss),
                 "take_profit": float(spec.take_profit),
                 "quantity": float(spec.quantity),
+                "reason": sig.reason,
                 "status": status_msg,
             })
 
         return {
             "status": "success",
             "mode": mode_label,
-            "btc_bias": btc_bias,
+            "btc_bias": btc_bias.side,
+            "btc_strength": btc_bias.strength,
+            "btc_vol_regime": btc_bias.vol_regime,
             "timeframe_ltf": timeframe,
+            "timeframe_mtf": mtf,
             "timeframe_htf": htf,
             "execution_time": f"{time.perf_counter() - start:.2f}s",
             "total_scanned": len(liquid_symbols),
