@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+.git/
+.gitignore
+.ipynb_checkpoints/
+.DS_Store
+refactor-plan/
+.opencode/
+*.md
