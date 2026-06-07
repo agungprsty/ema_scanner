@@ -14,3 +14,9 @@ venv*
 .idea/
 
 test*.py
+
+# Binance API keys
+.binance_api/
+backtest*.py
+backtest*.md
+turnament*.json

@@ -1,0 +1,82 @@
+import uuid
+from datetime import datetime, timezone
+
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+from src.config.settings import FIREBASE_CRED_PATH
+
+_db = None
+
+
+def init_firebase() -> None:
+    global _db
+    if _db is not None:
+        return
+    cred = credentials.Certificate(FIREBASE_CRED_PATH)
+    firebase_admin.initialize_app(cred)
+    _db = firestore.client()
+
+
+def get_db():
+    if _db is None:
+        init_firebase()
+    return _db
+
+
+def create_trade(symbol: str, side: str, tf: str, entry: float, sl: float, tp: float, qty: float, atr: float) -> str:
+    db = get_db()
+    trade_id = str(uuid.uuid4())
+    doc = {
+        "trade_id": trade_id,
+        "symbol": symbol,
+        "side": side,
+        "tf": tf,
+        "prices": {
+            "entry_target": entry,
+            "stop_loss": sl,
+            "take_profit": tp,
+        },
+        "metrics": {
+            "atr_value": atr,
+            "qty_coins": qty,
+        },
+        "status": "PENDING",
+        "binance_order_id": None,
+        "timestamps": {
+            "signal_generated": datetime.now(timezone.utc).isoformat(),
+            "order_placed": None,
+            "filled_at": None,
+            "closed_at": None,
+        },
+    }
+    db.collection("active_trades").document(trade_id).set(doc)
+    return trade_id
+
+
+def update_trade_status(trade_id: str, status: str, **extra) -> None:
+    db = get_db()
+    tx = db.transaction()
+
+    @firestore.transactional
+    def _update(transaction):
+        ref = db.collection("active_trades").document(trade_id)
+        snapshot = transaction.get(ref)
+        if not snapshot.exists:
+            return
+        update_data = {"status": status, **extra}
+        if status == "LIMIT_PLACED":
+            update_data["timestamps.order_placed"] = datetime.now(timezone.utc).isoformat()
+        elif status == "FILLED":
+            update_data["timestamps.filled_at"] = datetime.now(timezone.utc).isoformat()
+        elif status in ("CLOSED_SL", "CLOSED_TP", "EXPIRED_CANCELLED"):
+            update_data["timestamps.closed_at"] = datetime.now(timezone.utc).isoformat()
+        transaction.update(ref, update_data)
+
+    _update(tx)
+
+
+def get_active_trades() -> list[dict]:
+    db = get_db()
+    docs = db.collection("active_trades").where("status", "==", "LIMIT_PLACED").stream()
+    return [doc.to_dict() for doc in docs]
