@@ -27,16 +27,19 @@ def _load_private_key() -> str | None:
 def create_futures_client() -> UMFutures:
     private_key = _load_private_key()
 
+    kwargs = dict(enable_server_time=True)
     if private_key:
         logger.info("Using RSA authentication")
         return UMFutures(
             key=BINANCE_API_KEY,
             private_key=private_key,
             private_key_passphrase=BINANCE_PRIVATE_KEY_PASSPHRASE or None,
+            **kwargs,
         )
 
     logger.info("Using HMAC authentication")
     return UMFutures(
         key=BINANCE_API_KEY,
         secret=BINANCE_API_SECRET,
+        **kwargs,
     )
