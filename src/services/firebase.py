@@ -36,7 +36,7 @@ def get_db():
     return _db
 
 
-def create_trade(symbol: str, side: str, tf: str, entry: float, sl: float, tp: float, qty: float, atr: float) -> str:
+def create_trade(symbol: str, side: str, tf: str, entry: float, sl: float, tp: float, qty: float, atr: float, bep: float = 0.0) -> str:
     db = get_db()
     trade_id = str(uuid.uuid4())
     doc = {
@@ -48,6 +48,7 @@ def create_trade(symbol: str, side: str, tf: str, entry: float, sl: float, tp: f
             "entry_target": entry,
             "stop_loss": sl,
             "take_profit": tp,
+            "bep": bep,
         },
         "metrics": {
             "atr_value": atr,
@@ -59,6 +60,7 @@ def create_trade(symbol: str, side: str, tf: str, entry: float, sl: float, tp: f
             "signal_generated": datetime.now(timezone.utc).isoformat(),
             "order_placed": None,
             "filled_at": None,
+            "tp1_hit_at": None,
             "closed_at": None,
         },
     }
@@ -81,7 +83,9 @@ def update_trade_status(trade_id: str, status: str, **extra) -> None:
             update_data["timestamps.order_placed"] = datetime.now(timezone.utc).isoformat()
         elif status == "FILLED":
             update_data["timestamps.filled_at"] = datetime.now(timezone.utc).isoformat()
-        elif status in ("CLOSED_SL", "CLOSED_TP", "EXPIRED_CANCELLED"):
+        elif status == "TP1_HIT":
+            update_data["timestamps.tp1_hit_at"] = datetime.now(timezone.utc).isoformat()
+        elif status in ("CLOSED_SL", "CLOSED_TP", "CLOSED_BEP", "EXPIRED_CANCELLED"):
             update_data["timestamps.closed_at"] = datetime.now(timezone.utc).isoformat()
         transaction.update(ref, update_data)
 

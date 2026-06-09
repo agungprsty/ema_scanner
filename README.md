@@ -1,14 +1,19 @@
-# Crypto Blueprint Bot — Asymmetric Strategy
+# Golden Cross Scanner — EMA Strategy (1h/4h)
 
-Bot perdagangan crypto futures (Binance) berbasis Python yang mendeteksi **Golden Cross** dan **Death Cross** pada EMA 15 & 100 secara real-time. Menggunakan arsitektur modular blueprint dengan Firebase sebagai state management dan Telegram sebagai notifikasi.
+Bot perdagangan crypto futures (Binance) berbasis Python yang menerapkan strategi **Golden Cross** dengan **Macro Filter 4H** secara real-time. Menggunakan arsitektur modular dengan Firebase sebagai state management dan Telegram sebagai notifikasi.
 
 ## Fitur Utama
-- **High-Performance Scanning**: Multi-symbol async scan menggunakan `asyncio`
-- **Asymmetric Bets Strategy**: Risk/Reward ratio minimal 1:3 (Risk 1.5%, TP1 4.5%, TP2 10%)
+- **Two-Stage Screening**: Macro filter 4H → entry trigger 1H (efisien)
+- **Golden Cross Entry**: EMA 50 crossover EMA 100 pada timeframe 1H
+- **Macro Filter 4H**: Hanya trading saat price > EMA50 dan EMA50 melandai/naik
+- **Volume Confirmation**: Entry hanya saat volume > MA 20
+- **ATR-Based Stop Loss**: SL dinamis berdasarkan Lowest Low + 1.5×ATR(14)
+- **Partial Take Profit**: 50% posisi di TP1 (EMA100 4H), sisa trailing
+- **Break Even Protection**: SL otomatis pindah ke BEP setelah TP1 hit
 - **Telegram Notification**: Notifikasi real-time via Telegram Bot API
 - **Firebase Integration**: State management tahan crash dengan Firestore transaction
-- **Macro Filter**: Hanya trading saat BTC bias terkonfirmasi (bullish/bearish)
-- **Auto-Liquidity Filter**: Hanya memindai koin dengan volume harian > $10,000,000 USDT
+- **Macro Filter**: Hanya trading saat BTC bias terkonfirmasi (bullish)
+- **Auto-Liquidity Filter**: Hanya memindai koin dengan volume harian > $50,000,000 USDT
 - **Auto-Cancel Order**: Monitoring order kadaluarsa dan cancel otomatis
 - **Backtesting Engine**: Simulasi historis lengkap dengan metrik performa
 
@@ -18,7 +23,7 @@ Bot perdagangan crypto futures (Binance) berbasis Python yang mendeteksi **Golde
 - **Database**: [Firebase Admin](https://firebase.google.com/docs/admin/setup) (Firestore)
 - **Data**: [Pandas](https://pandas.pydata.org/) + [pandas-ta](https://github.com/twopirllc/pandas-ta)
 - **Notifikasi**: [httpx](https://www.python-httpx.org/) → Telegram Bot API
-- **Runtime**: FastAPI + APScheduler + Uvicorn
+- **Runtime**: FastAPI + Uvicorn
 
 ## Struktur Direktori
 
@@ -32,6 +37,31 @@ src/
 ├── services/         # Firebase & Telegram integration
 └── main.py           # FastAPI app (orchestrator)
 ```
+
+## Strategi: Golden Cross (1h/4h)
+
+### Tahap 1 — Macro Filter 4H (Watchlist)
+| Kondisi | Rumus |
+|---|---|
+| Price di atas EMA50 | `Close(4H) > EMA50(4H)` |
+| EMA50 melandai/naik | `EMA50(4H)[now] >= EMA50(4H)[3 candles ago]` |
+
+Jika kedua kondisi terpenuhi → aset masuk **Watchlist Long**.
+
+### Tahap 2 — Entry Trigger 1H (Golden Cross)
+| Kondisi | Rumus |
+|---|---|
+| Golden Cross | `EMA50(1H) cross above EMA100(1H)` |
+| Price buffer 0.5% | `Close(1H) >= EMA100(1H) × 1.005` |
+| Volume spike | `Volume(1H) > MA_Volume_20(1H)` |
+
+### Manajemen Risiko
+| Parameter | Rumus |
+|---|---|
+| Stop Loss | `Lowest Low(10 candle) - 1.5 × ATR(14)` |
+| TP1 (50% posisi) | `EMA100(4H)` saat entry |
+| Setelah TP1 hit | SL pindah ke BEP `Entry × (1 + 0.05%)` |
+| Sisa posisi | Trailing hingga BEP atau exit manual |
 
 ## Mode: Development vs Production
 
@@ -82,26 +112,56 @@ Server akan berjalan di `http://localhost:8000`.
 
 ## Endpoint API
 
-- **`GET /`** — Status bot (running, version)
+- **`GET /`** — Status bot (running, version, strategy)
 - **`GET /api/scan`** — Memicu pemindaian market dan eksekusi trading
 
-Parameter query `/api/scan`:
+### Parameter `/api/scan`
 | Parameter | Default | Deskripsi |
 |---|---|---|
-| `timeframe` | `1h` | Timeframe analys (1h, 4h, 1d, dll) |
-| `limit` | `200` | Jumlah candle yang di-fetch |
+| `timeframe` | `1h` | Entry timeframe (golden cross detection) |
+| `htf` | `4h` | Macro timeframe (watchlist filter) |
+| `limit` | `500` | Jumlah candle entry yang di-fetch |
+| `macro_limit` | `200` | Jumlah candle macro yang di-fetch |
 | `volume_m` | `50` | Threshold volume (dalam juta USDT) |
 | `send_telegram` | `true` | Kirim notifikasi ke Telegram |
-| `dry_run` | — | Override mode DRY_RUN (`true`/`false`) per request |
+| `dry_run` | — | Override mode DRY_RUN per request |
+
+### Contoh Response
+```json
+{
+  "status": "success",
+  "mode": "DRY RUN",
+  "btc_bias": "BULLISH",
+  "btc_strength": 45.2,
+  "btc_vol_regime": "NORMAL",
+  "timeframe_entry": "1h",
+  "timeframe_macro": "4h",
+  "execution_time": "12.34s",
+  "total_scanned": 48,
+  "signals": [
+    {
+      "symbol": "SOLUSDT",
+      "side": "LONG",
+      "entry": 145.20,
+      "stop_loss": 141.80,
+      "take_profit": 152.50,
+      "quantity": 0.68,
+      "quantity_tp1": 0.34,
+      "reason": "golden_cross_1h",
+      "status": "DRY RUN"
+    }
+  ]
+}
+```
 
 ## Backtesting
 
-Backtester mensimulasikan strategi Blueprint (Pullback Entry EMA 15) terhadap data historis Binance.
+Backtester mensimulasikan strategi Golden Cross (macro 4H + entry 1H) terhadap data historis Binance.
 
 ### Jalankan Backtest
 
 ```bash
-python backtester.py --symbol SOLUSDT --timeframe 1h --limit 5000 --balance 10000
+python backtester.py --symbol SOLUSDT --timeframe 1h --htf 4h --limit 5000 --balance 100
 ```
 
 ### Parameter
@@ -109,14 +169,23 @@ python backtester.py --symbol SOLUSDT --timeframe 1h --limit 5000 --balance 1000
 | Parameter | Default | Deskripsi |
 |---|---|---|
 | `--symbol` | `SOLUSDT` | Trading pair |
-| `--timeframe` | `1h` | Timeframe candle |
-| `--limit` | `5000` | Jumlah candle historis |
-| `--balance` | `10000` | Modal awal simulasi (USDT) |
+| `--timeframe` | `1h` | Entry timeframe (golden cross) |
+| `--htf` | `4h` | Macro timeframe (filter) |
+| `--limit` | `2000` | Jumlah candle entry historis |
+| `--balance` | `100` | Modal awal simulasi (USDT) |
+
+### Batch Backtest
+
+```bash
+python backtest_run.py
+```
+Menjalankan backtest pada 20 token berbeda dan menghasilkan laporan markdown.
 
 ### Output Metrik
 
 - Balance comparison (Before vs After)
 - Net Profit/Loss ($ dan %)
-- Total sinyal, order terisi, order batal
+- Total sinyal, order terisi
 - Win rate, profit factor, max drawdown
+- Partial TP1 hit tracking
 - Daftar trade lengkap (entry/exit price, PnL)

@@ -8,14 +8,14 @@ from fastapi import FastAPI, Query
 from typing import Annotated
 
 from src.config.settings import (
-    TOTAL_SIGNALS, VOLUME_THRESHOLD_USD, RISK_PER_TRADE_PERCENT, DRY_RUN,
-    BTC_STRENGTH_MIN, MAX_TOTAL_RISK_PCT, MAX_DAILY_LOSS_PCT,
+    TOTAL_SIGNALS, RISK_PER_TRADE_PERCENT, DRY_RUN,
+    BTC_STRENGTH_MIN, GC_ENTRY_FEE_PCT,
 )
 from src.data_feed.binance_client import create_futures_client
 from src.data_feed.ohlcv import fetch_klines
-from src.data_feed.macro_filter import compute_btc_bias, BtcBias
+from src.data_feed.macro_filter import compute_btc_bias
 from src.strategy.indicators import compute_indicators
-from src.strategy.blueprint import hard_filter_checklist, Signal
+from src.strategy.blueprint import macroscan_4h, check_entry, Signal
 from src.risk_manager.calculator import calculate_position
 from src.execution.order import place_limit_order
 from src.services.firebase import init_firebase, create_trade, update_trade_status
@@ -48,16 +48,16 @@ app = FastAPI(title="Crypto Blueprint Bot", lifespan=lifespan)
 @app.get("/")
 def root():
     mode = "DRY_RUN" if DRY_RUN else "PRODUCTION"
-    return {"status": "running", "version": "v7.0.0", "mode": mode, "strategy": "Day Trader MTF (15m/1h/4h)"}
+    return {"status": "running", "version": "v8.0.0", "mode": mode, "strategy": "Golden Cross (1h/4h)"}
 
 
 @app.get("/api/scan")
 async def scan(
-    timeframe: Annotated[str, Query(description="Entry timeframe (LTF)")] = "15m",
-    mtf: Annotated[str, Query(description="Middle timeframe (trend)")] = "1h",
+    timeframe: Annotated[str, Query(description="Entry timeframe (golden cross)")] = "1h",
     htf: Annotated[str, Query(description="Macro timeframe (filter)")] = "4h",
     limit: Annotated[int, Query(description="Candles to fetch for LTF")] = 500,
-    volume_m: Annotated[int, Query(description="Volume threshold (M)")] = 50,
+    macro_limit: Annotated[int, Query(description="Candles to fetch for HTF")] = 200,
+    volume_m: Annotated[int, Query(description="Volume threshold (M)")] = 100,
     send_telegram: Annotated[bool, Query(description="Send to Telegram")] = True,
     dry_run: Annotated[bool | None, Query(description="Override dry-run mode")] = None,
 ):
@@ -92,52 +92,40 @@ async def scan(
             and s["symbol"] in symbols_meta
         ]
 
-        mid_limit = max(300, limit // 4)
-        macro_limit = max(300, limit // 16)
-
         signal_cooldown: dict[str, int] = {}
         signals: list[Signal] = []
         for idx, sym in enumerate(liquid_symbols):
-            df_ltf = await asyncio.to_thread(fetch_klines, client, sym, timeframe, limit)
-            if df_ltf is None:
-                continue
-            df_ltf = compute_indicators(df_ltf)
-            if df_ltf is None:
-                continue
-
-            df_mid = await asyncio.to_thread(fetch_klines, client, sym, mtf, mid_limit)
-            if df_mid is not None:
-                df_mid = compute_indicators(df_mid)
-
+            # Stage 1: Fetch 4H data for macro filter
             df_macro = await asyncio.to_thread(fetch_klines, client, sym, htf, macro_limit)
-            if df_macro is not None:
-                df_macro = compute_indicators(df_macro)
-
-            df = df_ltf.copy()
-            has_mid = df_mid is not None and "EMA20" in df_mid.columns
-            has_macro = df_macro is not None and "EMA50" in df_macro.columns and "EMA200" in df_macro.columns
-
-            if has_mid:
-                mid_cols = df_mid[["timestamp", "close", "EMA20"]].dropna().rename(
-                    columns={"close": "close_1h", "EMA20": "EMA20_1h"})
-                df = pd.merge_asof(df, mid_cols, on="timestamp", direction="backward")
-            if has_macro:
-                macro_cols = df_macro[["timestamp", "close", "EMA50", "EMA200"]].dropna().rename(
-                    columns={"close": "close_4h", "EMA50": "EMA50_4h", "EMA200": "EMA200_4h"})
-                df = pd.merge_asof(df, macro_cols, on="timestamp", direction="backward")
-
-            if has_mid and has_macro:
-                df = df.dropna(subset=["close_1h", "EMA20_1h", "EMA50_4h", "EMA200_4h"])
-            elif has_mid:
-                df = df.dropna(subset=["close_1h", "EMA20_1h"])
-
-            if len(df) < 50:
+            if df_macro is None:
+                continue
+            df_macro = compute_indicators(df_macro)
+            if df_macro is None:
                 continue
 
-            sig = hard_filter_checklist(
-                df=df,
+            if not macroscan_4h(df_macro):
+                continue
+
+            # Stage 2: Fetch 1H data for entry trigger
+            df_entry = await asyncio.to_thread(fetch_klines, client, sym, timeframe, limit)
+            if df_entry is None:
+                continue
+            df_entry = compute_indicators(df_entry)
+            if df_entry is None:
+                continue
+
+            # Merge MA50_4h into 1H for TP1 reference
+            macro_cols = df_macro[["timestamp", "close", "MA50"]].dropna().rename(
+                columns={"close": "close_4h", "MA50": "MA50_4h"})
+            df_entry = pd.merge_asof(df_entry, macro_cols, on="timestamp", direction="backward")
+            df_entry = df_entry.dropna(subset=["MA50_4h"])
+
+            if len(df_entry) < 50:
+                continue
+
+            sig = check_entry(
+                df_1h=df_entry,
                 btc_bias=btc_bias.side,
-                btc_strength=btc_bias.strength,
                 symbol=sym,
                 cooldown_map=signal_cooldown,
                 current_index=idx,
@@ -173,22 +161,25 @@ async def scan(
                 side=sig.side,
                 entry_price=float(sig.entry_price),
                 sl_price=float(sig.sl_price),
-                tp_price=float(sig.tp_price),
+                tp_price=0.0,
                 balance=balance,
                 risk_pct=RISK_PER_TRADE_PERCENT,
                 tick_size=tick_size,
                 step_size=step_size,
+                tp1_explicit=float(sig.tp1_price),
             )
 
+            bep = float(spec.entry) * (1 + GC_ENTRY_FEE_PCT / 100)
             trade_id = create_trade(
                 symbol=spec.symbol,
                 side=spec.side,
-                tf=f"{timeframe}/{mtf}/{htf}",
+                tf=f"{timeframe}/{htf}",
                 entry=float(spec.entry),
                 sl=float(spec.stop_loss),
                 tp=float(spec.take_profit),
                 qty=float(spec.quantity),
-                atr=sig.atr,
+                atr=sig.atr_1h,
+                bep=bep,
             )
 
             if is_dry_run:
@@ -210,8 +201,9 @@ async def scan(
                 f"{spec.side} {spec.symbol}\n"
                 f"Entry: {spec.entry}\n"
                 f"SL: {spec.stop_loss} ({pct_sl:.2f}%)\n"
-                f"TP: {spec.take_profit} ({pct_tp:.2f}%)\n"
-                f"Qty: {spec.quantity}"
+                f"TP1 (50%): {spec.take_profit} ({pct_tp:.2f}%)\n"
+                f"BEP after TP1: {bep:.4f}\n"
+                f"Qty: {spec.quantity} | TP1 Qty: {spec.quantity_tp1}"
             )
             if send_telegram:
                 send_alert_async(msg)
@@ -224,6 +216,7 @@ async def scan(
                 "stop_loss": float(spec.stop_loss),
                 "take_profit": float(spec.take_profit),
                 "quantity": float(spec.quantity),
+                "quantity_tp1": float(spec.quantity_tp1),
                 "reason": sig.reason,
                 "status": status_msg,
             })
@@ -234,9 +227,8 @@ async def scan(
             "btc_bias": btc_bias.side,
             "btc_strength": btc_bias.strength,
             "btc_vol_regime": btc_bias.vol_regime,
-            "timeframe_ltf": timeframe,
-            "timeframe_mtf": mtf,
-            "timeframe_htf": htf,
+            "timeframe_entry": timeframe,
+            "timeframe_macro": htf,
             "execution_time": f"{time.perf_counter() - start:.2f}s",
             "total_scanned": len(liquid_symbols),
             "signals": results,

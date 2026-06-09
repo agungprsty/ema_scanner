@@ -57,5 +57,12 @@ RSI_SHORT_MAX = float(os.getenv("RSI_SHORT_MAX", "65"))
 PULLBACK_DISTANCE_PCT = float(os.getenv("PULLBACK_DISTANCE_PCT", "5.0"))
 VOLUME_RATIO_MAX = float(os.getenv("VOLUME_RATIO_MAX", "2.0"))
 
+# Golden Cross Strategy Parameters (1H Entry / 4H Macro)
+GC_ATR_SL_MULTIPLIER = float(os.getenv("GC_ATR_SL_MULTIPLIER", "1.5"))
+GC_LOOKBACK_CANDLES = int(os.getenv("GC_LOOKBACK_CANDLES", "10"))
+GC_VOLUME_MA_PERIOD = int(os.getenv("GC_VOLUME_MA_PERIOD", "20"))
+GC_VOLUME_THRESHOLD_PCT = float(os.getenv("GC_VOLUME_THRESHOLD_PCT", "45.0"))
+GC_ENTRY_FEE_PCT = float(os.getenv("GC_ENTRY_FEE_PCT", "0.05"))
+
 # Backtest
 BACKTEST_INITIAL_BALANCE = float(os.getenv("BACKTEST_INITIAL_BALANCE", "100"))

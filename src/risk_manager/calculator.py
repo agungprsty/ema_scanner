@@ -75,6 +75,7 @@ def calculate_position(
     win_rate: float = 0.0,
     avg_win: float = 0.0,
     avg_loss: float = 0.0,
+    tp1_explicit: float | None = None,
 ) -> OrderSpec | None:
     entry = Decimal(str(entry_price))
 
@@ -82,14 +83,20 @@ def calculate_position(
         risk = entry - Decimal(str(sl_price))
         if risk <= Decimal("0"):
             return None
-        tp1 = entry + risk * Decimal(str(TP1_RISK_MULTIPLIER))
-        tp = Decimal(str(tp_price))
+        if tp1_explicit is not None:
+            tp1 = Decimal(str(tp1_explicit))
+        else:
+            tp1 = entry + risk * Decimal(str(TP1_RISK_MULTIPLIER))
+        tp = Decimal(str(tp_price)) if tp_price > 0 else Decimal("0")
     else:
         risk = Decimal(str(sl_price)) - entry
         if risk <= Decimal("0"):
             return None
-        tp1 = entry - risk * Decimal(str(TP1_RISK_MULTIPLIER))
-        tp = Decimal(str(tp_price))
+        if tp1_explicit is not None:
+            tp1 = Decimal(str(tp1_explicit))
+        else:
+            tp1 = entry - risk * Decimal(str(TP1_RISK_MULTIPLIER))
+        tp = Decimal(str(tp_price)) if tp_price > 0 else Decimal("0")
 
     adjusted_risk = portfolio_risk.adjusted_risk_pct(symbol, side, risk_pct) if portfolio_risk else risk_pct
     if adjusted_risk <= 0:
