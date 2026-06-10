@@ -17,6 +17,5 @@ test*.py
 
 # Binance API keys
 .binance_api/
-backtest*.py
-backtest*.md
+backtest*.html
 turnament*.json
