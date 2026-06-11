@@ -1,14 +1,14 @@
-# Golden Cross Scanner — EMA Strategy (1h/4h)
+# EMA5/EMA20 Cross Scanner — Strategy (1h/4h)
 
-Bot perdagangan crypto futures (Binance) berbasis Python yang menerapkan strategi **Golden Cross** dengan **Macro Filter 4H** secara real-time. Menggunakan arsitektur modular dengan Firebase sebagai state management dan Telegram sebagai notifikasi.
+Bot perdagangan crypto futures (Binance) berbasis Python yang menerapkan strategi **EMA5/EMA20 Cross** dengan **Macro Filter 4H** secara real-time. Menggunakan arsitektur modular dengan Firebase sebagai state management dan Telegram sebagai notifikasi.
 
 ## Fitur Utama
 - **Two-Stage Screening**: Macro filter 4H → entry trigger 1H (efisien)
-- **Golden Cross Entry**: EMA 50 crossover EMA 100 pada timeframe 1H
-- **Macro Filter 4H**: Hanya trading saat price > EMA50 dan EMA50 melandai/naik
+- **EMA5/EMA20 Cross Entry**: EMA5 crossover EMA20 pada timeframe 1H
+- **Macro Filter 4H**: Hanya trading saat price > EMA20 dan EMA20 melandai/naik
 - **Volume Confirmation**: Entry hanya saat volume > MA 20
 - **ATR-Based Stop Loss**: SL dinamis berdasarkan Lowest Low + 1.5×ATR(14)
-- **Partial Take Profit**: 50% posisi di TP1 (EMA100 4H), sisa trailing
+- **Partial Take Profit**: 50% posisi di TP1 (EMA20 4H), sisa trailing
 - **Break Even Protection**: SL otomatis pindah ke BEP setelah TP1 hit
 - **Telegram Notification**: Notifikasi real-time via Telegram Bot API
 - **Firebase Integration**: State management tahan crash dengan Firestore transaction
@@ -16,6 +16,7 @@ Bot perdagangan crypto futures (Binance) berbasis Python yang menerapkan strateg
 - **Auto-Liquidity Filter**: Hanya memindai koin dengan volume harian > $50,000,000 USDT
 - **Auto-Cancel Order**: Monitoring order kadaluarsa dan cancel otomatis
 - **Backtesting Engine**: Simulasi historis lengkap dengan metrik performa
+- **Concurrent Scanning**: Memproses 10 simbol secara paralel untuk scanning lebih cepat
 
 ## Tech Stack
 - **Framework**: [FastAPI](https://fastapi.tiangolo.com/)
@@ -38,30 +39,39 @@ src/
 └── main.py           # FastAPI app (orchestrator)
 ```
 
-## Strategi: Golden Cross (1h/4h)
+## Strategi: EMA5/EMA20 Cross (1h/4h)
 
 ### Tahap 1 — Macro Filter 4H (Watchlist)
 | Kondisi | Rumus |
 |---|---|
-| Price di atas EMA50 | `Close(4H) > EMA50(4H)` |
-| EMA50 melandai/naik | `EMA50(4H)[now] >= EMA50(4H)[3 candles ago]` |
+| Price di atas EMA20 | `Close(4H) > EMA20(4H)` |
+| EMA20 melandai/naik | `EMA20(4H)[now] >= EMA20(4H)[3 candles ago]` |
 
 Jika kedua kondisi terpenuhi → aset masuk **Watchlist Long**.
 
 ### Tahap 2 — Entry Trigger 1H (Golden Cross)
 | Kondisi | Rumus |
 |---|---|
-| Golden Cross | `EMA50(1H) cross above EMA100(1H)` |
-| Price buffer 0.5% | `Close(1H) >= EMA100(1H) × 1.005` |
+| Golden Cross | `EMA5(1H) cross above EMA20(1H)` |
 | Volume spike | `Volume(1H) > MA_Volume_20(1H)` |
 
 ### Manajemen Risiko
 | Parameter | Rumus |
 |---|---|
 | Stop Loss | `Lowest Low(10 candle) - 1.5 × ATR(14)` |
-| TP1 (50% posisi) | `EMA100(4H)` saat entry |
+| TP1 (50% posisi) | `EMA20(4H)` saat entry |
 | Setelah TP1 hit | SL pindah ke BEP `Entry × (1 + 0.05%)` |
 | Sisa posisi | Trailing hingga BEP atau exit manual |
+
+## Optimasi Performa
+
+| Optimasi | Dampak |
+|---|---|
+| **Concurrent scanning** (10 simbol paralel) | ⚡ 40s → ~5-8s |
+| **Caching exchange_info** (TTL 5 menit) | ⚡ Kurangi 1 API call/scan |
+| **Caching ticker_24h** (TTL 1 menit) | ⚡ Kurangi 1 API call/scan |
+| **Reuse Binance client (singleton)** | ⚡ Hindari setup koneksi berulang |
+| **Lazy compute indicators** | ⚡ Macro filter cepat tanpa ATR/RSI/ADX |
 
 ## Mode: Development vs Production
 
@@ -118,7 +128,7 @@ Server akan berjalan di `http://localhost:8000`.
 ### Parameter `/api/scan`
 | Parameter | Default | Deskripsi |
 |---|---|---|
-| `timeframe` | `1h` | Entry timeframe (golden cross detection) |
+| `timeframe` | `1h` | Entry timeframe (EMA5/EMA20 cross detection) |
 | `htf` | `4h` | Macro timeframe (watchlist filter) |
 | `limit` | `500` | Jumlah candle entry yang di-fetch |
 | `macro_limit` | `200` | Jumlah candle macro yang di-fetch |
@@ -136,7 +146,7 @@ Server akan berjalan di `http://localhost:8000`.
   "btc_vol_regime": "NORMAL",
   "timeframe_entry": "1h",
   "timeframe_macro": "4h",
-  "execution_time": "12.34s",
+  "execution_time": "4.20s",
   "total_scanned": 48,
   "signals": [
     {
@@ -156,7 +166,7 @@ Server akan berjalan di `http://localhost:8000`.
 
 ## Backtesting
 
-Backtester mensimulasikan strategi Golden Cross (macro 4H + entry 1H) terhadap data historis Binance.
+Backtester mensimulasikan strategi EMA5/EMA20 Cross (macro 4H + entry 1H) terhadap data historis Binance.
 
 ### Jalankan Backtest
 
@@ -169,7 +179,7 @@ python backtester.py --symbol SOLUSDT --timeframe 1h --htf 4h --limit 5000 --bal
 | Parameter | Default | Deskripsi |
 |---|---|---|
 | `--symbol` | `SOLUSDT` | Trading pair |
-| `--timeframe` | `1h` | Entry timeframe (golden cross) |
+| `--timeframe` | `1h` | Entry timeframe (EMA5/EMA20 cross) |
 | `--htf` | `4h` | Macro timeframe (filter) |
 | `--limit` | `2000` | Jumlah candle entry historis |
 | `--balance` | `100` | Modal awal simulasi (USDT) |

@@ -75,7 +75,7 @@ def update_trade_status(trade_id: str, status: str, **extra) -> None:
     @firestore.transactional
     def _update(transaction):
         ref = db.collection("active_trades").document(trade_id)
-        snapshot = transaction.get(ref)
+        snapshot = ref.get(transaction=transaction)
         if not snapshot.exists:
             return
         update_data = {"status": status, **extra}

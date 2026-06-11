@@ -26,13 +26,36 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 _monitor_task = None
+_client = None
+
+_cache: dict[str, dict] = {}
+EXCHANGE_INFO_TTL = 300
+TICKER_TTL = 60
+CONCURRENCY = 10
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        _client = create_futures_client()
+    return _client
+
+
+async def _get_cached(client, key: str, fetch_fn, ttl: int):
+    now = time.monotonic()
+    cached = _cache.get(key)
+    if cached and now - cached["ts"] < ttl:
+        return cached["data"]
+    data = await asyncio.to_thread(fetch_fn)
+    _cache[key] = {"data": data, "ts": now}
+    return data
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_firebase()
     global _monitor_task
-    client = create_futures_client()
+    client = _get_client()
     if not DRY_RUN:
         _monitor_task = asyncio.create_task(monitor_loop(client))
     else:
@@ -48,7 +71,7 @@ app = FastAPI(title="Crypto Blueprint Bot", lifespan=lifespan)
 @app.get("/")
 def root():
     mode = "DRY_RUN" if DRY_RUN else "PRODUCTION"
-    return {"status": "running", "version": "v8.0.0", "mode": mode, "strategy": "Golden Cross (1h/4h)"}
+    return {"status": "running", "version": "v8.0.0", "mode": mode, "strategy": "EMA5/EMA20 Cross (1h/4h)"}
 
 
 @app.get("/api/scan")
@@ -62,7 +85,7 @@ async def scan(
     dry_run: Annotated[bool | None, Query(description="Override dry-run mode")] = None,
 ):
     start = time.perf_counter()
-    client = create_futures_client()
+    client = _get_client()
     is_dry_run = DRY_RUN if dry_run is None else dry_run
     mode_label = "DRY RUN" if is_dry_run else "PRODUCTION"
 
@@ -73,70 +96,67 @@ async def scan(
         btc_bias = compute_btc_bias(btc_df)
 
         if btc_bias.side == "NEUTRAL":
-            return {"status": "skipped", "btc_bias": "NEUTRAL", "message": "No clear BTC bias"}
+            scan_time = f"{time.perf_counter() - start:.2f}s"
+            return {"status": "skipped", "btc_bias": "NEUTRAL", "execution_time": scan_time, "message": "No clear BTC bias"}
 
         if btc_bias.strength < BTC_STRENGTH_MIN:
-            return {"status": "skipped", "btc_bias": btc_bias.side, "strength": btc_bias.strength, "message": "BTC bias too weak"}
+            scan_time = f"{time.perf_counter() - start:.2f}s"
+            return {"status": "skipped", "btc_bias": btc_bias.side, "strength": btc_bias.strength, "execution_time": scan_time, "message": "BTC bias too weak"}
 
-        exchange_info = await asyncio.to_thread(client.exchange_info)
+        exchange_info = await _get_cached(client, "exchange_info", client.exchange_info, EXCHANGE_INFO_TTL)
         symbols_meta = {}
         for s in exchange_info.get("symbols", []):
             if s.get("quoteAsset") == "USDT" and s.get("status") == "TRADING":
                 symbols_meta[s["symbol"]] = s
 
         vol_threshold = volume_m * 1_000_000
-        stats_24h = await asyncio.to_thread(client.ticker_24hr_price_change)
+        stats_24h = await _get_cached(client, "ticker_24h", client.ticker_24hr_price_change, TICKER_TTL)
         liquid_symbols = [
             s["symbol"] for s in stats_24h
             if float(s.get("quoteVolume", 0)) > vol_threshold
             and s["symbol"] in symbols_meta
         ]
 
-        signal_cooldown: dict[str, int] = {}
-        signals: list[Signal] = []
-        for idx, sym in enumerate(liquid_symbols):
-            # Stage 1: Fetch 4H data for macro filter
-            df_macro = await asyncio.to_thread(fetch_klines, client, sym, htf, macro_limit)
-            if df_macro is None:
-                continue
-            df_macro = compute_indicators(df_macro)
-            if df_macro is None:
-                continue
+        sem = asyncio.Semaphore(CONCURRENCY)
 
-            if not macroscan_4h(df_macro):
-                continue
+        async def _detect(sym: str) -> Signal | None:
+            async with sem:
+                df_macro = await asyncio.to_thread(fetch_klines, client, sym, htf, macro_limit)
+                if df_macro is None:
+                    return None
+                df_macro = compute_indicators(df_macro)
+                if df_macro is None:
+                    return None
 
-            # Stage 2: Fetch 1H data for entry trigger
-            df_entry = await asyncio.to_thread(fetch_klines, client, sym, timeframe, limit)
-            if df_entry is None:
-                continue
-            df_entry = compute_indicators(df_entry)
-            if df_entry is None:
-                continue
+                if not macroscan_4h(df_macro):
+                    return None
 
-            # Merge MA50_4h into 1H for TP1 reference
-            macro_cols = df_macro[["timestamp", "close", "MA50"]].dropna().rename(
-                columns={"close": "close_4h", "MA50": "MA50_4h"})
-            df_entry = pd.merge_asof(df_entry, macro_cols, on="timestamp", direction="backward")
-            df_entry = df_entry.dropna(subset=["MA50_4h"])
+                df_entry = await asyncio.to_thread(fetch_klines, client, sym, timeframe, limit)
+                if df_entry is None:
+                    return None
+                df_entry = compute_indicators(df_entry)
+                if df_entry is None:
+                    return None
 
-            if len(df_entry) < 50:
-                continue
+                macro_cols = df_macro[["timestamp", "close", "EMA20"]].dropna().rename(
+                    columns={"close": "close_4h", "EMA20": "EMA20_4h"})
+                df_entry = pd.merge_asof(df_entry, macro_cols, on="timestamp", direction="backward")
+                df_entry = df_entry.dropna(subset=["EMA20_4h"])
 
-            sig = check_entry(
-                df_1h=df_entry,
-                btc_bias=btc_bias.side,
-                symbol=sym,
-                cooldown_map=signal_cooldown,
-                current_index=idx,
-            )
-            if sig:
-                signals.append(sig)
-                signal_cooldown[sym] = idx
-            if len(signals) >= TOTAL_SIGNALS:
-                break
+                if len(df_entry) < 50:
+                    return None
 
-        results = []
+                check_entry_kwargs = {
+                    "btc_bias": btc_bias.side,
+                    "symbol": sym,
+                }
+                return check_entry(df_1h=df_entry, **check_entry_kwargs)
+
+        tasks = [_detect(sym) for sym in liquid_symbols]
+        results = await asyncio.gather(*tasks)
+        signals: list[Signal] = [r for r in results if r is not None][:TOTAL_SIGNALS]
+
+        results_json = []
         for sig in signals:
             meta = symbols_meta.get(sig.symbol, {})
             filters = {f["filterType"]: f for f in meta.get("filters", [])}
@@ -209,7 +229,7 @@ async def scan(
                 send_alert_async(msg)
             logger.info(msg)
 
-            results.append({
+            results_json.append({
                 "symbol": spec.symbol,
                 "side": spec.side,
                 "entry": float(spec.entry),
@@ -231,7 +251,7 @@ async def scan(
             "timeframe_macro": htf,
             "execution_time": f"{time.perf_counter() - start:.2f}s",
             "total_scanned": len(liquid_symbols),
-            "signals": results,
+            "signals": results_json,
         }
 
     except Exception as e:

@@ -21,7 +21,7 @@ class Signal:
     atr_1h: float
     timestamp: str
     reason: str
-    ma50_4h: float = 0.0
+    ema20_4h: float = 0.0
 
 
 def macroscan_4h(df_4h: pd.DataFrame) -> bool:
@@ -30,26 +30,26 @@ def macroscan_4h(df_4h: pd.DataFrame) -> bool:
 
     last = df_4h.iloc[-1]
     close = last["close"]
-    ma50 = last.get("MA50", 0)
+    ema20 = last.get("EMA20", 0)
 
-    if pd.isna(ma50) or ma50 <= 0:
+    if pd.isna(ema20) or ema20 <= 0:
         return False
 
-    # Condition a: Close > MA50 4H
-    if close <= ma50:
+    # Condition a: Close > EMA20 4H
+    if close <= ema20:
         return False
 
-    # Condition b: MA50[current] >= MA50[3 candles ago] (flattening or turning up)
+    # Condition b: EMA20[current] >= EMA20[3 candles ago] (flattening or turning up)
     if len(df_4h) < 4:
         return False
 
-    ma50_now = ma50
-    ma50_3ago = df_4h.iloc[-4].get("MA50", 0)
+    ema20_now = ema20
+    ema20_3ago = df_4h.iloc[-4].get("EMA20", 0)
 
-    if pd.isna(ma50_3ago) or ma50_3ago <= 0:
+    if pd.isna(ema20_3ago) or ema20_3ago <= 0:
         return False
 
-    if ma50_now < ma50_3ago:
+    if ema20_now < ema20_3ago:
         return False
 
     return True
@@ -81,26 +81,26 @@ def check_entry(
     close = curr["close"]
     volume = curr["volume"]
 
-    ma20_curr = curr.get("MA20", 0)
-    ma50_curr = curr.get("MA50", 0)
-    ma20_prev = prev.get("MA20", 0)
-    ma50_prev = prev.get("MA50", 0)
+    ema5_curr = curr.get("EMA5", 0)
+    ema20_curr = curr.get("EMA20", 0)
+    ema5_prev = prev.get("EMA5", 0)
+    ema20_prev = prev.get("EMA20", 0)
 
-    if any(pd.isna(v) for v in [ma20_curr, ma50_curr, ma20_prev, ma50_prev]):
+    if any(pd.isna(v) for v in [ema5_curr, ema20_curr, ema5_prev, ema20_prev]):
         return None
 
-    # Condition a: Golden Cross — MA20 crosses above MA50
-    if not (ma20_prev <= ma50_prev and ma20_curr > ma50_curr):
+    # Condition a: Golden Cross — EMA5 crosses above EMA20
+    if not (ema5_prev <= ema20_prev and ema5_curr > ema20_curr):
         return None
 
     # Calculate exact cross price via linear interpolation
-    diff_prev = ma20_prev - ma50_prev
-    diff_curr = ma20_curr - ma50_curr
+    diff_prev = ema5_prev - ema20_prev
+    diff_curr = ema5_curr - ema20_curr
     delta = diff_curr - diff_prev
     if delta == 0:
         return None
     ratio = -diff_prev / delta
-    cross_price = ma20_prev + ratio * (ma20_curr - ma20_prev)
+    cross_price = ema5_prev + ratio * (ema5_curr - ema5_prev)
     if cross_price <= 0:
         return None
 
@@ -118,11 +118,11 @@ def check_entry(
 
     sl_price = lowest_low - GC_ATR_SL_MULTIPLIER * atr
 
-    # TP1 = MA50_4H (must already be merged into df_1h)
-    ma50_4h = curr.get("MA50_4h", 0)
-    if pd.isna(ma50_4h) or ma50_4h <= 0:
+    # TP1 = EMA20_4H (must already be merged into df_1h)
+    ema20_4h = curr.get("EMA20_4h", 0)
+    if pd.isna(ema20_4h) or ema20_4h <= 0:
         return None
-    tp1_price = ma50_4h
+    tp1_price = ema20_4h
 
     return Signal(
         symbol=symbol,
@@ -133,5 +133,5 @@ def check_entry(
         atr_1h=atr,
         timestamp=str(df_1h.index[-1]),
         reason="golden_cross_1h",
-        ma50_4h=ma50_4h,
+        ema20_4h=ema20_4h,
     )
