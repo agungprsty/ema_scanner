@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from binance.um_futures import UMFutures
 
-from src.config.settings import GC_ENTRY_FEE_PCT
+from src.config.settings import LONG_ENTRY_FEE_PCT
 from src.execution.order import cancel_order
 from src.services.firebase import get_active_trades, update_trade_status
 
@@ -90,7 +90,7 @@ async def _check_tp1_hit(
 
     if tp1_hit:
         entry = trade.get("prices", {}).get("entry_target", 0)
-        bep = entry * (1 + GC_ENTRY_FEE_PCT / 100)
+        bep = entry * (1 + LONG_ENTRY_FEE_PCT / 100)
         update_trade_status(
             trade["trade_id"],
             "TP1_HIT",

@@ -7,3 +7,4 @@ pandas-ta==0.4.71b0
 plotly==6.6.0
 python-dotenv==1.2.2
 uvicorn==0.42.0
+redis==8.0.0

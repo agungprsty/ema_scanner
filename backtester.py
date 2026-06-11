@@ -11,8 +11,8 @@ from src.data_feed.binance_client import create_futures_client
 from src.strategy.indicators import compute_indicators
 from src.data_feed.macro_filter import compute_btc_bias
 from src.config.settings import (
-    GC_ATR_SL_MULTIPLIER,
-    GC_ENTRY_FEE_PCT, SIGNAL_COOLDOWN_CANDLES,
+    LONG_ATR_SL_MULTIPLIER,
+    LONG_ENTRY_FEE_PCT, SIGNAL_COOLDOWN_CANDLES,
     RISK_PER_TRADE_PERCENT, BTC_STRENGTH_MIN, MAX_HOLDING_CANDLES,
 )
 
@@ -82,10 +82,10 @@ def _detect_golden_cross(df: pd.DataFrame, idx: int) -> bool:
         return False
     curr = df.iloc[idx]
     prev = df.iloc[idx - 1]
-    ema5_curr = curr.get("EMA5", 0)
-    ema20_curr = curr.get("EMA20", 0)
-    ema5_prev = prev.get("EMA5", 0)
-    ema20_prev = prev.get("EMA20", 0)
+    ema5_curr = curr.get("EMA10", 0)
+    ema20_curr = curr.get("EMA25", 0)
+    ema5_prev = prev.get("EMA10", 0)
+    ema20_prev = prev.get("EMA25", 0)
     if any(pd.isna(v) for v in [ema5_curr, ema20_curr, ema5_prev, ema20_prev]):
         return False
     return ema5_prev <= ema20_prev and ema5_curr > ema20_curr
@@ -96,10 +96,10 @@ def _detect_death_cross(df: pd.DataFrame, idx: int) -> bool:
         return False
     curr = df.iloc[idx]
     prev = df.iloc[idx - 1]
-    ema5_curr = curr.get("EMA5", 0)
-    ema20_curr = curr.get("EMA20", 0)
-    ema5_prev = prev.get("EMA5", 0)
-    ema20_prev = prev.get("EMA20", 0)
+    ema5_curr = curr.get("EMA10", 0)
+    ema20_curr = curr.get("EMA25", 0)
+    ema5_prev = prev.get("EMA10", 0)
+    ema20_prev = prev.get("EMA25", 0)
     if any(pd.isna(v) for v in [ema5_curr, ema20_curr, ema5_prev, ema20_prev]):
         return False
     return ema5_prev >= ema20_prev and ema5_curr < ema20_curr
@@ -110,10 +110,10 @@ def _calc_cross_price(df: pd.DataFrame, idx: int) -> float:
         return 0.0
     curr = df.iloc[idx]
     prev = df.iloc[idx - 1]
-    ema5_curr = curr.get("EMA5", 0)
-    ema20_curr = curr.get("EMA20", 0)
-    ema5_prev = prev.get("EMA5", 0)
-    ema20_prev = prev.get("EMA20", 0)
+    ema5_curr = curr.get("EMA10", 0)
+    ema20_curr = curr.get("EMA25", 0)
+    ema5_prev = prev.get("EMA10", 0)
+    ema20_prev = prev.get("EMA25", 0)
     if any(pd.isna(v) for v in [ema5_curr, ema20_curr, ema5_prev, ema20_prev]):
         return 0.0
     diff_prev = ema5_prev - ema20_prev
@@ -130,10 +130,10 @@ def _detect_early_long(df: pd.DataFrame, idx: int) -> bool:
         return False
     curr = df.iloc[idx]
     prev = df.iloc[idx - 1]
-    ema5_curr = curr.get("EMA5", 0)
-    ema20_curr = curr.get("EMA20", 0)
-    ema5_prev = prev.get("EMA5", 0)
-    ema20_prev = prev.get("EMA20", 0)
+    ema5_curr = curr.get("EMA10", 0)
+    ema20_curr = curr.get("EMA25", 0)
+    ema5_prev = prev.get("EMA10", 0)
+    ema20_prev = prev.get("EMA25", 0)
     rsi = curr.get("RSI", 0)
     if any(pd.isna(v) for v in [ema5_curr, ema20_curr, ema5_prev, ema20_prev, rsi]):
         return False
@@ -149,10 +149,10 @@ def _detect_early_short(df: pd.DataFrame, idx: int) -> bool:
         return False
     curr = df.iloc[idx]
     prev = df.iloc[idx - 1]
-    ema5_curr = curr.get("EMA5", 0)
-    ema20_curr = curr.get("EMA20", 0)
-    ema5_prev = prev.get("EMA5", 0)
-    ema20_prev = prev.get("EMA20", 0)
+    ema5_curr = curr.get("EMA10", 0)
+    ema20_curr = curr.get("EMA25", 0)
+    ema5_prev = prev.get("EMA10", 0)
+    ema20_prev = prev.get("EMA25", 0)
     rsi = curr.get("RSI", 0)
     if any(pd.isna(v) for v in [ema5_curr, ema20_curr, ema5_prev, ema20_prev, rsi]):
         return False
@@ -227,17 +227,17 @@ def run_backtest(
         early_short = _detect_early_short(df_entry, i)
 
         # --- Macro 4h filter (rekomendasi) ---
-        ema5_4h = candle.get("EMA5_4h", 0)
+        ema5_4h = candle.get("EMA10_4h", 0)
         close_price = candle["close"]
         if pd.isna(ema5_4h) or ema5_4h <= 0:
             macro_pass = False
-            macro_label = "N/A (no EMA5_4h)"
+            macro_label = "N/A (no EMA10_4h)"
         elif gc_raw or early_long:
             macro_pass = close_price > ema5_4h
-            macro_label = f"{'PASS' if macro_pass else 'FAIL'} (Close {'>' if macro_pass else '<='} EMA5_4h)"
+            macro_label = f"{'PASS' if macro_pass else 'FAIL'} (Close {'>' if macro_pass else '<='} EMA10_4h)"
         elif dc_raw or early_short:
             macro_pass = close_price < ema5_4h
-            macro_label = f"{'PASS' if macro_pass else 'FAIL'} (Close {'<' if macro_pass else '>='} EMA5_4h)"
+            macro_label = f"{'PASS' if macro_pass else 'FAIL'} (Close {'<' if macro_pass else '>='} EMA10_4h)"
         else:
             macro_pass = False
             macro_label = "N/A (no signal)"
@@ -246,8 +246,8 @@ def run_backtest(
         signal_detected = gc_raw or dc_raw or early_long or early_short
         if signal_detected:
             close = candle["close"]
-            ema20_val = candle.get("EMA20", 0)
-            ema5_val = candle.get("EMA5", 0)
+            ema20_val = candle.get("EMA25", 0)
+            ema5_val = candle.get("EMA10", 0)
             rsi_val = candle.get("RSI", 0)
             cross_price = _calc_cross_price(df_entry, i) if (gc_raw or dc_raw) else 0.0
 
@@ -313,11 +313,11 @@ def run_backtest(
                        (not is_long and c["high"] >= active_trade.sl_price):
                         if is_long:
                             actual_sl = min(active_trade.sl_price, c["open"])
-                            exit_fee = remaining_qty * actual_sl * GC_ENTRY_FEE_PCT / 100
+                            exit_fee = remaining_qty * actual_sl * LONG_ENTRY_FEE_PCT / 100
                             cumulative_pnl += (actual_sl - active_trade.entry_price) * remaining_qty - exit_fee
                         else:
                             actual_sl = max(active_trade.sl_price, c["open"])
-                            exit_fee = remaining_qty * actual_sl * GC_ENTRY_FEE_PCT / 100
+                            exit_fee = remaining_qty * actual_sl * LONG_ENTRY_FEE_PCT / 100
                             cumulative_pnl += (active_trade.entry_price - actual_sl) * remaining_qty - exit_fee
                         total_qty_exited += remaining_qty
                         exit_price = actual_sl
@@ -329,11 +329,11 @@ def run_backtest(
                        (not is_long and c["low"] <= active_trade.tp1_price):
                         if is_long:
                             actual_tp1 = max(active_trade.tp1_price, c["open"])
-                            exit_fee = tp1_qty * actual_tp1 * GC_ENTRY_FEE_PCT / 100
+                            exit_fee = tp1_qty * actual_tp1 * LONG_ENTRY_FEE_PCT / 100
                             tp1_pnl = (actual_tp1 - active_trade.entry_price) * tp1_qty - exit_fee
                         else:
                             actual_tp1 = min(active_trade.tp1_price, c["open"])
-                            exit_fee = tp1_qty * actual_tp1 * GC_ENTRY_FEE_PCT / 100
+                            exit_fee = tp1_qty * actual_tp1 * LONG_ENTRY_FEE_PCT / 100
                             tp1_pnl = (active_trade.entry_price - actual_tp1) * tp1_qty - exit_fee
                         cumulative_pnl += tp1_pnl
                         total_qty_exited += tp1_qty
@@ -341,8 +341,8 @@ def run_backtest(
                         tp1_hit = True
                         active_trade.tp1_hit = True
                         active_trade.remaining_qty = remaining_qty
-                        active_trade.bep_price = active_trade.entry_price * (1 + GC_ENTRY_FEE_PCT / 100) if is_long \
-                            else active_trade.entry_price * (1 - GC_ENTRY_FEE_PCT / 100)
+                        active_trade.bep_price = active_trade.entry_price * (1 + LONG_ENTRY_FEE_PCT / 100) if is_long \
+                            else active_trade.entry_price * (1 - LONG_ENTRY_FEE_PCT / 100)
                         print(f"  [TRADE] #{active_trade.trade_id} TP1 HIT at {c['timestamp']} ({actual_tp1:.4f})")
                         continue
                 else:
@@ -350,11 +350,11 @@ def run_backtest(
                        (not is_long and c["low"] <= active_trade.tp2_price):
                         if is_long:
                             actual_tp2 = max(active_trade.tp2_price, c["open"])
-                            exit_fee = remaining_qty * actual_tp2 * GC_ENTRY_FEE_PCT / 100
+                            exit_fee = remaining_qty * actual_tp2 * LONG_ENTRY_FEE_PCT / 100
                             cumulative_pnl += (actual_tp2 - active_trade.entry_price) * remaining_qty - exit_fee
                         else:
                             actual_tp2 = min(active_trade.tp2_price, c["open"])
-                            exit_fee = remaining_qty * actual_tp2 * GC_ENTRY_FEE_PCT / 100
+                            exit_fee = remaining_qty * actual_tp2 * LONG_ENTRY_FEE_PCT / 100
                             cumulative_pnl += (active_trade.entry_price - actual_tp2) * remaining_qty - exit_fee
                         total_qty_exited += remaining_qty
                         exit_price = actual_tp2
@@ -367,11 +367,11 @@ def run_backtest(
                        (not is_long and c["high"] >= active_trade.bep_price):
                         if is_long:
                             actual_bep = min(active_trade.bep_price, c["open"])
-                            exit_fee = remaining_qty * actual_bep * GC_ENTRY_FEE_PCT / 100
+                            exit_fee = remaining_qty * actual_bep * LONG_ENTRY_FEE_PCT / 100
                             cumulative_pnl += (actual_bep - active_trade.entry_price) * remaining_qty - exit_fee
                         else:
                             actual_bep = max(active_trade.bep_price, c["open"])
-                            exit_fee = remaining_qty * actual_bep * GC_ENTRY_FEE_PCT / 100
+                            exit_fee = remaining_qty * actual_bep * LONG_ENTRY_FEE_PCT / 100
                             cumulative_pnl += (active_trade.entry_price - actual_bep) * remaining_qty - exit_fee
                         total_qty_exited += remaining_qty
                         exit_price = actual_bep
@@ -382,7 +382,7 @@ def run_backtest(
 
                 if candle_idx >= MAX_HOLDING_CANDLES and remaining_qty > 0:
                     exit_price = c["close"]
-                    exit_fee = remaining_qty * exit_price * GC_ENTRY_FEE_PCT / 100
+                    exit_fee = remaining_qty * exit_price * LONG_ENTRY_FEE_PCT / 100
                     if is_long:
                         cumulative_pnl += (exit_price - active_trade.entry_price) * remaining_qty - exit_fee
                     else:
@@ -392,7 +392,7 @@ def run_backtest(
                     closed = True
                     break
 
-            entry_fee_total = active_trade.position_size * active_trade.entry_price * GC_ENTRY_FEE_PCT / 100
+            entry_fee_total = active_trade.position_size * active_trade.entry_price * LONG_ENTRY_FEE_PCT / 100
             active_trade.pnl = cumulative_pnl - entry_fee_total
             active_trade.status = "WIN" if active_trade.pnl > 0 else "LOSS"
 
@@ -450,7 +450,7 @@ def run_backtest(
         atr_val = candle.get("ATR", 0)
         if pd.isna(atr_val) or atr_val <= 0:
             continue
-        risk_dist = GC_ATR_SL_MULTIPLIER * atr_val
+        risk_dist = LONG_ATR_SL_MULTIPLIER * atr_val
         if risk_dist <= 0:
             continue
 
@@ -485,12 +485,12 @@ def run_backtest(
             active_trade.sl_price = entry_price - risk_dist
             active_trade.tp1_price = entry_price + risk_dist
             active_trade.tp2_price = entry_price + 2 * risk_dist
-            active_trade.bep_price = entry_price * (1 + GC_ENTRY_FEE_PCT / 100)
+            active_trade.bep_price = entry_price * (1 + LONG_ENTRY_FEE_PCT / 100)
         else:
             active_trade.sl_price = entry_price + risk_dist
             active_trade.tp1_price = entry_price - risk_dist
             active_trade.tp2_price = entry_price - 2 * risk_dist
-            active_trade.bep_price = entry_price * (1 - GC_ENTRY_FEE_PCT / 100)
+            active_trade.bep_price = entry_price * (1 - LONG_ENTRY_FEE_PCT / 100)
 
         active_trade.remaining_qty = pos_size
         print(f"  [TRADE] #{active_trade.trade_id} MARKET ENTRY at {candle['timestamp']} "
@@ -563,7 +563,7 @@ def run_backtest(
 
 def print_report(result: BacktestResult) -> None:
     print("=" * 68)
-    print("           BACKTEST SETUP — Market Order (EMA5/20 + RSI)")
+    print("           BACKTEST SETUP — Market Order (EMA10/20 + RSI)")
     print("=" * 68)
     print(f"Symbol               : {result.symbol}")
     print(f"TF Stack             : {result.timeframe} / {result.htf}")
@@ -638,29 +638,29 @@ def generate_trade_chart(df: pd.DataFrame, results: BacktestResult, output_path:
     ema5_4h_color = "rgba(255, 255, 0, 0.7)"
 
     fig.add_trace(go.Scatter(
-        x=df["timestamp"], y=df["EMA20"],
+        x=df["timestamp"], y=df["EMA25"],
         line=dict(color=ema20_color, width=1.5),
-        name="EMA20 (30m)",
+        name="EMA25 (30m)",
     ), row=1, col=1)
 
     fig.add_trace(go.Scatter(
-        x=df["timestamp"], y=df["EMA5"],
+        x=df["timestamp"], y=df["EMA10"],
         line=dict(color=ema5_color, width=1.5),
-        name="EMA5 (30m)",
+        name="EMA10 (30m)",
     ), row=1, col=1)
 
-    if "EMA5_4h" in df.columns:
+    if "EMA10_4h" in df.columns:
         fig.add_trace(go.Scatter(
-            x=df["timestamp"], y=df["EMA5_4h"],
+            x=df["timestamp"], y=df["EMA10_4h"],
             line=dict(color=ema5_4h_color, width=1.5, dash="dot"),
-            name="EMA5 (4h) — Macro",
+            name="EMA10 (4h) — Macro",
         ), row=1, col=1)
 
-    if "EMA20_4h" in df.columns:
+    if "EMA25_4h" in df.columns:
         fig.add_trace(go.Scatter(
-            x=df["timestamp"], y=df["EMA20_4h"],
+            x=df["timestamp"], y=df["EMA25_4h"],
             line=dict(color=ema20_4h_color, width=1.5, dash="dash"),
-            name="EMA20 (4h)",
+            name="EMA25 (4h)",
         ), row=1, col=1)
 
     # --- Raw Cross Markers ---
@@ -701,7 +701,7 @@ def generate_trade_chart(df: pd.DataFrame, results: BacktestResult, output_path:
         hover = (
             f"<b>[{label}]</b><br>"
             f"Time: {ts}<br>"
-            f"Close: {close:.4f} | EMA20: {xc['ema20']:.4f} | EMA5: {xc['ema5']:.4f}<br>"
+            f"Close: {close:.4f} | EMA25: {xc['ema20']:.4f} | EMA10: {xc['ema5']:.4f}<br>"
             f"RSI: {xc.get('rsi', 0):.1f}<br>"
             f"Volume Confirm: [{xc['volume_check']}] ({xc['volume_ratio']:.2f}x)<br>"
             f"Macro Filter: {xc['macro_check']}<br>"
@@ -836,7 +836,7 @@ def generate_trade_chart(df: pd.DataFrame, results: BacktestResult, output_path:
         ), row=2, col=1)
 
     fig.update_layout(
-        title=f"Backtest: {results.symbol} — Market Order (EMA5/20 + RSI) 1:2 R:R<br><sup>{results.start_date} to {results.end_date} | "
+        title=f"Backtest: {results.symbol} — Market Order (EMA10/20 + RSI) 1:2 R:R<br><sup>{results.start_date} to {results.end_date} | "
                f"Signals: {results.total_signals} | Filled: {results.filled} | Win Rate: {results.win_rate:.1f}% | "
                f"PnL: ${results.final_balance - results.initial_balance:+.2f}</sup>",
         xaxis_title="Time",
@@ -875,7 +875,7 @@ def fetch_klines_paginated(client, symbol, interval, total_candles=10000, limit=
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Market Order Backtester (EMA5/20 + RSI Early Entry)")
+    parser = argparse.ArgumentParser(description="Market Order Backtester (EMA10/20 + RSI Early Entry)")
     parser.add_argument("--symbol", default="BTCUSDT", help="Trading pair")
     parser.add_argument("--timeframe", default="30m", help="Entry timeframe (golden cross)")
     parser.add_argument("--htf", default="4h", help="Macro timeframe")
@@ -906,11 +906,11 @@ def main():
     raw_btc = fetch_klines_paginated(client, "BTCUSDT", args.htf, total_candles=macro_limit)
     df_btc = compute_indicators(_raw_to_df(raw_btc)) if raw_btc and len(raw_btc) >= 100 else None
 
-    if df_macro is not None and "EMA5" in df_macro.columns:
-        macro_cols = df_macro[["timestamp", "close", "EMA5", "EMA20"]].dropna().rename(
-            columns={"close": "close_4h", "EMA5": "EMA5_4h", "EMA20": "EMA20_4h"})
+    if df_macro is not None and "EMA10" in df_macro.columns:
+        macro_cols = df_macro[["timestamp", "close", "EMA10", "EMA25"]].dropna().rename(
+            columns={"close": "close_4h", "EMA10": "EMA10_4h", "EMA25": "EMA25_4h"})
         df_entry = pd.merge_asof(df_entry, macro_cols, on="timestamp", direction="backward")
-        df_entry = df_entry.dropna(subset=["EMA5_4h"]).reset_index(drop=True)
+        df_entry = df_entry.dropna(subset=["EMA10_4h"]).reset_index(drop=True)
     else:
         print("No macro data available for merge")
         return

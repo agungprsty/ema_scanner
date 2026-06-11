@@ -121,7 +121,7 @@ def calculate_position(
     qty = (raw_qty / step_dec).to_integral_value(rounding=ROUND_DOWN) * step_dec
 
     # TP1_EXIT_PCT at TP1, remaining at TP2
-    qty_tp1 = (qty * Decimal(str(TP1_EXIT_PCT))).to_integral_value(rounding=ROUND_DOWN) * step_dec
+    qty_tp1 = (qty * Decimal(str(TP1_EXIT_PCT)) / step_dec).to_integral_value(rounding=ROUND_DOWN) * step_dec
 
     # Round prices to tick_size
     tick_dec = Decimal(str(tick_size))

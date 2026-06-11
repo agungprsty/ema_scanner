@@ -9,7 +9,8 @@ from typing import Annotated
 
 from src.config.settings import (
     TOTAL_SIGNALS, RISK_PER_TRADE_PERCENT, DRY_RUN,
-    BTC_STRENGTH_MIN, GC_ENTRY_FEE_PCT,
+    BTC_STRENGTH_MIN, LONG_ENTRY_FEE_PCT, SHORT_ENTRY_FEE_PCT,
+    CROSS_LOOKBACK_CANDLES,
 )
 from src.data_feed.binance_client import create_futures_client
 from src.data_feed.ohlcv import fetch_klines
@@ -18,8 +19,9 @@ from src.strategy.indicators import compute_indicators
 from src.strategy.blueprint import macroscan_4h, check_entry, Signal
 from src.risk_manager.calculator import calculate_position
 from src.execution.order import place_limit_order
-from src.services.firebase import init_firebase, create_trade, update_trade_status
+from src.services.firebase import init_firebase, create_trade, update_trade_status, get_db
 from src.services.telegram import send_alert_async
+from src.services.redis_client import init_redis, close_redis, is_cross_detected, mark_cross_detected
 from src.execution.monitor import monitor_loop
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -27,10 +29,6 @@ logger = logging.getLogger(__name__)
 
 _monitor_task = None
 _client = None
-
-_cache: dict[str, dict] = {}
-EXCHANGE_INFO_TTL = 300
-TICKER_TTL = 60
 CONCURRENCY = 10
 
 
@@ -41,19 +39,10 @@ def _get_client():
     return _client
 
 
-async def _get_cached(client, key: str, fetch_fn, ttl: int):
-    now = time.monotonic()
-    cached = _cache.get(key)
-    if cached and now - cached["ts"] < ttl:
-        return cached["data"]
-    data = await asyncio.to_thread(fetch_fn)
-    _cache[key] = {"data": data, "ts": now}
-    return data
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_firebase()
+    await init_redis()
     global _monitor_task
     client = _get_client()
     if not DRY_RUN:
@@ -61,6 +50,7 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("DRY RUN mode — monitor loop disabled")
     yield
+    await close_redis()
     if _monitor_task:
         _monitor_task.cancel()
 
@@ -71,12 +61,12 @@ app = FastAPI(title="Crypto Blueprint Bot", lifespan=lifespan)
 @app.get("/")
 def root():
     mode = "DRY_RUN" if DRY_RUN else "PRODUCTION"
-    return {"status": "running", "version": "v8.0.0", "mode": mode, "strategy": "EMA5/EMA20 Cross (1h/4h)"}
+    return {"status": "running", "version": "v8.0.0", "mode": mode, "strategy": "EMA10/EMA25 Cross LONG/SHORT (1h/4h)"}
 
 
 @app.get("/api/scan")
 async def scan(
-    timeframe: Annotated[str, Query(description="Entry timeframe (golden cross)")] = "1h",
+    timeframe: Annotated[str, Query(description="Entry timeframe (cross detection)")] = "1h",
     htf: Annotated[str, Query(description="Macro timeframe (filter)")] = "4h",
     limit: Annotated[int, Query(description="Candles to fetch for LTF")] = 500,
     macro_limit: Annotated[int, Query(description="Candles to fetch for HTF")] = 200,
@@ -103,14 +93,14 @@ async def scan(
             scan_time = f"{time.perf_counter() - start:.2f}s"
             return {"status": "skipped", "btc_bias": btc_bias.side, "strength": btc_bias.strength, "execution_time": scan_time, "message": "BTC bias too weak"}
 
-        exchange_info = await _get_cached(client, "exchange_info", client.exchange_info, EXCHANGE_INFO_TTL)
+        exchange_info = await asyncio.to_thread(client.exchange_info)
         symbols_meta = {}
         for s in exchange_info.get("symbols", []):
             if s.get("quoteAsset") == "USDT" and s.get("status") == "TRADING":
                 symbols_meta[s["symbol"]] = s
 
         vol_threshold = volume_m * 1_000_000
-        stats_24h = await _get_cached(client, "ticker_24h", client.ticker_24hr_price_change, TICKER_TTL)
+        stats_24h = await asyncio.to_thread(client.ticker_24hr_price_change)
         liquid_symbols = [
             s["symbol"] for s in stats_24h
             if float(s.get("quoteVolume", 0)) > vol_threshold
@@ -128,7 +118,8 @@ async def scan(
                 if df_macro is None:
                     return None
 
-                if not macroscan_4h(df_macro):
+                macro_bias = macroscan_4h(df_macro)
+                if macro_bias == "NEUTRAL":
                     return None
 
                 df_entry = await asyncio.to_thread(fetch_klines, client, sym, timeframe, limit)
@@ -138,26 +129,47 @@ async def scan(
                 if df_entry is None:
                     return None
 
-                macro_cols = df_macro[["timestamp", "close", "EMA20"]].dropna().rename(
-                    columns={"close": "close_4h", "EMA20": "EMA20_4h"})
+                macro_cols = df_macro[["timestamp", "close", "EMA25"]].dropna().rename(
+                    columns={"close": "close_4h", "EMA25": "EMA25_4h"})
                 df_entry = pd.merge_asof(df_entry, macro_cols, on="timestamp", direction="backward")
-                df_entry = df_entry.dropna(subset=["EMA20_4h"])
+                df_entry = df_entry.dropna(subset=["EMA25_4h"])
 
                 if len(df_entry) < 50:
                     return None
 
-                check_entry_kwargs = {
-                    "btc_bias": btc_bias.side,
-                    "symbol": sym,
-                }
-                return check_entry(df_1h=df_entry, **check_entry_kwargs)
+                sig = check_entry(
+                    df_1h=df_entry,
+                    btc_bias=btc_bias.side,
+                    symbol=sym,
+                    macro_bias=macro_bias,
+                    lookback_candles=CROSS_LOOKBACK_CANDLES,
+                )
+
+                if sig:
+                    if await is_cross_detected(sig.side, sym, sig.cross_candle_ms):
+                        logger.debug("Dedup skip: %s %s at %s", sig.side, sym, sig.cross_candle_ms)
+                        return None
+                    await mark_cross_detected(sig.side, sym, sig.cross_candle_ms)
+
+                return sig
 
         tasks = [_detect(sym) for sym in liquid_symbols]
         results = await asyncio.gather(*tasks)
         signals: list[Signal] = [r for r in results if r is not None][:TOTAL_SIGNALS]
 
         results_json = []
+        telegram_parts = []
         for sig in signals:
+            existing_active = list(get_db().collection("active_trades")
+                .where("symbol", "==", sig.symbol)
+                .where("status", "in", ["PENDING", "LIMIT_PLACED", "FILLED"])
+                .stream())
+            if existing_active:
+                logger.info(
+                    "%s has %d active trade(s) — creating additional entry (trend following)",
+                    sig.symbol, len(existing_active),
+                )
+
             meta = symbols_meta.get(sig.symbol, {})
             filters = {f["filterType"]: f for f in meta.get("filters", [])}
             price_filter = filters.get("PRICE_FILTER", {})
@@ -186,10 +198,13 @@ async def scan(
                 risk_pct=RISK_PER_TRADE_PERCENT,
                 tick_size=tick_size,
                 step_size=step_size,
-                tp1_explicit=float(sig.tp1_price),
+                tp1_explicit=float(sig.tp1_price) if sig.tp1_price > 0 else None,
             )
 
-            bep = float(spec.entry) * (1 + GC_ENTRY_FEE_PCT / 100)
+            if sig.side == "LONG":
+                bep = float(spec.entry) * (1 + LONG_ENTRY_FEE_PCT / 100)
+            else:
+                bep = float(spec.entry) * (1 - SHORT_ENTRY_FEE_PCT / 100)
             trade_id = create_trade(
                 symbol=spec.symbol,
                 side=spec.side,
@@ -216,18 +231,19 @@ async def scan(
 
             pct_sl = abs(float(spec.entry) - float(spec.stop_loss)) / float(spec.entry) * 100
             pct_tp = abs(float(spec.take_profit) - float(spec.entry)) / float(spec.entry) * 100
-            msg = (
-                f"{mode_label} | {status_msg}\n"
-                f"{spec.side} {spec.symbol}\n"
-                f"Entry: {spec.entry}\n"
-                f"SL: {spec.stop_loss} ({pct_sl:.2f}%)\n"
-                f"TP1 (50%): {spec.take_profit} ({pct_tp:.2f}%)\n"
-                f"BEP after TP1: {bep:.4f}\n"
-                f"Qty: {spec.quantity} | TP1 Qty: {spec.quantity_tp1}"
+            logger.info(
+                "%s | %s\n%s %s\nEntry: %s\nSL: %s (%.2f%%)\nTP1 (50%%): %s (%.2f%%)\nBEP after TP1: %.4f\nQty: %s | TP1 Qty: %s",
+                mode_label, status_msg, spec.side, spec.symbol, spec.entry,
+                spec.stop_loss, pct_sl, spec.take_profit, pct_tp, bep, spec.quantity, spec.quantity_tp1,
             )
-            if send_telegram:
-                send_alert_async(msg)
-            logger.info(msg)
+            emoji = "🟢" if spec.side == "LONG" else "🔴"
+            telegram_parts.append(
+                f"{emoji} {spec.side} ${spec.symbol}\n"
+                f"📍 Entry: {spec.entry}\n"
+                f"⛔ SL: {spec.stop_loss} ({pct_sl:.2f}%)\n"
+                f"💰 TP1 (50%): {spec.take_profit} ({pct_tp:.2f}%)\n"
+                f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈"
+            )
 
             results_json.append({
                 "symbol": spec.symbol,
@@ -240,6 +256,14 @@ async def scan(
                 "reason": sig.reason,
                 "status": status_msg,
             })
+
+        if send_telegram and telegram_parts:
+            header = (
+                "🔔 EMA CROSSOVER\n"
+                "Asymmetric Bets (RR 1:1.5)\n"
+                "━━━━━━━━━━━━━━━\n"
+            )
+            send_alert_async(header + "\n".join(telegram_parts))
 
         return {
             "status": "success",

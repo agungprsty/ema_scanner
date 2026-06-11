@@ -58,9 +58,20 @@ PULLBACK_DISTANCE_PCT = float(os.getenv("PULLBACK_DISTANCE_PCT", "5.0"))
 VOLUME_RATIO_MAX = float(os.getenv("VOLUME_RATIO_MAX", "2.0"))
 
 # Golden Cross Strategy Parameters (1H Entry / 4H Macro)
-GC_ATR_SL_MULTIPLIER = float(os.getenv("GC_ATR_SL_MULTIPLIER", "1.5"))
-GC_LOOKBACK_CANDLES = int(os.getenv("GC_LOOKBACK_CANDLES", "10"))
-GC_ENTRY_FEE_PCT = float(os.getenv("GC_ENTRY_FEE_PCT", "0.05"))
+LONG_ATR_SL_MULTIPLIER = float(os.getenv("LONG_ATR_SL_MULTIPLIER", "1.5"))
+LONG_LOOKBACK_CANDLES = int(os.getenv("LONG_LOOKBACK_CANDLES", "10"))
+LONG_ENTRY_FEE_PCT = float(os.getenv("LONG_ENTRY_FEE_PCT", "0.05"))
+
+# Death Cross / Short Strategy Parameters
+SHORT_ATR_SL_MULTIPLIER = float(os.getenv("SHORT_ATR_SL_MULTIPLIER", "2.0"))
+SHORT_LOOKBACK_CANDLES = int(os.getenv("SHORT_LOOKBACK_CANDLES", "10"))
+SHORT_ENTRY_FEE_PCT = float(os.getenv("SHORT_ENTRY_FEE_PCT", "0.05"))
+
+# Redis
+REDIS_URL = os.getenv("REDIS_URL", "")
+
+# Cross Detection
+CROSS_LOOKBACK_CANDLES = int(os.getenv("CROSS_LOOKBACK_CANDLES", "5"))
 
 # Backtest
 BACKTEST_INITIAL_BALANCE = float(os.getenv("BACKTEST_INITIAL_BALANCE", "100"))
