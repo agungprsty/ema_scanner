@@ -1,142 +1,170 @@
-# EMA5/EMA20 Cross Scanner — Strategy (1h/4h)
+# EMA5/EMA20 Cross Scanner — Quantitative Futures Trading Bot
 
-Bot perdagangan crypto futures (Binance) berbasis Python yang menerapkan strategi **EMA5/EMA20 Cross** dengan **Macro Filter 4H** secara real-time. Menggunakan arsitektur modular dengan Firebase sebagai state management dan Telegram sebagai notifikasi.
+A production-grade Python bot for Binance USDⓈ-M Futures that implements a quantitative **EMA5/EMA20 cross strategy** with a **4H macro trend filter**. The system features a modular architecture with Firebase-backed state management and real-time Telegram notifications.
 
-## Fitur Utama
-- **Two-Stage Screening**: Macro filter 4H → entry trigger 1H (efisien)
-- **EMA5/EMA20 Cross Entry**: EMA5 crossover EMA20 pada timeframe 1H
-- **Macro Filter 4H**: Hanya trading saat price > EMA20 dan EMA20 melandai/naik
-- **Volume Confirmation**: Entry hanya saat volume > MA 20
-- **ATR-Based Stop Loss**: SL dinamis berdasarkan Lowest Low + 1.5×ATR(14)
-- **Partial Take Profit**: 50% posisi di TP1 (EMA20 4H), sisa trailing
-- **Break Even Protection**: SL otomatis pindah ke BEP setelah TP1 hit
-- **Telegram Notification**: Notifikasi real-time via Telegram Bot API
-- **Firebase Integration**: State management tahan crash dengan Firestore transaction
-- **Macro Filter**: Hanya trading saat BTC bias terkonfirmasi (bullish)
-- **Auto-Liquidity Filter**: Hanya memindai koin dengan volume harian > $50,000,000 USDT
-- **Auto-Cancel Order**: Monitoring order kadaluarsa dan cancel otomatis
-- **Backtesting Engine**: Simulasi historis lengkap dengan metrik performa
-- **Concurrent Scanning**: Memproses 10 simbol secara paralel untuk scanning lebih cepat
+## Key Capabilities
 
-## Tech Stack
-- **Framework**: [FastAPI](https://fastapi.tiangolo.com/)
-- **Exchange**: [binance-futures-connector-python](https://github.com/binance/binance-futures-connector-python) (UM-Futures)
-- **Database**: [Firebase Admin](https://firebase.google.com/docs/admin/setup) (Firestore)
-- **Data**: [Pandas](https://pandas.pydata.org/) + [pandas-ta](https://github.com/twopirllc/pandas-ta)
-- **Notifikasi**: [httpx](https://www.python-httpx.org/) → Telegram Bot API
-- **Runtime**: FastAPI + Uvicorn
+- **Two-Stage Screening Pipeline**: Macro-level trend filter (4H) narrows the watchlist before triggering entry signals on the 1H timeframe
+- **EMA5/EMA20 Golden Cross Entry**: Detects EMA5 crossovers above EMA20 on the 1H chart as entry signals
+- **4H Macro Trend Filter**: Restricts trading to symbols trading above a rising EMA20 on the 4H timeframe
+- **Volume-Confirmed Entries**: Requires volume to exceed the 20-period moving average before triggering
+- **ATR-Based Stop Loss**: Dynamic stop loss calculated from the lowest low of the lookback window minus 1.5× ATR(14)
+- **Partial Take-Profit (50%)**: Half the position exits at TP1 (EMA20 of the 4H macro timeframe), the remainder trails to breakeven
+- **Automated Breakeven Management**: Stop loss automatically moves to breakeven (entry + 0.05% fee buffer) after TP1 is hit
+- **Real-Time Telegram Alerts**: Trade signals, fills, and status updates delivered via Telegram Bot API
+- **Firestore State Management**: Crash-resistant state persistence using Firestore transactions and write batches
+- **BTC Macro Bias Filter**: Scans are gated by Bitcoin's directional bias (bullish/bearish) with configurable strength thresholds
+- **Liquidity Filter**: Automatically excludes low-volume pairs below a configurable daily USDT threshold
+- **Auto-Cancel Stale Orders**: Monitors open limit orders and cancels those exceeding a configurable time-to-live
+- **Concurrent Symbol Scanning**: Processes up to 10 symbols in parallel, reducing scan time by approximately 4x
+- **Historical Backtesting Engine**: Full-featured simulator with performance metrics and visual chart output
 
-## Struktur Direktori
+## Technology Stack
+
+| Layer | Technology |
+|---|---|
+| API Framework | [FastAPI](https://fastapi.tiangolo.com/) |
+| Exchange Connectivity | [binance-futures-connector-python](https://github.com/binance/binance-futures-connector-python) (UM-Futures) |
+| Database | [Firebase Admin SDK](https://firebase.google.com/docs/admin/setup) — Firestore |
+| Data Processing | [Pandas](https://pandas.pydata.org/) + [pandas-ta](https://github.com/twopirllc/pandas-ta) |
+| Messaging | [httpx](https://www.python-httpx.org/) → Telegram Bot API |
+| Runtime | FastAPI + Uvicorn (ASGI) |
+
+## Project Structure
 
 ```
 src/
-├── config/           # Kredensial & parameter (settings.py)
-├── data_feed/        # Fetch OHLCV Binance, macro filter BTC
-├── strategy/         # Indikator (EMA, ATR, RSI, ADX) & blueprint logic
-├── risk_manager/     # Position sizing, SL, TP calculator
-├── execution/        # Order routing, auto-cancel, monitoring
-├── services/         # Firebase & Telegram integration
-└── main.py           # FastAPI app (orchestrator)
+├── config/           # Credentials and trading parameters (settings.py)
+├── data_feed/        # OHLCV data ingestion, Binance client, BTC macro filter
+├── strategy/         # Technical indicators (EMA, ATR, RSI, ADX) and signal logic
+├── risk_manager/     # Position sizing, stop-loss, and take-profit calculator
+├── execution/        # Order routing, auto-cancellation, position monitoring
+├── services/         # Firebase Firestore and Telegram integration layer
+└── main.py           # FastAPI application entry point and orchestrator
 ```
 
-## Strategi: EMA5/EMA20 Cross (1h/4h)
+## Strategy Overview: EMA5/EMA20 Cross (1H / 4H)
 
-### Tahap 1 — Macro Filter 4H (Watchlist)
-| Kondisi | Rumus |
+### Stage 1 — Macro Trend Filter (4H Watchlist)
+
+The system first screens all liquid USDT pairs against a macro-level trend filter. A symbol enters the watchlist when both conditions are satisfied:
+
+| Condition | Formula |
 |---|---|
-| Price di atas EMA20 | `Close(4H) > EMA20(4H)` |
-| EMA20 melandai/naik | `EMA20(4H)[now] >= EMA20(4H)[3 candles ago]` |
+| Price above EMA20 | `Close(4H) > EMA20(4H)` |
+| EMA20 sloping upward | `EMA20(4H)[current] >= EMA20(4H)[3 bars ago]` |
 
-Jika kedua kondisi terpenuhi → aset masuk **Watchlist Long**.
+### Stage 2 — Entry Trigger (1H Golden Cross)
 
-### Tahap 2 — Entry Trigger 1H (Golden Cross)
-| Kondisi | Rumus |
+Symbols that pass the macro filter are evaluated on the 1H timeframe for an entry trigger:
+
+| Condition | Formula |
 |---|---|
-| Golden Cross | `EMA5(1H) cross above EMA20(1H)` |
-| Volume spike | `Volume(1H) > MA_Volume_20(1H)` |
+| EMA5/EMA20 Golden Cross | `EMA5(1H) crosses above EMA20(1H)` |
+| Volume confirmation | `Volume(1H) > SMA_Volume_20(1H)` |
 
-### Manajemen Risiko
-| Parameter | Rumus |
+### Risk Management Framework
+
+| Parameter | Formula |
 |---|---|
-| Stop Loss | `Lowest Low(10 candle) - 1.5 × ATR(14)` |
-| TP1 (50% posisi) | `EMA20(4H)` saat entry |
-| Setelah TP1 hit | SL pindah ke BEP `Entry × (1 + 0.05%)` |
-| Sisa posisi | Trailing hingga BEP atau exit manual |
+| Stop Loss | `Lowest Low (10 candles) - 1.5 × ATR(14)` |
+| TP1 (50% position) | `EMA20(4H)` at time of entry |
+| Post-TP1 behavior | Stop loss moves to breakeven `Entry × (1 + 0.05%)` |
+| Residual position | Trails until breakeven or manual exit |
 
-## Optimasi Performa
+## Performance Optimizations
 
-| Optimasi | Dampak |
+The following optimizations were implemented to reduce average scan execution time from approximately 40 seconds to approximately 5–8 seconds:
+
+| Optimization | Impact |
 |---|---|
-| **Concurrent scanning** (10 simbol paralel) | ⚡ 40s → ~5-8s |
-| **Caching exchange_info** (TTL 5 menit) | ⚡ Kurangi 1 API call/scan |
-| **Caching ticker_24h** (TTL 1 menit) | ⚡ Kurangi 1 API call/scan |
-| **Reuse Binance client (singleton)** | ⚡ Hindari setup koneksi berulang |
-| **Lazy compute indicators** | ⚡ Macro filter cepat tanpa ATR/RSI/ADX |
+| Concurrent symbol scanning (10-way parallelism) | Reduced from ~40s to ~5-8s |
+| Exchange info caching (300s TTL) | Eliminates redundant API calls |
+| 24h ticker caching (60s TTL) | Eliminates redundant API calls |
+| Singleton Binance client | Avoids repeated connection setup overhead |
+| Lazy indicator computation | Macro filter runs without full ATR/RSI/ADX computation |
 
-## Mode: Development vs Production
+## Operating Modes
 
-Proyek memiliki dua mode yang dikontrol via environment variable `DRY_RUN`:
+The system operates in two modes controlled by the `DRY_RUN` environment variable:
 
-| Mode | `DRY_RUN` | Perilaku |
+| Mode | `DRY_RUN` | Behavior |
 |---|---|---|
-| **Development** (default) | `true` | Scanning & sinyal tetap diproses, tapi **tidak ada order nyata** yang dikirim ke Binance. Monitor loop nonaktif. |
-| **Production** | `false` | Order LIMIT benar-benar dikirim ke Binance Futures. Monitor aktif. |
+| **Development** (default) | `true` | Full scanning and signal generation enabled; **no real orders** placed on Binance. Monitor loop is disabled. |
+| **Production** | `false` | Limit orders are submitted to Binance Futures. Monitor loop is active. |
 
-Setter di `.env`:
+Configuration in `.env`:
 ```env
-DRY_RUN=true   # dev mode (aman)
-DRY_RUN=false  # prod mode (real order)
+DRY_RUN=true   # safe mode for development and testing
+DRY_RUN=false  # live trading mode
 ```
 
-Bisa juga di-override per request via parameter `?dry_run=false` di endpoint `/api/scan`.
+The mode can also be overridden per request using the `?dry_run=false` parameter on the `/api/scan` endpoint.
 
-## Persiapan
+## Getting Started
 
-1. **Clone repo & setup environment**
+### Prerequisites
+
+- Python 3.12+
+- Binance Futures API credentials
+- Telegram Bot API credentials
+- Firebase service account (Firestore)
+
+### Installation
+
+1. **Clone the repository and set up the environment**
    ```bash
+   git clone <repository-url>
+   cd ema_scanner
    python -m venv venv
    source venv/bin/activate
    pip install -r requirements.txt
    ```
 
-2. **Konfigurasi environment variables**
+2. **Configure environment variables**
    ```bash
    cp .env.example .env
    ```
-   Isi `.env` dengan credentials:
-   - `BINANCE_API_KEY` / `BINANCE_API_SECRET` — API Key Binance Futures
-   - `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` — Bot Telegram
-   - `FIREBASE_CRED_PATH` — Path ke file JSON Firebase Admin SDK
+   Populate the `.env` file with the following:
+   - `BINANCE_API_KEY` / `BINANCE_API_SECRET` — Binance Futures API credentials
+   - `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` — Telegram bot credentials
+   - `FIREBASE_CRED_PATH` — Path to the Firebase Admin SDK service account JSON file
 
-3. **Siapkan Firebase credentials**
-   - Download service account JSON dari Firebase Console
-   - Simpan sesuai path di `FIREBASE_CRED_PATH`
+3. **Set up Firebase credentials**
+   - Download the service account JSON from the Firebase Console
+   - Save it to the path specified in `FIREBASE_CRED_PATH`
 
-## Menjalankan Aplikasi
+### Running the Application
 
 ```bash
 uvicorn src.main:app --reload
 ```
 
-Server akan berjalan di `http://localhost:8000`.
+The server starts at `http://localhost:8000`.
 
-## Endpoint API
+## API Reference
 
-- **`GET /`** — Status bot (running, version, strategy)
-- **`GET /api/scan`** — Memicu pemindaian market dan eksekusi trading
+### Endpoints
 
-### Parameter `/api/scan`
-| Parameter | Default | Deskripsi |
+| Method | Path | Description |
 |---|---|---|
-| `timeframe` | `1h` | Entry timeframe (EMA5/EMA20 cross detection) |
-| `htf` | `4h` | Macro timeframe (watchlist filter) |
-| `limit` | `500` | Jumlah candle entry yang di-fetch |
-| `macro_limit` | `200` | Jumlah candle macro yang di-fetch |
-| `volume_m` | `50` | Threshold volume (dalam juta USDT) |
-| `send_telegram` | `true` | Kirim notifikasi ke Telegram |
-| `dry_run` | — | Override mode DRY_RUN per request |
+| GET | `/` | Health check — returns bot status, version, and active strategy |
+| GET | `/api/scan` | Triggers a full market scan and optional trade execution |
 
-### Contoh Response
+### `/api/scan` Parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `timeframe` | string | `1h` | Entry timeframe for EMA5/EMA20 cross detection |
+| `htf` | string | `4h` | Macro timeframe for the trend filter |
+| `limit` | integer | `500` | Number of entry candles to fetch |
+| `macro_limit` | integer | `200` | Number of macro candles to fetch |
+| `volume_m` | integer | `50` | Minimum 24h volume threshold (in millions of USDT) |
+| `send_telegram` | boolean | `true` | Whether to send notifications via Telegram |
+| `dry_run` | boolean | — | Overrides the global DRY_RUN mode for this request |
+
+### Sample Response
+
 ```json
 {
   "status": "success",
@@ -166,36 +194,123 @@ Server akan berjalan di `http://localhost:8000`.
 
 ## Backtesting
 
-Backtester mensimulasikan strategi EMA5/EMA20 Cross (macro 4H + entry 1H) terhadap data historis Binance.
+The backtesting engine simulates the EMA5/EMA20 cross strategy (4H macro filter + 1H entry) against historical Binance data. It supports both golden cross and early-entry signals with partial TP1/BEP/TP2 exit logic.
 
-### Jalankan Backtest
+### Running a Backtest
 
 ```bash
 python backtester.py --symbol SOLUSDT --timeframe 1h --htf 4h --limit 5000 --balance 100
 ```
 
-### Parameter
+This produces a console report and an interactive HTML trade chart.
 
-| Parameter | Default | Deskripsi |
+### Parameters
+
+| Parameter | Default | Description |
 |---|---|---|
-| `--symbol` | `SOLUSDT` | Trading pair |
-| `--timeframe` | `1h` | Entry timeframe (EMA5/EMA20 cross) |
-| `--htf` | `4h` | Macro timeframe (filter) |
-| `--limit` | `2000` | Jumlah candle entry historis |
-| `--balance` | `100` | Modal awal simulasi (USDT) |
+| `--symbol` | `SOLUSDT` | Trading pair to backtest |
+| `--timeframe` | `1h` | Entry timeframe for the EMA5/EMA20 cross |
+| `--htf` | `4h` | Macro timeframe for the trend filter |
+| `--limit` | `2000` | Number of historical candles |
+| `--balance` | `100` | Simulated starting capital (USDT) |
 
-### Batch Backtest
+### Sample Output
 
-```bash
-python backtest_run.py
 ```
-Menjalankan backtest pada 20 token berbeda dan menghasilkan laporan markdown.
+====================================================================
+           BACKTEST SETUP — Market Order (EMA5/20 + RSI)
+====================================================================
+Symbol               : SOLUSDT
+TF Stack             : 1h / 4h
+Strategi             : Market Order @ Close + 1:2 R:R + TP1/BEP/TP2
+Volume Threshold      : SMA20 x 1.45 (min)
+Early Entry          : EMA gap narrowing + RSI > 55 (LONG) / < 45 (SHORT)
+Initial Capital      : $100.00
+Risk per Trade       : 2.0%
+Leverage             : 10x
 
-### Output Metrik
+====================================================================
+         BALANCE COMPARISON (BEFORE vs AFTER)
+====================================================================
+[BEFORE] Initial Balance : $100.00
+[AFTER]  Final Balance   : $172.34
+────────────────────────────────────────────────────────────────────
+Net Profit/Loss ($)      : +$72.34
+Net PnL %                : +72.34%
 
-- Balance comparison (Before vs After)
-- Net Profit/Loss ($ dan %)
-- Total sinyal, order terisi
-- Win rate, profit factor, max drawdown
-- Partial TP1 hit tracking
-- Daftar trade lengkap (entry/exit price, PnL)
+====================================================================
+           STRATEGY PERFORMANCE METRICS
+====================================================================
+Pending Signals          : 34
+Filled                   : 28
+Expired                  : 6
+
+Wins                     : 18
+Losses                   : 10
+Win Rate                 : 64.29%
+
+Profit Factor            : 2.14
+Max Drawdown             : -8.45%
+
+====================================================================
+           SIGNAL INFO
+====================================================================
+GC (Golden Cross)        : 22
+DC (Death Cross)         : 3
+EARLY_LONG (RSI > 55)    : 7
+EARLY_SHORT (RSI < 45)   : 2
+====================================================================
+```
+
+### Performance Metrics
+
+| Metric | Description |
+|---|---|
+| **Net PnL** | Absolute and percentage profit or loss over the test period |
+| **Win Rate** | Percentage of filled trades that closed with a positive PnL |
+| **Profit Factor** | Gross profit divided by gross loss (values > 1.0 indicate profitability) |
+| **Max Drawdown** | Largest peak-to-trough decline in portfolio value |
+| **Filled / Expired** | Number of signals that filled vs. expired before execution |
+| **TP1 Hit Rate** | Percentage of filled trades that reached partial take-profit |
+| **Signal Breakdown** | Count of golden cross, death cross, and early-entry signals |
+
+### Interactive Trade Chart
+
+Running a backtest generates an interactive **HTML chart** (Plotly) displaying:
+- Price candles with EMA5 and EMA20 overlays
+- Entry markers (green triangles for longs, red for shorts)
+- TP1, TP2, BEP, and Stop Loss levels per trade
+- Annotated trade timeline with PnL labels
+
+The chart is saved as `backtest_<SYMBOL>_<TF>_<HTF>.html` in the project root.
+
+---
+
+## Open to Contribute
+
+Contributions, bug reports, and feature requests are welcome. Whether you are a quantitative researcher, a Python developer, or a crypto trading enthusiast, there are many ways to get involved:
+
+### How to Contribute
+
+1. **Fork** the repository
+2. **Create a feature branch** (`git checkout -b feature/my-improvement`)
+3. **Commit your changes** (`git commit -am 'Add my improvement'`)
+4. **Push to the branch** (`git push origin feature/my-improvement`)
+5. **Open a Pull Request**
+
+### Areas for Contribution
+
+- **Strategy Enhancement**: Add new entry/exit signals, improve filter logic, or implement multi-asset portfolio optimization
+- **Risk Management**: Integrate Kelly Criterion, VaR-based sizing, or dynamic leverage adjustment
+- **Data Pipeline**: Add support for additional exchanges or real-time WebSocket data feeds
+- **Backtesting**: Extend the backtester with Monte Carlo simulation, walk-forward optimization, or Sharpe ratio reporting
+- **Infrastructure**: Dockerize the application, add CI/CD pipelines, or implement Kubernetes deployment manifests
+- **Documentation**: Improve README, add inline code comments, or create a strategy development guide
+
+### Reporting Issues
+
+Found a bug or have a suggestion? Open an issue with a clear title and detailed description, including steps to reproduce if applicable.
+
+### Questions
+
+For questions about the strategy, architecture, or deployment, feel free to reach out via the repository's discussion board or issue tracker.
