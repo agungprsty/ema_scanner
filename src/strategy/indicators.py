@@ -7,14 +7,18 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame | None:
 
     ma20 = ta.sma(df["close"], length=20)
     ma50 = ta.sma(df["close"], length=50)
+    ema5 = ta.ema(df["close"], length=5)
+    ema20 = ta.ema(df["close"], length=20)
     atr = ta.atr(df["high"], df["low"], df["close"], length=14)
     rsi = ta.rsi(df["close"], length=14)
 
-    if ma20 is None or ma50 is None or atr is None or rsi is None:
+    if ma20 is None or ma50 is None or ema5 is None or ema20 is None or atr is None or rsi is None:
         return None
 
     df["MA20"] = ma20
     df["MA50"] = ma50
+    df["EMA5"] = ema5
+    df["EMA20"] = ema20
     df["ATR"] = atr
     df["RSI"] = rsi
 
@@ -26,7 +30,7 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame | None:
     df = pd.concat([df, adx_df], axis=1)
 
     df = df.dropna(subset=[
-        "MA20", "MA50", "ATR", "RSI", "SMA_VOL20",
+        "MA20", "MA50", "EMA5", "EMA20", "ATR", "RSI", "SMA_VOL20",
         "ADX_14", "VOLUME_RATIO", "ATR_PERCENT",
     ]).reset_index(drop=True)
 

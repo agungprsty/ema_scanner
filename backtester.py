@@ -82,13 +82,13 @@ def _detect_golden_cross(df: pd.DataFrame, idx: int) -> bool:
         return False
     curr = df.iloc[idx]
     prev = df.iloc[idx - 1]
-    ma20_curr = curr.get("MA20", 0)
-    ma50_curr = curr.get("MA50", 0)
-    ma20_prev = prev.get("MA20", 0)
-    ma50_prev = prev.get("MA50", 0)
-    if any(pd.isna(v) for v in [ma20_curr, ma50_curr, ma20_prev, ma50_prev]):
+    ema5_curr = curr.get("EMA5", 0)
+    ema20_curr = curr.get("EMA20", 0)
+    ema5_prev = prev.get("EMA5", 0)
+    ema20_prev = prev.get("EMA20", 0)
+    if any(pd.isna(v) for v in [ema5_curr, ema20_curr, ema5_prev, ema20_prev]):
         return False
-    return ma20_prev <= ma50_prev and ma20_curr > ma50_curr
+    return ema5_prev <= ema20_prev and ema5_curr > ema20_curr
 
 
 def _detect_death_cross(df: pd.DataFrame, idx: int) -> bool:
@@ -96,13 +96,13 @@ def _detect_death_cross(df: pd.DataFrame, idx: int) -> bool:
         return False
     curr = df.iloc[idx]
     prev = df.iloc[idx - 1]
-    ma20_curr = curr.get("MA20", 0)
-    ma50_curr = curr.get("MA50", 0)
-    ma20_prev = prev.get("MA20", 0)
-    ma50_prev = prev.get("MA50", 0)
-    if any(pd.isna(v) for v in [ma20_curr, ma50_curr, ma20_prev, ma50_prev]):
+    ema5_curr = curr.get("EMA5", 0)
+    ema20_curr = curr.get("EMA20", 0)
+    ema5_prev = prev.get("EMA5", 0)
+    ema20_prev = prev.get("EMA20", 0)
+    if any(pd.isna(v) for v in [ema5_curr, ema20_curr, ema5_prev, ema20_prev]):
         return False
-    return ma20_prev >= ma50_prev and ma20_curr < ma50_curr
+    return ema5_prev >= ema20_prev and ema5_curr < ema20_curr
 
 
 def _calc_cross_price(df: pd.DataFrame, idx: int) -> float:
@@ -110,19 +110,57 @@ def _calc_cross_price(df: pd.DataFrame, idx: int) -> float:
         return 0.0
     curr = df.iloc[idx]
     prev = df.iloc[idx - 1]
-    ma20_curr = curr.get("MA20", 0)
-    ma50_curr = curr.get("MA50", 0)
-    ma20_prev = prev.get("MA20", 0)
-    ma50_prev = prev.get("MA50", 0)
-    if any(pd.isna(v) for v in [ma20_curr, ma50_curr, ma20_prev, ma50_prev]):
+    ema5_curr = curr.get("EMA5", 0)
+    ema20_curr = curr.get("EMA20", 0)
+    ema5_prev = prev.get("EMA5", 0)
+    ema20_prev = prev.get("EMA20", 0)
+    if any(pd.isna(v) for v in [ema5_curr, ema20_curr, ema5_prev, ema20_prev]):
         return 0.0
-    diff_prev = ma20_prev - ma50_prev
-    diff_curr = ma20_curr - ma50_curr
+    diff_prev = ema5_prev - ema20_prev
+    diff_curr = ema5_curr - ema20_curr
     delta = diff_curr - diff_prev
     if delta == 0:
         return 0.0
     ratio = -diff_prev / delta
-    return ma20_prev + ratio * (ma20_curr - ma20_prev)
+    return ema5_prev + ratio * (ema5_curr - ema5_prev)
+
+
+def _detect_early_long(df: pd.DataFrame, idx: int) -> bool:
+    if idx < 1:
+        return False
+    curr = df.iloc[idx]
+    prev = df.iloc[idx - 1]
+    ema5_curr = curr.get("EMA5", 0)
+    ema20_curr = curr.get("EMA20", 0)
+    ema5_prev = prev.get("EMA5", 0)
+    ema20_prev = prev.get("EMA20", 0)
+    rsi = curr.get("RSI", 0)
+    if any(pd.isna(v) for v in [ema5_curr, ema20_curr, ema5_prev, ema20_prev, rsi]):
+        return False
+    if ema5_curr >= ema20_curr:
+        return False
+    gap_curr = ema5_curr - ema20_curr
+    gap_prev = ema5_prev - ema20_prev
+    return gap_curr > gap_prev and rsi > 55
+
+
+def _detect_early_short(df: pd.DataFrame, idx: int) -> bool:
+    if idx < 1:
+        return False
+    curr = df.iloc[idx]
+    prev = df.iloc[idx - 1]
+    ema5_curr = curr.get("EMA5", 0)
+    ema20_curr = curr.get("EMA20", 0)
+    ema5_prev = prev.get("EMA5", 0)
+    ema20_prev = prev.get("EMA20", 0)
+    rsi = curr.get("RSI", 0)
+    if any(pd.isna(v) for v in [ema5_curr, ema20_curr, ema5_prev, ema20_prev, rsi]):
+        return False
+    if ema5_curr <= ema20_curr:
+        return False
+    gap_curr = ema5_curr - ema20_curr
+    gap_prev = ema5_prev - ema20_prev
+    return gap_curr < gap_prev and rsi < 45
 
 
 def _check_volume_confirm(df: pd.DataFrame, idx: int) -> bool:
@@ -158,7 +196,6 @@ def run_backtest(
     total_gross_loss = 0.0
 
     active_trade: TradeRecord | None = None
-    pending_order: TradeRecord | None = None
     cooldown_map: dict[str, int] = {}
     raw_crosses: list[dict[str, Any]] = []
 
@@ -186,41 +223,54 @@ def run_backtest(
 
         gc_raw = _detect_golden_cross(df_entry, i)
         dc_raw = _detect_death_cross(df_entry, i)
+        early_long = _detect_early_long(df_entry, i)
+        early_short = _detect_early_short(df_entry, i)
 
         # --- Macro 4h filter (rekomendasi) ---
-        ma20_1h = candle.get("MA20", 0)
+        ema5_4h = candle.get("EMA5_4h", 0)
         close_price = candle["close"]
-        if pd.isna(ma20_1h) or ma20_1h <= 0:
+        if pd.isna(ema5_4h) or ema5_4h <= 0:
             macro_pass = False
-            macro_label = "N/A (no MA20)"
-        elif gc_raw:
-            macro_pass = close_price > ma20_1h
-            macro_label = f"{'PASS' if macro_pass else 'FAIL'} (Close {'>' if macro_pass else '<='} MA20)"
-        elif dc_raw:
-            macro_pass = close_price < ma20_1h
-            macro_label = f"{'PASS' if macro_pass else 'FAIL'} (Close {'<' if macro_pass else '>='} MA20)"
+            macro_label = "N/A (no EMA5_4h)"
+        elif gc_raw or early_long:
+            macro_pass = close_price > ema5_4h
+            macro_label = f"{'PASS' if macro_pass else 'FAIL'} (Close {'>' if macro_pass else '<='} EMA5_4h)"
+        elif dc_raw or early_short:
+            macro_pass = close_price < ema5_4h
+            macro_label = f"{'PASS' if macro_pass else 'FAIL'} (Close {'<' if macro_pass else '>='} EMA5_4h)"
         else:
             macro_pass = False
-            macro_label = "N/A (no cross)"
+            macro_label = "N/A (no signal)"
 
-        # --- Raw Cross Detection (unfiltered, for debug) ---
-        if gc_raw or dc_raw:
+        # --- Raw Signal Detection (unfiltered, for debug) ---
+        signal_detected = gc_raw or dc_raw or early_long or early_short
+        if signal_detected:
             close = candle["close"]
-            ma50_val = candle.get("MA50", 0)
-            ma20_val = candle.get("MA20", 0)
-            cross_price = _calc_cross_price(df_entry, i)
+            ema20_val = candle.get("EMA20", 0)
+            ema5_val = candle.get("EMA5", 0)
+            rsi_val = candle.get("RSI", 0)
+            cross_price = _calc_cross_price(df_entry, i) if (gc_raw or dc_raw) else 0.0
 
             vol_ok_raw = _check_volume_confirm(df_entry, i)
             vol_ratio = candle["volume"] / candle.get("SMA_VOL20", 1) if candle.get("SMA_VOL20", 0) > 0 else 0
 
-            cross_type = "GC" if gc_raw else "DC"
+            if gc_raw:
+                signal_type = "GC"
+            elif dc_raw:
+                signal_type = "DC"
+            elif early_long:
+                signal_type = "EARLY_LONG"
+            else:
+                signal_type = "EARLY_SHORT"
+
             cross_rec: dict[str, Any] = {
                 "timestamp": str(candle["timestamp"]),
-                "type": cross_type,
+                "type": signal_type,
                 "close": close,
                 "cross_price": round(cross_price, 4),
-                "ma50": ma50_val,
-                "ma20": ma20_val,
+                "ema20": ema20_val,
+                "ema5": ema5_val,
+                "rsi": rsi_val,
                 "volume_check": "PASS" if vol_ok_raw else "FAIL",
                 "volume_ratio": round(vol_ratio, 2),
                 "volume_raw": candle["volume"],
@@ -232,69 +282,13 @@ def run_backtest(
             }
             raw_crosses.append(cross_rec)
 
-            if (gc_raw or dc_raw) and not (bias_ok and macro_pass):
-                cross_type = "GC" if gc_raw else "DC"
+            if not (bias_ok and macro_pass):
                 parts = []
                 if not bias_ok:
                     parts.append(f"BTC Bias unfavourable ({current_bias}/{current_strength:.0f})")
                 if not macro_pass:
-                    parts.append(f"Macro 4h unfavourable ({macro_label})")
-                print(f"  [RECOMMENDATION] {cross_type} at {candle['timestamp']} — {', '.join(parts)} (not blocking)")
-
-        # --- Manage pending limit order ---
-        if pending_order:
-            if (gc_raw or dc_raw) and pending_order.order_idx < i:
-                pending_order.status = "EXPIRED"
-                pending_order.exit_time = candle["timestamp"]
-                pending_order.exit_price = 0.0
-                pending_order.pnl = 0.0
-                pending_order.balance_after = balance
-                trade_log.append(pending_order)
-                print(f"  [ORDER] #{pending_order.trade_id} CANCELLED (new cross at {candle['timestamp']})")
-                pending_order = None
-            elif i > pending_order.expiry_idx:
-                pending_order.status = "EXPIRED"
-                pending_order.exit_time = candle["timestamp"]
-                pending_order.exit_price = 0.0
-                pending_order.pnl = 0.0
-                pending_order.balance_after = balance
-                trade_log.append(pending_order)
-                print(f"  [ORDER] #{pending_order.trade_id} EXPIRED at {candle['timestamp']}")
-                cooldown_map["TEST"] = i
-                pending_order = None
-            elif (pending_order.side == "LONG" and candle["low"] <= pending_order.entry_price) or \
-                 (pending_order.side == "SHORT" and candle["high"] >= pending_order.entry_price):
-                atr = candle.get("ATR", 0)
-                if pd.isna(atr) or atr <= 0:
-                    pending_order.status = "EXPIRED"
-                    pending_order.exit_time = candle["timestamp"]
-                    pending_order.pnl = 0.0
-                    pending_order.balance_after = balance
-                    trade_log.append(pending_order)
-                    print(f"  [ORDER] #{pending_order.trade_id} CANCELLED (no ATR) at {candle['timestamp']}")
-                    cooldown_map["TEST"] = i
-                    pending_order = None
-                    continue
-
-                risk_dist = GC_ATR_SL_MULTIPLIER * atr
-                pending_order.status = "FILLED"
-                pending_order.entry_time = candle["timestamp"]
-                if pending_order.side == "LONG":
-                    pending_order.sl_price = pending_order.entry_price - risk_dist
-                    pending_order.tp1_price = pending_order.entry_price + risk_dist
-                    pending_order.tp2_price = pending_order.entry_price + 2 * risk_dist
-                    pending_order.bep_price = pending_order.entry_price * (1 + GC_ENTRY_FEE_PCT / 100)
-                else:
-                    pending_order.sl_price = pending_order.entry_price + risk_dist
-                    pending_order.tp1_price = pending_order.entry_price - risk_dist
-                    pending_order.tp2_price = pending_order.entry_price - 2 * risk_dist
-                    pending_order.bep_price = pending_order.entry_price * (1 - GC_ENTRY_FEE_PCT / 100)
-                pending_order.remaining_qty = pending_order.position_size
-                active_trade = pending_order
-                pending_order = None
-                print(f"  [ORDER] #{active_trade.trade_id} FILLED at {candle['timestamp']} "
-                      f"(entry={active_trade.entry_price:.4f}, SL={active_trade.sl_price:.4f}, "
-                      f"TP1={active_trade.tp1_price:.4f}, TP2={active_trade.tp2_price:.4f})")
+                    parts.append(f"Macro unfavourable ({macro_label})")
+                print(f"  [RECOMMENDATION] {signal_type} at {candle['timestamp']} — {', '.join(parts)} (not blocking)")
 
         # --- Active trade management (LONG / SHORT) ---
         if active_trade:
@@ -427,47 +421,46 @@ def run_backtest(
             cooldown_map["TEST"] = i
             continue
 
-        if pending_order:
-            continue
-
-        # --- Entry signal generation (create PENDING limit order) ---
+        # --- Entry signal generation (Market Order) ---
         last_sig = cooldown_map.get("TEST", -SIGNAL_COOLDOWN_CANDLES)
         if i - last_sig < SIGNAL_COOLDOWN_CANDLES:
             continue
 
+        signal_side = None
+        signal_type = None
         if gc_raw:
-            side = "LONG"
+            signal_side = "LONG"
+            signal_type = "GC"
         elif dc_raw:
-            side = "SHORT"
-        else:
+            signal_side = "SHORT"
+            signal_type = "DC"
+        elif early_long:
+            signal_side = "LONG"
+            signal_type = "EARLY_LONG"
+        elif early_short:
+            signal_side = "SHORT"
+            signal_type = "EARLY_SHORT"
+
+        if not signal_side:
             continue
 
         if not _check_volume_confirm(df_entry, i):
             continue
 
-        macro_na = pd.isna(ma20_1h) or ma20_1h <= 0
-        if gc_raw and not macro_pass and not macro_na:
-            bid_price = candle["low"]
-        elif dc_raw and not macro_pass and not macro_na:
-            bid_price = candle["high"]
-        else:
-            bid_price = candle.get("MA50", 0)
-        if pd.isna(bid_price) or bid_price <= 0:
-            continue
-
         atr_val = candle.get("ATR", 0)
         if pd.isna(atr_val) or atr_val <= 0:
             continue
-        risk_dist_estimate = GC_ATR_SL_MULTIPLIER * atr_val
-        if risk_dist_estimate <= 0:
+        risk_dist = GC_ATR_SL_MULTIPLIER * atr_val
+        if risk_dist <= 0:
             continue
 
+        entry_price = candle["close"]
         trade_counter += 1
         risk_amount = balance * risk_pct
-        risk_per_unit = risk_dist_estimate
+        risk_per_unit = risk_dist
         if risk_per_unit > 0:
             ideal_position = risk_amount / risk_per_unit
-            max_position = (balance * leverage) / bid_price
+            max_position = (balance * leverage) / entry_price
             pos_size = min(ideal_position, max_position)
         else:
             pos_size = 0
@@ -475,20 +468,38 @@ def run_backtest(
         if pos_size <= 0:
             continue
 
-        pending_order = TradeRecord(
+        active_trade = TradeRecord(
             trade_id=trade_counter,
             symbol="TEST",
-            side=side,
+            side=signal_side,
             order_time=candle["timestamp"],
             entry_time=candle["timestamp"],
-            entry_price=bid_price,
+            entry_price=entry_price,
             position_size=pos_size,
-            status="PENDING",
+            status="FILLED",
             order_idx=i,
             expiry_idx=i + 24,
         )
-        print(f"  [ORDER] #{pending_order.trade_id} CREATED PENDING at {candle['timestamp']} "
-              f"bid={bid_price:.4f}, size={pos_size:.4f}, side={side}, expiry=candle {i + 24}")
+
+        if signal_side == "LONG":
+            active_trade.sl_price = entry_price - risk_dist
+            active_trade.tp1_price = entry_price + risk_dist
+            active_trade.tp2_price = entry_price + 2 * risk_dist
+            active_trade.bep_price = entry_price * (1 + GC_ENTRY_FEE_PCT / 100)
+        else:
+            active_trade.sl_price = entry_price + risk_dist
+            active_trade.tp1_price = entry_price - risk_dist
+            active_trade.tp2_price = entry_price - 2 * risk_dist
+            active_trade.bep_price = entry_price * (1 - GC_ENTRY_FEE_PCT / 100)
+
+        active_trade.remaining_qty = pos_size
+        print(f"  [TRADE] #{active_trade.trade_id} MARKET ENTRY at {candle['timestamp']} "
+              f"({signal_type}, {signal_side}, entry={entry_price:.4f}, "
+              f"SL={active_trade.sl_price:.4f}, TP1={active_trade.tp1_price:.4f}, "
+              f"TP2={active_trade.tp2_price:.4f})")
+
+        cooldown_map["TEST"] = i
+        continue
 
     wins = sum(1 for t in trade_log if t.status == "WIN")
     losses = sum(1 for t in trade_log if t.status == "LOSS")
@@ -552,13 +563,14 @@ def run_backtest(
 
 def print_report(result: BacktestResult) -> None:
     print("=" * 68)
-    print("           BACKTEST SETUP — Limit Order (MA50)")
+    print("           BACKTEST SETUP — Market Order (EMA5/20 + RSI)")
     print("=" * 68)
     print(f"Symbol               : {result.symbol}")
     print(f"TF Stack             : {result.timeframe} / {result.htf}")
-    print(f"Periode Pengujian    : {result.start_date} s/d {result.end_date}")
-    print("Strategi             : Limit Order (MA50) + 1:2 R:R + TP1/BEP/TP2")
+    print("Periode Pengujian    : {result.start_date} s/d {result.end_date}")
+    print("Strategi             : Market Order @ Close + 1:2 R:R + TP1/BEP/TP2")
     print("Volume Threshold      : SMA20 x 1.45 (min)")
+    print("Early Entry          : EMA gap narrowing + RSI > 55 (LONG) / < 45 (SHORT)")
     print(f"Modal Awal           : ${result.initial_balance:,.2f}")
     print(f"Risiko per Trade     : {RISK_PER_TRADE_PERCENT * 100:.1f}%")
     print(f"Leverage             : {result.leverage}x")
@@ -593,22 +605,16 @@ def print_report(result: BacktestResult) -> None:
 
     gc_count = sum(1 for xc in result.raw_crosses if xc["type"] == "GC")
     dc_count = sum(1 for xc in result.raw_crosses if xc["type"] == "DC")
-    vol_fail = sum(1 for xc in result.raw_crosses if xc["type"] == "GC" and xc["volume_check"] == "FAIL")
-    macro_fail = sum(1 for xc in result.raw_crosses if xc["type"] == "GC" and xc["macro_check"].startswith("FAIL"))
-    btc_fail = sum(1 for xc in result.raw_crosses if xc["type"] == "GC" and xc["btc_check"] == "FAIL")
-    macro_fail_dc = sum(1 for xc in result.raw_crosses if xc["type"] == "DC" and xc["macro_check"].startswith("FAIL"))
-    btc_fail_dc = sum(1 for xc in result.raw_crosses if xc["type"] == "DC" and xc["btc_check"] == "FAIL")
+    el_count = sum(1 for xc in result.raw_crosses if xc["type"] == "EARLY_LONG")
+    es_count = sum(1 for xc in result.raw_crosses if xc["type"] == "EARLY_SHORT")
     print()
     print("=" * 68)
-    print("           RAW CROSS & FILTER INFO")
+    print("           SIGNAL INFO")
     print("=" * 68)
-    print(f"Total Raw GC Detected    : {gc_count}")
-    print(f"Total Raw DC Detected    : {dc_count}")
-    print(f"GC Blocked by Volume     : {vol_fail}")
-    print(f"  ├─ Macro 4H not ideal   : {macro_fail} (rekomendasi)")
-    print(f"  ├─ BTC Bias not ideal   : {btc_fail} (rekomendasi)")
-    print(f"  └─ DC — Macro not ideal : {macro_fail_dc} (rekomendasi)")
-    print(f"  └─ DC — BTC not ideal   : {btc_fail_dc} (rekomendasi)")
+    print(f"GC (Golden Cross)        : {gc_count}")
+    print(f"DC (Death Cross)         : {dc_count}")
+    print(f"EARLY_LONG (RSI > 55)    : {el_count}")
+    print(f"EARLY_SHORT (RSI < 45)   : {es_count}")
     print("=" * 68)
 
 
@@ -626,35 +632,35 @@ def generate_trade_chart(df: pd.DataFrame, results: BacktestResult, output_path:
         showlegend=False,
     ), row=1, col=1)
 
-    ma50_color = "rgba(255, 165, 0, 0.85)"
-    ma20_color = "rgba(100, 149, 237, 0.85)"
-    ma50_4h_color = "rgba(255, 99, 132, 0.8)"
-    ma20_4h_color = "rgba(255, 255, 0, 0.7)"
+    ema20_color = "rgba(255, 165, 0, 0.85)"
+    ema5_color = "rgba(100, 149, 237, 0.85)"
+    ema20_4h_color = "rgba(255, 99, 132, 0.8)"
+    ema5_4h_color = "rgba(255, 255, 0, 0.7)"
 
     fig.add_trace(go.Scatter(
-        x=df["timestamp"], y=df["MA50"],
-        line=dict(color=ma50_color, width=1.5),
-        name="MA50 (1h)",
+        x=df["timestamp"], y=df["EMA20"],
+        line=dict(color=ema20_color, width=1.5),
+        name="EMA20 (30m)",
     ), row=1, col=1)
 
     fig.add_trace(go.Scatter(
-        x=df["timestamp"], y=df["MA20"],
-        line=dict(color=ma20_color, width=1.5),
-        name="MA20 (1h)",
+        x=df["timestamp"], y=df["EMA5"],
+        line=dict(color=ema5_color, width=1.5),
+        name="EMA5 (30m)",
     ), row=1, col=1)
 
-    if "MA20_4h" in df.columns:
+    if "EMA5_4h" in df.columns:
         fig.add_trace(go.Scatter(
-            x=df["timestamp"], y=df["MA20_4h"],
-            line=dict(color=ma20_4h_color, width=1.5, dash="dot"),
-            name="MA20 (4h) — Macro",
+            x=df["timestamp"], y=df["EMA5_4h"],
+            line=dict(color=ema5_4h_color, width=1.5, dash="dot"),
+            name="EMA5 (4h) — Macro",
         ), row=1, col=1)
 
-    if "MA50_4h" in df.columns:
+    if "EMA20_4h" in df.columns:
         fig.add_trace(go.Scatter(
-            x=df["timestamp"], y=df["MA50_4h"],
-            line=dict(color=ma50_4h_color, width=1.5, dash="dash"),
-            name="MA50 (4h)",
+            x=df["timestamp"], y=df["EMA20_4h"],
+            line=dict(color=ema20_4h_color, width=1.5, dash="dash"),
+            name="EMA20 (4h)",
         ), row=1, col=1)
 
     # --- Raw Cross Markers ---
@@ -673,32 +679,50 @@ def generate_trade_chart(df: pd.DataFrame, results: BacktestResult, output_path:
         ts = xc["timestamp"]
         close = xc["close"]
         xprice = xc.get("cross_price", close)
-        is_gc = xc["type"] == "GC"
-        label = "GOLDEN CROSS DETECTED" if is_gc else "DEATH CROSS DETECTED"
+        stype = xc["type"]
+
+        if stype == "GC":
+            label = "GOLDEN CROSS"
+            color = "limegreen"
+            vcolor = "rgba(50,205,50,0.25)"
+        elif stype == "DC":
+            label = "DEATH CROSS"
+            color = "tomato"
+            vcolor = "rgba(255,99,71,0.25)"
+        elif stype == "EARLY_LONG":
+            label = "EARLY LONG (RSI)"
+            color = "cyan"
+            vcolor = "rgba(0,255,255,0.15)"
+        else:
+            label = "EARLY SHORT (RSI)"
+            color = "magenta"
+            vcolor = "rgba(255,0,255,0.15)"
+
         hover = (
             f"<b>[{label}]</b><br>"
             f"Time: {ts}<br>"
-            f"Exact Cross Price: ${xprice:,.2f}<br>"
-            f"Close: {close:.4f} | MA50: {xc['ma50']:.4f} | MA20: {xc['ma20']:.4f}<br>"
+            f"Close: {close:.4f} | EMA20: {xc['ema20']:.4f} | EMA5: {xc['ema5']:.4f}<br>"
+            f"RSI: {xc.get('rsi', 0):.1f}<br>"
             f"Volume Confirm: [{xc['volume_check']}] ({xc['volume_ratio']:.2f}x)<br>"
-            f"Macro 4H Filter: {xc['macro_check']}<br>"
+            f"Macro Filter: {xc['macro_check']}<br>"
             f"BTC Bias Filter: [{xc['btc_check']}] (bias={xc['btc_bias']}, str={xc['btc_strength']:.0f})"
         )
-        if is_gc:
+
+        fig.add_vline(x=ts, line=dict(color=vcolor, width=1, dash="dash"), row=1)
+
+        if stype == "GC":
             gc_times.append(ts)
             gc_prices.append(close)
             gc_hover.append(hover)
-            fig.add_vline(x=ts, line=dict(color="rgba(50,205,50,0.25)", width=1, dash="dash"), row=1)
-        else:
+        elif stype == "DC":
             dc_times.append(ts)
             dc_prices.append(close)
             dc_hover.append(hover)
-            fig.add_vline(x=ts, line=dict(color="rgba(255,99,71,0.25)", width=1, dash="dash"), row=1)
 
         xc_times.append(ts)
         xc_prices.append(xprice)
         xc_hover.append(hover)
-        xc_colors.append("limegreen" if is_gc else "tomato")
+        xc_colors.append(color)
 
     if gc_times:
         fig.add_trace(go.Scatter(
@@ -750,40 +774,23 @@ def generate_trade_chart(df: pd.DataFrame, results: BacktestResult, output_path:
         tp1_hit_flag = t.get("tp1_hit", False)
 
         if status == "EXPIRED":
-            fig.add_trace(go.Scatter(
-                x=[order_time], y=[entry_price],
-                mode="markers",
-                marker=dict(symbol="x", size=10, color="gray", line=dict(width=1, color="darkgray")),
-                name=f"Expired #{trade_id}",
-                hovertext=f"<b>[EXPIRED] Order #{trade_id}</b><br>Bid: {entry_price:.4f}<br>Order: {order_time}",
-                hoverinfo="text",
-                showlegend=False,
-            ), row=1, col=1)
             continue
 
         if order_time and entry_price:
             trade_side = t.get("side", "LONG")
-            fig.add_trace(go.Scatter(
-                x=[order_time], y=[entry_price],
-                mode="markers",
-                marker=dict(symbol="circle", size=10, color="yellow", line=dict(width=2, color="black")),
-                name=f"Order #{trade_id}",
-                hovertext=f"<b>[LIMIT ORDER] #{trade_id}</b><br>Side: {trade_side}<br>Bid (MA50): ${entry_price:,.2f}<br>Order: {order_time}",
-                hoverinfo="text",
-                showlegend=False,
-            ), row=1, col=1)
-
-            fill_symbol = "triangle-down" if trade_side == "SHORT" else "triangle-up"
-            fill_color = "tomato" if trade_side == "SHORT" else "lime"
-            fill_border = "darkred" if trade_side == "SHORT" else "darkgreen"
+            entry_symbol = "triangle-down" if trade_side == "SHORT" else "triangle-up"
+            entry_color = "tomato" if trade_side == "SHORT" else "lime"
+            entry_border = "darkred" if trade_side == "SHORT" else "darkgreen"
             fig.add_trace(go.Scatter(
                 x=[entry_time], y=[entry_price],
                 mode="markers",
-                marker=dict(symbol=fill_symbol, size=12, color=fill_color, line=dict(width=1, color=fill_border)),
-                name=f"Fill #{trade_id}",
-                hovertext=(f"<b>[FILL] #{trade_id}</b><br>Fill: {entry_time}<br>"
+                marker=dict(symbol=entry_symbol, size=12, color=entry_color, line=dict(width=1, color=entry_border)),
+                name=f"Entry #{trade_id}",
+                hovertext=(f"<b>[MARKET ENTRY] #{trade_id}</b><br>"
                            f"Side: {trade_side}<br>"
-                           f"Price: ${entry_price:,.2f}<br>TP1 Hit: {'Yes' if tp1_hit_flag else 'No'}"),
+                           f"Entry: ${entry_price:,.2f}<br>"
+                           f"Time: {entry_time}<br>"
+                           f"TP1 Hit: {'Yes' if tp1_hit_flag else 'No'}"),
                 hoverinfo="text",
                 showlegend=False,
             ), row=1, col=1)
@@ -828,14 +835,10 @@ def generate_trade_chart(df: pd.DataFrame, results: BacktestResult, output_path:
             showlegend=False,
         ), row=2, col=1)
 
-    gc_count = sum(1 for xc in results.raw_crosses if xc["type"] == "GC")
-    dc_count = sum(1 for xc in results.raw_crosses if xc["type"] == "DC")
-
     fig.update_layout(
-        title=f"Backtest: {results.symbol} — Limit Order (MA50) 1:2 R:R<br><sup>{results.start_date} to {results.end_date} | "
-               f"Signals: {results.total_signals} | Filled: {results.filled} | Expired: {results.expired} | "
-               f"Win Rate: {results.win_rate:.1f}% | PnL: ${results.final_balance - results.initial_balance:+.2f} | "
-               f"Raw GC: {gc_count} | Raw DC: {dc_count}</sup>",
+        title=f"Backtest: {results.symbol} — Market Order (EMA5/20 + RSI) 1:2 R:R<br><sup>{results.start_date} to {results.end_date} | "
+               f"Signals: {results.total_signals} | Filled: {results.filled} | Win Rate: {results.win_rate:.1f}% | "
+               f"PnL: ${results.final_balance - results.initial_balance:+.2f}</sup>",
         xaxis_title="Time",
         yaxis_title="Price (USDT)",
         hovermode="x unified",
@@ -872,11 +875,11 @@ def fetch_klines_paginated(client, symbol, interval, total_candles=10000, limit=
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Limit Order Backtester (MA50)")
+    parser = argparse.ArgumentParser(description="Market Order Backtester (EMA5/20 + RSI Early Entry)")
     parser.add_argument("--symbol", default="BTCUSDT", help="Trading pair")
-    parser.add_argument("--timeframe", default="1h", help="Entry timeframe (golden cross)")
+    parser.add_argument("--timeframe", default="30m", help="Entry timeframe (golden cross)")
     parser.add_argument("--htf", default="4h", help="Macro timeframe")
-    parser.add_argument("--limit", type=int, default=2000, help="Entry candles to fetch (~83 days on 1h)")
+    parser.add_argument("--limit", type=int, default=1000, help="Entry candles to fetch (~83 days on 1h)")
     parser.add_argument("--balance", type=float, default=100.0, help="Initial balance")
     args = parser.parse_args()
 
@@ -903,11 +906,11 @@ def main():
     raw_btc = fetch_klines_paginated(client, "BTCUSDT", args.htf, total_candles=macro_limit)
     df_btc = compute_indicators(_raw_to_df(raw_btc)) if raw_btc and len(raw_btc) >= 100 else None
 
-    if df_macro is not None and "MA20" in df_macro.columns:
-        macro_cols = df_macro[["timestamp", "close", "MA20", "MA50"]].dropna().rename(
-            columns={"close": "close_4h", "MA20": "MA20_4h", "MA50": "MA50_4h"})
+    if df_macro is not None and "EMA5" in df_macro.columns:
+        macro_cols = df_macro[["timestamp", "close", "EMA5", "EMA20"]].dropna().rename(
+            columns={"close": "close_4h", "EMA5": "EMA5_4h", "EMA20": "EMA20_4h"})
         df_entry = pd.merge_asof(df_entry, macro_cols, on="timestamp", direction="backward")
-        df_entry = df_entry.dropna(subset=["MA20_4h"]).reset_index(drop=True)
+        df_entry = df_entry.dropna(subset=["EMA5_4h"]).reset_index(drop=True)
     else:
         print("No macro data available for merge")
         return

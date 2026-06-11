@@ -77,6 +77,8 @@ pytest-timeout==2.4.0
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
 requests==2.34.2
+ruff==0.15.16
+scipy==1.17.1
 setuptools==82.0.1
 simplejson==3.20.2
 six==1.17.0
