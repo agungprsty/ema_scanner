@@ -29,5 +29,6 @@ async def send_alert(message: str, parse_mode: str = "HTML") -> None:
         logger.error("Failed to send Telegram alert: %s", e, exc_info=True)
 
 
-def send_alert_async(message: str, parse_mode: str = "HTML") -> None:
-    asyncio.create_task(send_alert(message, parse_mode))
+# Hapus atau jangan gunakan send_alert_async di lingkungan serverless
+# def send_alert_async(message: str, parse_mode: str = "HTML") -> None:
+#     asyncio.create_task(send_alert(message, parse_mode))

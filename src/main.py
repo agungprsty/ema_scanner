@@ -21,7 +21,7 @@ from src.risk_manager.calculator import calculate_position
 from src.execution.order import place_limit_order
 from google.cloud.firestore_v1.base_query import FieldFilter
 from src.services.firebase import init_firebase, create_trade, update_trade_status, get_db
-from src.services.telegram import send_alert_async
+from src.services.telegram import send_alert
 from src.services.redis_client import init_redis, close_redis, is_cross_detected, mark_cross_detected
 from src.execution.monitor import monitor_loop
 
@@ -264,7 +264,7 @@ async def scan(
                 "Asymmetric Bets (RR 1:1.5)\n"
                 "━━━━━━━━━━━━━━━\n"
             )
-            send_alert_async(header + "\n".join(telegram_parts))
+            await send_alert(header + "\n".join(telegram_parts))
 
         return {
             "status": "success",
