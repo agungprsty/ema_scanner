@@ -19,6 +19,7 @@ from src.strategy.indicators import compute_indicators
 from src.strategy.blueprint import macroscan_4h, check_entry, Signal
 from src.risk_manager.calculator import calculate_position
 from src.execution.order import place_limit_order
+from google.cloud.firestore_v1.base_query import FieldFilter
 from src.services.firebase import init_firebase, create_trade, update_trade_status, get_db
 from src.services.telegram import send_alert_async
 from src.services.redis_client import init_redis, close_redis, is_cross_detected, mark_cross_detected
@@ -161,8 +162,8 @@ async def scan(
         telegram_parts = []
         for sig in signals:
             existing_active = list(get_db().collection("active_trades")
-                .where("symbol", "==", sig.symbol)
-                .where("status", "in", ["PENDING", "LIMIT_PLACED", "FILLED"])
+                .where(filter=FieldFilter("symbol", "==", sig.symbol))
+                .where(filter=FieldFilter("status", "in", ["PENDING", "LIMIT_PLACED", "FILLED"]))
                 .stream())
             if existing_active:
                 logger.info(

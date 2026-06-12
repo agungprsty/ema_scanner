@@ -24,8 +24,8 @@ def _compute_strength(df: pd.DataFrame, side: str) -> float:
     vwap_score = min(40, vwap_dist * 10)
 
     # 2. EMA slope gradient (0-30 pts)
-    ema50 = df["close"].ewm(span=50, adjust=False).mean()
-    ema_slope = (ema50.iloc[-1] - ema50.iloc[-10]) / ema50.iloc[-10] * 100 if len(df) >= 10 else 0
+    ema_fast = df["close"].ewm(span=10, adjust=False).mean()
+    ema_slope = (ema_fast.iloc[-1] - ema_fast.iloc[-10]) / ema_fast.iloc[-10] * 100 if len(df) >= 10 else 0
     slope_score = min(30, abs(ema_slope) * 30)
 
     # 3. Volume momentum (0-30 pts)
@@ -53,17 +53,17 @@ def _compute_vol_regime(df: pd.DataFrame) -> str:
 
 
 def compute_btc_bias(df: pd.DataFrame) -> BtcBias:
-    if df is None or len(df) < 100:
+    if df is None or len(df) < 30:
         return BtcBias(side="NEUTRAL", strength=0.0, vol_regime="NORMAL")
 
     close = df["close"]
     vwap = _vwap(df)
-    ema50 = close.ewm(span=50, adjust=False).mean()
-    ema200 = close.ewm(span=200, adjust=False).mean()
+    ema_fast = close.ewm(span=10, adjust=False).mean()
+    ema_slow = close.ewm(span=25, adjust=False).mean()
 
     last = df.iloc[-1]
-    ema_aligned_bullish = ema50.iloc[-1] > ema200.iloc[-1]
-    ema_aligned_bearish = ema50.iloc[-1] < ema200.iloc[-1]
+    ema_aligned_bullish = ema_fast.iloc[-1] > ema_slow.iloc[-1]
+    ema_aligned_bearish = ema_fast.iloc[-1] < ema_slow.iloc[-1]
 
     # Direction from EMA alignment; VWAP distance modulates strength
     if ema_aligned_bullish:

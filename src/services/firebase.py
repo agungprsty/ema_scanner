@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import firebase_admin
 from firebase_admin import credentials, firestore
 
+from google.cloud.firestore_v1.base_query import FieldFilter
 from src.config.settings import FIREBASE_CRED_PATH, FIREBASE_CRED_JSON
 
 _db = None
@@ -94,5 +95,5 @@ def update_trade_status(trade_id: str, status: str, **extra) -> None:
 
 def get_active_trades() -> list[dict]:
     db = get_db()
-    docs = db.collection("active_trades").where("status", "==", "LIMIT_PLACED").stream()
+    docs = db.collection("active_trades").where(filter=FieldFilter("status", "==", "LIMIT_PLACED")).stream()
     return [doc.to_dict() for doc in docs]
