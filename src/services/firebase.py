@@ -1,3 +1,4 @@
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -8,6 +9,8 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from src.config.settings import FIREBASE_CRED_PATH, FIREBASE_CRED_JSON
 
 _db = None
+_trades_cache = {"data": None, "expires_at": 0}
+_TRADES_CACHE_TTL = 30
 
 
 def _load_cred():
@@ -37,7 +40,13 @@ def get_db():
     return _db
 
 
+def _invalidate_cache():
+    _trades_cache["data"] = None
+    _trades_cache["expires_at"] = 0
+
+
 def create_trade(symbol: str, side: str, tf: str, entry: float, sl: float, tp: float, qty: float, atr: float, bep: float = 0.0) -> str:
+    _invalidate_cache()
     db = get_db()
     trade_id = str(uuid.uuid4())
     doc = {
@@ -70,6 +79,7 @@ def create_trade(symbol: str, side: str, tf: str, entry: float, sl: float, tp: f
 
 
 def update_trade_status(trade_id: str, status: str, **extra) -> None:
+    _invalidate_cache()
     db = get_db()
     tx = db.transaction()
 
@@ -97,3 +107,37 @@ def get_active_trades() -> list[dict]:
     db = get_db()
     docs = db.collection("active_trades").where(filter=FieldFilter("status", "==", "LIMIT_PLACED")).stream()
     return [doc.to_dict() for doc in docs]
+
+
+def get_all_trades() -> list[dict]:
+    now = time.time()
+    if _trades_cache["data"] is not None and now < _trades_cache["expires_at"]:
+        return _trades_cache["data"]
+    db = get_db()
+    docs = db.collection("active_trades").order_by("timestamps.signal_generated", direction=firestore.Query.DESCENDING).stream()
+    data = [doc.to_dict() for doc in docs]
+    _trades_cache["data"] = data
+    _trades_cache["expires_at"] = now + _TRADES_CACHE_TTL
+    return data
+
+
+def get_trades_summary() -> dict:
+    db = get_db()
+    docs = db.collection("active_trades").stream()
+    trades = [doc.to_dict() for doc in docs]
+    total = len(trades)
+    active = sum(1 for t in trades if t.get("status") in ("PENDING", "LIMIT_PLACED", "FILLED", "TP1_HIT"))
+    closed = sum(1 for t in trades if t.get("status") in ("CLOSED_SL", "CLOSED_TP", "CLOSED_BEP", "EXPIRED_CANCELLED"))
+    long_count = sum(1 for t in trades if t.get("side") == "LONG")
+    short_count = sum(1 for t in trades if t.get("side") == "SHORT")
+    wins = sum(1 for t in trades if t.get("status") in ("CLOSED_TP", "CLOSED_BEP"))
+    losses = sum(1 for t in trades if t.get("status") == "CLOSED_SL")
+    return {
+        "total": total,
+        "active": active,
+        "closed": closed,
+        "long": long_count,
+        "short": short_count,
+        "wins": wins,
+        "losses": losses,
+    }

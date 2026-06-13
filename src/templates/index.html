@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EMA Scanner — Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+<div class="container">
+  <header class="header">
+    <div class="header-left">
+      <span class="status-dot online"></span>
+      <h1>EMA Scanner</h1>
+    </div>
+    <div class="header-badges">
+      <span class="badge badge-mode {{ mode_class }}">{{ mode }}</span>
+      <span class="badge badge-version">v{{ version }}</span>
+      <span class="badge badge-strategy">{{ strategy }}</span>
+    </div>
+  </header>
+
+  <nav class="nav-tabs">
+    <a class="nav-tab {{ 'active' if page == 'watchlist' else '' }}" href="/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/></svg>
+      Watchlist
+    </a>
+    <a class="nav-tab {{ 'active' if page == 'active' else '' }}" href="/active">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+      Active Trades
+    </a>
+    <a class="nav-tab {{ 'active' if page == 'history' else '' }}" href="/history">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      History
+    </a>
+  </nav>
+
+  <div class="stats-grid" id="statsGrid">
+    <div class="stat-card accent-green">
+      <div class="stat-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="16" width="4" height="5" rx="1"/>
+          <rect x="10" y="10" width="4" height="11" rx="1"/>
+          <rect x="17" y="6" width="4" height="15" rx="1"/>
+        </svg>
+      </div>
+      <div class="value" data-stat="total">{{ summary.total }}</div>
+      <div class="label">Total Trades</div>
+    </div>
+    <div class="stat-card accent-blue">
+      <div class="stat-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 12h-4l-3 9-4-18-3 9H2"/>
+        </svg>
+      </div>
+      <div class="value" data-stat="active">{{ summary.active }}</div>
+      <div class="label">Active</div>
+    </div>
+    <div class="stat-card accent-yellow">
+      <div class="stat-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+          <polyline points="22 4 12 14.01 9 11.01"/>
+        </svg>
+      </div>
+      <div class="value" data-stat="closed">{{ summary.closed }}</div>
+      <div class="label">Closed</div>
+    </div>
+    <div class="stat-card accent-green">
+      <div class="stat-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="12" y1="19" x2="12" y2="5"/>
+          <polyline points="5 12 12 5 19 12"/>
+        </svg>
+      </div>
+      <div class="value" data-stat="long">{{ summary.long }}</div>
+      <div class="label">LONG</div>
+    </div>
+    <div class="stat-card accent-red">
+      <div class="stat-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="12" y1="5" x2="12" y2="19"/>
+          <polyline points="19 12 12 19 5 12"/>
+        </svg>
+      </div>
+      <div class="value" data-stat="short">{{ summary.short }}</div>
+      <div class="label">SHORT</div>
+    </div>
+    <div class="stat-card accent-purple">
+      <div class="stat-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#a78bfa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+        </svg>
+      </div>
+      <div class="value" data-stat="wins">{{ summary.wins }}</div>
+      <div class="label">Wins</div>
+    </div>
+    <div class="stat-card accent-rose">
+      <div class="stat-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#f43f5e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="15" y1="9" x2="9" y2="15"/>
+          <line x1="9" y1="9" x2="15" y2="15"/>
+        </svg>
+      </div>
+      <div class="value" data-stat="losses">{{ summary.losses }}</div>
+      <div class="label">Losses</div>
+    </div>
+  </div>
+
+  <!-- Watchlist (PENDING) -->
+  <section class="section" id="watchlistSection" {{ 'style=display:none' if page != 'watchlist' else '' }}>
+    <div class="section-header">
+      <h2>Watchlist</h2>
+      <span class="count" id="watchlistCount">{{ watchlist_trades|length }}</span>
+    </div>
+    <div class="table-wrap" id="watchlistWrap">
+      {% if watchlist_trades and page == 'watchlist' %}
+      <table data-paginate="watchlist" data-rows="10">
+        <thead>
+          <tr>
+            <th>Symbol</th>
+            <th>Side</th>
+            <th>Entry</th>
+            <th>SL</th>
+            <th>TP</th>
+            <th>ATR</th>
+            <th>TF</th>
+            <th>Signal</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="watchlistBody">
+          {% for t in watchlist_trades %}
+          <tr data-id="{{ t.id }}">
+            <td><span class="symbol-text">{{ t.s }}</span></td>
+            <td><span class="side-badge {{ t.side_lc }}">{{ t.side }}</span></td>
+            <td class="price">{{ t.entry }}</td>
+            <td class="price text-muted">{{ t.sl }}</td>
+            <td class="price text-muted">{{ t.tp }}</td>
+            <td class="text-muted">{{ t.atr }}</td>
+            <td class="text-muted">{{ t.tf }}</td>
+            <td class="text-muted">{{ t.signal_time }}</td>
+            <td>
+              <div class="action-group">
+                <button class="btn btn-ghost btn-sm" onclick="skipTrade('{{ t.id }}')">Skip</button>
+                <button class="btn btn-primary btn-sm" onclick="openLimitModal('{{ t.id }}')">Set Limit</button>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <div class="pagination" data-for="watchlist"></div>
+      {% else %}
+      <div class="empty-state" id="watchlistEmpty">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/>
+        </svg>
+        <p>No pending signals</p>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
+  <!-- Active Trades (LIMIT_PLACED, FILLED, TP1_HIT) -->
+  <section class="section" id="activeSection" {{ 'style=display:none' if page != 'active' else '' }}>
+    <div class="section-header">
+      <h2>Active Trades</h2>
+      <span class="count" id="activeCount">{{ active_trades|length }}</span>
+    </div>
+    <div class="table-wrap" id="activeWrap">
+      {% if active_trades and page == 'active' %}
+      <table data-paginate="active" data-rows="10">
+        <thead>
+          <tr>
+            <th>Symbol</th>
+            <th>Side</th>
+            <th>Status</th>
+            <th>Entry</th>
+            <th>SL</th>
+            <th>TP</th>
+            <th>Qty</th>
+            <th>ATR</th>
+            <th>TF</th>
+            <th>Signal</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="activeBody">
+          {% for t in active_trades %}
+          <tr data-id="{{ t.id }}">
+            <td><span class="symbol-text">{{ t.s }}</span></td>
+            <td><span class="side-badge {{ t.side_lc }}">{{ t.side }}</span></td>
+            <td><span class="status-badge {{ t.status_class }}">{{ t.status }}</span></td>
+            <td class="price">{{ t.entry }}</td>
+            <td class="price text-muted">{{ t.sl }}</td>
+            <td class="price text-muted">{{ t.tp }}</td>
+            <td>{{ t.qty }}</td>
+            <td class="text-muted">{{ t.atr }}</td>
+            <td class="text-muted">{{ t.tf }}</td>
+            <td class="text-muted">{{ t.signal_time }}</td>
+            <td>
+              <button class="btn btn-danger btn-sm" onclick="openCloseModal('{{ t.id }}')">Close</button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <div class="pagination" data-for="active"></div>
+      {% else %}
+      <div class="empty-state" id="activeEmpty">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+          <line x1="8" y1="21" x2="16" y2="21"/>
+          <line x1="12" y1="17" x2="12" y2="21"/>
+        </svg>
+        <p>No active trades</p>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
+  <!-- Recent Closed Trades -->
+  <section class="section" id="historySection" {{ 'style=display:none' if page != 'history' else '' }}>
+    <div class="section-header">
+      <h2>Trade History</h2>
+      <span class="count" id="closedCount">{{ closed_trades|length }}</span>
+    </div>
+    <div class="table-wrap" id="closedWrap">
+      {% if closed_trades and page == 'history' %}
+      <table data-paginate="closed" data-rows="15">
+        <thead>
+          <tr>
+            <th>Symbol</th>
+            <th>Side</th>
+            <th>Result</th>
+            <th>Entry</th>
+            <th>Qty</th>
+            <th>TF</th>
+            <th>Closed</th>
+          </tr>
+        </thead>
+        <tbody id="closedBody">
+          {% for t in closed_trades %}
+          <tr data-id="{{ t.id }}">
+            <td><span class="symbol-text">{{ t.s }}</span></td>
+            <td><span class="side-badge {{ t.side_lc }}">{{ t.side }}</span></td>
+            <td><span class="status-badge {{ t.status_class }}">{{ t.status }}</span></td>
+            <td class="price">{{ t.entry }}</td>
+            <td>{{ t.qty }}</td>
+            <td class="text-muted">{{ t.tf }}</td>
+            <td class="text-muted">{{ t.closed_at }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <div class="pagination" data-for="closed"></div>
+      {% else %}
+      <div class="empty-state" id="closedEmpty">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+        </svg>
+        <p>No closed trades yet</p>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
+  <p class="last-updated" id="lastUpdated">Last updated: {{ last_updated }}</p>
+  <footer class="footer">EMA7/EMA50 Cross Scanner — v{{ version }}</footer>
+</div>
+
+<!-- Close Modal -->
+<div class="modal-overlay" id="closeModal">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3>Close Trade</h3>
+      <button class="modal-close" onclick="closeAllModals()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label" for="closePrice">Close Price</label>
+        <input class="form-input" id="closePrice" type="number" step="any" placeholder="0.0000">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeAllModals()">Cancel</button>
+      <button class="btn btn-warning" id="expireBtn" onclick="confirmExpire()">Mark Expired</button>
+      <button class="btn btn-danger" id="closeBtn" onclick="confirmClose()">Confirm Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Set Limit Modal -->
+<div class="modal-overlay" id="limitModal">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3>Confirm Limit Order</h3>
+      <button class="modal-close" onclick="closeAllModals()">&times;</button>
+    </div>
+    <div class="modal-body" id="limitModalBody">
+      <!-- filled by JS -->
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeAllModals()">Cancel</button>
+      <button class="btn btn-primary" id="confirmLimitBtn" onclick="confirmLimit()">Confirm Place Limit</button>
+    </div>
+  </div>
+</div>
+
+<script id="tradeData" type="application/json">
+{"watchlist": {{ watchlist_json|safe }}, "active": {{ active_json|safe }}, "closed": {{ closed_json|safe }}}
+</script>
+<script>
+var activeTradeId = null;
+var currentPage = '{{ page }}';
+var _tableData = JSON.parse(document.getElementById('tradeData').textContent);
+var _pgPages = {};
+
+/* ---- Modal controls ---- */
+function closeAllModals() {
+  document.querySelectorAll('.modal-overlay').forEach(function(m) { m.classList.remove('active'); });
+  activeTradeId = null;
+}
+
+function openCloseModal(tradeId) {
+  activeTradeId = tradeId;
+  document.getElementById('closePrice').value = '';
+  document.getElementById('closeModal').classList.add('active');
+  setTimeout(function() { document.getElementById('closePrice').focus(); }, 100);
+}
+
+function openLimitModal(tradeId) {
+  activeTradeId = tradeId;
+  var row = document.querySelector('tr[data-id="' + tradeId + '"]');
+  if (!row) return;
+  var cells = row.querySelectorAll('td');
+  var symbol = cells[0].textContent.trim();
+  var side = cells[1].textContent.trim();
+  var entry = cells[2].textContent.trim();
+  document.getElementById('limitModalBody').innerHTML =
+    '<div class="detail-row"><span class="label">Symbol</span><span class="value">' + symbol + '</span></div>' +
+    '<div class="detail-row"><span class="label">Side</span><span class="value">' + side + '</span></div>' +
+    '<div class="detail-row"><span class="label">Original Entry</span><span class="value price">' + entry + '</span></div>' +
+    '<div class="form-group" style="margin-top:0.75rem"><label class="form-label" for="limitEntryPrice">Custom Entry Price</label>' +
+    '<input class="form-input" id="limitEntryPrice" type="number" step="any" value="' + entry + '"></div>';
+  document.getElementById('limitModal').classList.add('active');
+}
+
+/* ---- API actions ---- */
+function apiPost(url, body, cb) {
+  fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    if (cb) cb(data);
+    fetchTrades();
+  }).catch(function() { fetchTrades(); });
+}
+
+function confirmClose() {
+  var id = activeTradeId;
+  var price = parseFloat(document.getElementById('closePrice').value);
+  if (isNaN(price) || price <= 0) { alert('Enter a valid close price.'); return; }
+  closeAllModals();
+  apiPost('/api/trade/' + id + '/close', { close_price: price });
+}
+
+function confirmExpire() {
+  var id = activeTradeId;
+  closeAllModals();
+  apiPost('/api/trade/' + id + '/expire');
+}
+
+function skipTrade(tradeId) {
+  if (!confirm('Skip this pending trade?')) return;
+  apiPost('/api/trade/' + tradeId + '/skip');
+}
+
+function confirmLimit() {
+  var id = activeTradeId;
+  var entryPrice = document.getElementById('limitEntryPrice').value;
+  closeAllModals();
+  var url = '/api/trade/' + id + '/place-limit';
+  if (entryPrice) url += '?entry_price=' + encodeURIComponent(entryPrice);
+  apiPost(url);
+}
+
+/* ---- AJAX fetch ---- */
+function fetchTrades() {
+  fetch('/api/trades').then(function(r) { return r.json(); }).then(function(data) {
+    renderSummary(data.summary);
+    if (currentPage === 'watchlist') renderWatchlist(data.watchlist);
+    else if (currentPage === 'active') renderActive(data.active);
+    else if (currentPage === 'history') renderClosed(data.closed);
+    document.getElementById('lastUpdated').textContent = 'Last updated: ' + data.last_updated;
+  }).catch(function() {});
+}
+
+function renderSummary(s) {
+  var map = { total: s.total, active: s.active, closed: s.closed, long: s.long, short: s.short, wins: s.wins, losses: s.losses };
+  document.querySelectorAll('[data-stat]').forEach(function(el) {
+    var key = el.dataset.stat;
+    if (key in map) el.textContent = map[key];
+  });
+}
+
+window._pg = function(id, idx) {
+  if (_pgPages[id]) _pgPages[id](idx);
+};
+
+function _rowHTML(tableId, t) {
+  if (tableId === 'watchlist') {
+    return '<tr data-id="' + t.id + '">' +
+      '<td><span class="symbol-text">' + t.s + '</span></td>' +
+      '<td><span class="side-badge ' + t.side_lc + '">' + t.side + '</span></td>' +
+      '<td class="price">' + t.entry + '</td>' +
+      '<td class="price text-muted">' + t.sl + '</td>' +
+      '<td class="price text-muted">' + t.tp + '</td>' +
+      '<td class="text-muted">' + t.atr + '</td>' +
+      '<td class="text-muted">' + t.tf + '</td>' +
+      '<td class="text-muted">' + t.signal_time + '</td>' +
+      '<td><div class="action-group">' +
+      '<button class="btn btn-ghost btn-sm" onclick="skipTrade(\'' + t.id + '\')">Skip</button>' +
+      '<button class="btn btn-primary btn-sm" onclick="openLimitModal(\'' + t.id + '\')">Set Limit</button>' +
+      '</div></td></tr>';
+  }
+  if (tableId === 'active') {
+    return '<tr data-id="' + t.id + '">' +
+      '<td><span class="symbol-text">' + t.s + '</span></td>' +
+      '<td><span class="side-badge ' + t.side_lc + '">' + t.side + '</span></td>' +
+      '<td><span class="status-badge ' + t.status_class + '">' + t.status + '</span></td>' +
+      '<td class="price">' + t.entry + '</td>' +
+      '<td class="price text-muted">' + t.sl + '</td>' +
+      '<td class="price text-muted">' + t.tp + '</td>' +
+      '<td>' + t.qty + '</td>' +
+      '<td class="text-muted">' + t.atr + '</td>' +
+      '<td class="text-muted">' + t.tf + '</td>' +
+      '<td class="text-muted">' + t.signal_time + '</td>' +
+      '<td><button class="btn btn-danger btn-sm" onclick="openCloseModal(\'' + t.id + '\')">Close</button></td></tr>';
+  }
+  if (tableId === 'closed') {
+    return '<tr data-id="' + t.id + '">' +
+      '<td><span class="symbol-text">' + t.s + '</span></td>' +
+      '<td><span class="side-badge ' + t.side_lc + '">' + t.side + '</span></td>' +
+      '<td><span class="status-badge ' + t.status_class + '">' + t.status + '</span></td>' +
+      '<td class="price">' + t.entry + '</td>' +
+      '<td>' + t.qty + '</td>' +
+      '<td class="text-muted">' + t.tf + '</td>' +
+      '<td class="text-muted">' + t.closed_at + '</td></tr>';
+  }
+}
+
+function _renderPage(tableId, pageIdx) {
+  var list = _tableData[tableId];
+  if (!list) return;
+  var table = document.querySelector('table[data-paginate="' + tableId + '"]');
+  if (!table) return;
+  var pageSize = parseInt(table.dataset.rows) || 10;
+  var totalPages = Math.max(1, Math.ceil(list.length / pageSize));
+  var idx = Math.max(0, Math.min(pageIdx, totalPages - 1));
+  var tbody = document.getElementById(tableId + 'Body');
+  if (!tbody) return;
+  var start = idx * pageSize;
+  var end = Math.min(start + pageSize, list.length);
+  var h = '';
+  for (var i = start; i < end; i++) {
+    h += _rowHTML(tableId, list[i]);
+  }
+  tbody.innerHTML = h;
+  _renderPagination(tableId, idx, pageSize, list.length, totalPages);
+}
+
+function _renderPagination(tableId, current, pageSize, totalItems, totalPages) {
+  var container = document.querySelector('.pagination[data-for="' + tableId + '"]');
+  if (!container) return;
+  var html = '';
+  html += '<button ' + (current === 0 ? 'disabled' : '') + ' onclick="window._pg(\'' + tableId + '\',' + (current - 1) + ')">\u2039</button>';
+  var start = Math.max(0, current - 2);
+  var end = Math.min(totalPages - 1, current + 2);
+  if (start > 0) { html += '<button onclick="window._pg(\'' + tableId + '\',0)">1</button><button disabled>\u2026</button>'; }
+  for (var i = start; i <= end; i++) {
+    html += '<button class="' + (i === current ? 'active' : '') + '" onclick="window._pg(\'' + tableId + '\',' + i + ')">' + (i + 1) + '</button>';
+  }
+  if (end < totalPages - 1) { html += '<button disabled>\u2026</button><button onclick="window._pg(\'' + tableId + '\',' + (totalPages - 1) + ')">' + totalPages + '</button>'; }
+  html += '<button ' + (current === totalPages - 1 ? 'disabled' : '') + ' onclick="window._pg(\'' + tableId + '\',' + (current + 1) + ')">\u203a</button>';
+  html += '<span class="info">' + (current * pageSize + 1) + '\u2013' + Math.min((current + 1) * pageSize, totalItems) + ' of ' + totalItems + '</span>';
+  container.innerHTML = html;
+  _pgPages[tableId] = function(idx) { _renderPage(tableId, idx); };
+}
+
+/* ---- Render sections ---- */
+function renderWatchlist(list) {
+  _tableData.watchlist = list;
+  document.getElementById('watchlistCount').textContent = list.length;
+  var wrap = document.getElementById('watchlistWrap');
+  if (list.length === 0) {
+    wrap.innerHTML = '<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/></svg><p>No pending signals</p></div>';
+    return;
+  }
+  if (wrap.querySelector('.empty-state')) {
+    wrap.innerHTML = '<table data-paginate="watchlist" data-rows="10"><thead><tr><th>Symbol</th><th>Side</th><th>Entry</th><th>SL</th><th>TP</th><th>ATR</th><th>TF</th><th>Signal</th><th>Actions</th></tr></thead><tbody id="watchlistBody"></tbody></table><div class="pagination" data-for="watchlist"></div>';
+  }
+  _renderPage('watchlist', 0);
+}
+
+function renderActive(list) {
+  _tableData.active = list;
+  document.getElementById('activeCount').textContent = list.length;
+  var wrap = document.getElementById('activeWrap');
+  if (list.length === 0) {
+    wrap.innerHTML = '<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg><p>No active trades</p></div>';
+    return;
+  }
+  if (wrap.querySelector('.empty-state')) {
+    wrap.innerHTML = '<table data-paginate="active" data-rows="10"><thead><tr><th>Symbol</th><th>Side</th><th>Status</th><th>Entry</th><th>SL</th><th>TP</th><th>Qty</th><th>ATR</th><th>TF</th><th>Signal</th><th>Actions</th></tr></thead><tbody id="activeBody"></tbody></table><div class="pagination" data-for="active"></div>';
+  }
+  _renderPage('active', 0);
+}
+
+function renderClosed(list) {
+  _tableData.closed = list;
+  document.getElementById('closedCount').textContent = list.length;
+  var wrap = document.getElementById('closedWrap');
+  if (list.length === 0) {
+    wrap.innerHTML = '<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><p>No closed trades yet</p></div>';
+    return;
+  }
+  if (wrap.querySelector('.empty-state')) {
+    wrap.innerHTML = '<table data-paginate="closed" data-rows="15"><thead><tr><th>Symbol</th><th>Side</th><th>Result</th><th>Entry</th><th>Qty</th><th>TF</th><th>Closed</th></tr></thead><tbody id="closedBody"></tbody></table><div class="pagination" data-for="closed"></div>';
+  }
+  _renderPage('closed', 0);
+}
+
+/* ---- Init ---- */
+if (currentPage === 'watchlist') _renderPage('watchlist', 0);
+else if (currentPage === 'active') _renderPage('active', 0);
+else if (currentPage === 'history') _renderPage('closed', 0);
+</script>
+</body>
+</html>

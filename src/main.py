@@ -1,11 +1,19 @@
 import asyncio
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
 
 import pandas as pd
 from fastapi import FastAPI, Query
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
+from starlette.requests import Request
 from typing import Annotated
+
+from datetime import datetime
 
 from src.config.settings import (
     TOTAL_SIGNALS, RISK_PER_TRADE_PERCENT, DRY_RUN,
@@ -20,7 +28,7 @@ from src.strategy.blueprint import macroscan_4h, check_entry, Signal
 from src.risk_manager.calculator import calculate_position
 from src.execution.order import place_limit_order
 from google.cloud.firestore_v1.base_query import FieldFilter
-from src.services.firebase import init_firebase, create_trade, update_trade_status, get_db
+from src.services.firebase import init_firebase, create_trade, update_trade_status, get_db, get_all_trades, get_trades_summary
 from src.services.telegram import send_alert
 from src.services.redis_client import init_redis, close_redis, is_cross_detected, mark_cross_detected
 from src.execution.monitor import monitor_loop
@@ -57,12 +65,137 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Crypto Blueprint Bot", lifespan=lifespan)
+templates = Jinja2Templates(directory="src/templates")
+app.mount("/static", StaticFiles(directory="src/static"), name="static")
 
 
-@app.get("/")
-def root():
+def _fmt_trade(t: dict) -> dict:
+    prices = t.get("prices") or {}
+    metrics = t.get("metrics") or {}
+    ts = t.get("timestamps") or {}
+    status = (t.get("status") or "UNKNOWN").lower().replace("_", "-")
+    side = t.get("side") or "UNKNOWN"
+    sig = (ts.get("signal_generated") or "")[:19].replace("T", " ")
+    closed = (ts.get("closed_at") or "")[:19].replace("T", " ")
+    entry_raw = prices.get("entry_target", 0) or 0
+    sl_raw = prices.get("stop_loss", 0) or 0
+    tp_raw = prices.get("take_profit", 0) or 0
+    return {
+        "id": t.get("trade_id", ""),
+        "s": t.get("symbol", "—"),
+        "side": side,
+        "side_lc": side.lower(),
+        "status": t.get("status", "—"),
+        "status_class": status,
+        "entry": f"{entry_raw:.4f}" if prices.get("entry_target") else "—",
+        "entry_raw": entry_raw,
+        "sl": f"{sl_raw:.4f}" if prices.get("stop_loss") else "—",
+        "sl_raw": sl_raw,
+        "tp": f"{tp_raw:.4f}" if prices.get("take_profit") and tp_raw > 0 else "—",
+        "tp_raw": tp_raw,
+        "qty": f"{metrics.get('qty_coins', 0):.4f}" if metrics.get("qty_coins") else "—",
+        "qty_raw": metrics.get("qty_coins", 0) or 0,
+        "atr": f"{metrics.get('atr_value', 0):.2f}" if metrics.get("atr_value") else "—",
+        "atr_raw": metrics.get("atr_value", 0) or 0,
+        "tf": t.get("tf", "—"),
+        "signal_time": sig if sig else "—",
+        "closed_at": closed if closed else "—",
+    }
+
+
+class CloseRequest(BaseModel):
+    close_price: float
+
+
+@app.get("/", response_class=HTMLResponse)
+def root(request: Request):
+    return _render_page(request, "watchlist")
+
+@app.get("/active", response_class=HTMLResponse)
+def active_page(request: Request):
+    return _render_page(request, "active")
+
+@app.get("/history", response_class=HTMLResponse)
+def history_page(request: Request):
+    return _render_page(request, "history")
+
+
+def _render_page(request: Request, page: str):
     mode = "DRY_RUN" if DRY_RUN else "PRODUCTION"
-    return {"status": "running", "version": "v8.0.0", "mode": mode, "strategy": "EMA7/EMA50 Cross LONG/SHORT (1h/4h)"}
+    trades = get_all_trades()
+    summary = get_trades_summary()
+    watchlist = [_fmt_trade(t) for t in trades if t.get("status") == "PENDING"]
+    active = [_fmt_trade(t) for t in trades if t.get("status") in ("LIMIT_PLACED", "FILLED", "TP1_HIT")]
+    closed = [_fmt_trade(t) for t in trades if t.get("status") in ("CLOSED_SL", "CLOSED_TP", "CLOSED_BEP", "EXPIRED_CANCELLED")]
+    page_size = 10
+    return templates.TemplateResponse(request, "index.html", {
+        "mode": mode,
+        "mode_class": "production" if mode == "PRODUCTION" else "dry-run",
+        "version": "8.0.0",
+        "strategy": "EMA7/EMA50 Cross LONG/SHORT (1h/4h)",
+        "summary": summary,
+        "page": page,
+        "watchlist_trades": watchlist[:page_size],
+        "active_trades": active[:page_size],
+        "closed_trades": closed[:page_size],
+        "watchlist_json": json.dumps(watchlist),
+        "active_json": json.dumps(active),
+        "closed_json": json.dumps(closed),
+        "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC"),
+    })
+
+
+@app.get("/api/trades")
+def api_trades():
+    trades = get_all_trades()
+    summary = get_trades_summary()
+    watchlist = [_fmt_trade(t) for t in trades if t.get("status") == "PENDING"]
+    active = [_fmt_trade(t) for t in trades if t.get("status") in ("LIMIT_PLACED", "FILLED", "TP1_HIT")]
+    closed = [_fmt_trade(t) for t in trades if t.get("status") in ("CLOSED_SL", "CLOSED_TP", "CLOSED_BEP", "EXPIRED_CANCELLED")]
+    return {
+        "summary": summary,
+        "watchlist": watchlist,
+        "active": active,
+        "closed": closed,
+        "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC"),
+    }
+
+
+@app.post("/api/trade/{trade_id}/close")
+def api_close_trade(trade_id: str, body: CloseRequest):
+    trades = get_all_trades()
+    t = next((x for x in trades if x.get("trade_id") == trade_id), None)
+    if not t:
+        return {"status": "error", "message": "Trade not found"}
+    side = t.get("side", "LONG")
+    entry = (t.get("prices") or {}).get("entry_target", 0)
+    if side == "LONG":
+        new_status = "CLOSED_TP" if body.close_price >= entry else "CLOSED_SL"
+    else:
+        new_status = "CLOSED_TP" if body.close_price <= entry else "CLOSED_SL"
+    update_trade_status(trade_id, new_status, **{"prices.close_price": body.close_price})
+    return {"status": "ok", "new_status": new_status}
+
+
+@app.post("/api/trade/{trade_id}/expire")
+def api_expire_trade(trade_id: str):
+    update_trade_status(trade_id, "EXPIRED_CANCELLED")
+    return {"status": "ok"}
+
+
+@app.post("/api/trade/{trade_id}/skip")
+def api_skip_trade(trade_id: str):
+    update_trade_status(trade_id, "EXPIRED_CANCELLED")
+    return {"status": "ok"}
+
+
+@app.post("/api/trade/{trade_id}/place-limit")
+def api_place_limit(trade_id: str, entry_price: float | None = Query(None)):
+    if entry_price:
+        update_trade_status(trade_id, "LIMIT_PLACED", **{"prices.entry_target": entry_price})
+    else:
+        update_trade_status(trade_id, "LIMIT_PLACED")
+    return {"status": "ok"}
 
 
 @app.get("/api/scan")
