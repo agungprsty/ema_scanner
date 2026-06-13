@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+import uuid
 from contextlib import asynccontextmanager
 
 import pandas as pd
@@ -206,17 +207,19 @@ async def scan(
                 bep = float(spec.entry) * (1 + LONG_ENTRY_FEE_PCT / 100)
             else:
                 bep = float(spec.entry) * (1 - SHORT_ENTRY_FEE_PCT / 100)
-            trade_id = create_trade(
-                symbol=spec.symbol,
-                side=spec.side,
-                tf=f"{timeframe}/{htf}",
-                entry=float(spec.entry),
-                sl=float(spec.stop_loss),
-                tp=float(spec.take_profit),
-                qty=float(spec.quantity),
-                atr=sig.atr_1h,
-                bep=bep,
-            )
+
+            trade_id = str(uuid.uuid4())
+            # trade_id = create_trade(
+            #     symbol=spec.symbol,
+            #     side=spec.side,
+            #     tf=f"{timeframe}/{htf}",
+            #     entry=float(spec.entry),
+            #     sl=float(spec.stop_loss),
+            #     tp=float(spec.take_profit),
+            #     qty=float(spec.quantity),
+            #     atr=sig.atr_1h,
+            #     bep=bep,
+            # )
 
             if is_dry_run:
                 status_msg = "DRY RUN"
