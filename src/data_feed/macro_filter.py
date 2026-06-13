@@ -24,8 +24,8 @@ def _compute_strength(df: pd.DataFrame, side: str) -> float:
     vwap_score = min(40, vwap_dist * 10)
 
     # 2. EMA slope gradient (0-30 pts)
-    ema_fast = df["close"].ewm(span=10, adjust=False).mean()
-    ema_slope = (ema_fast.iloc[-1] - ema_fast.iloc[-10]) / ema_fast.iloc[-10] * 100 if len(df) >= 10 else 0
+    ema_fast = df["close"].ewm(span=7, adjust=False).mean()
+    ema_slope = (ema_fast.iloc[-1] - ema_fast.iloc[-7]) / ema_fast.iloc[-7] * 100 if len(df) >= 7 else 0
     slope_score = min(30, abs(ema_slope) * 30)
 
     # 3. Volume momentum (0-30 pts)
@@ -58,8 +58,8 @@ def compute_btc_bias(df: pd.DataFrame) -> BtcBias:
 
     close = df["close"]
     vwap = _vwap(df)
-    ema_fast = close.ewm(span=10, adjust=False).mean()
-    ema_slow = close.ewm(span=25, adjust=False).mean()
+    ema_fast = close.ewm(span=7, adjust=False).mean()
+    ema_slow = close.ewm(span=50, adjust=False).mean()
 
     last = df.iloc[-1]
     ema_aligned_bullish = ema_fast.iloc[-1] > ema_slow.iloc[-1]

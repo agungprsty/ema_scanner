@@ -82,13 +82,13 @@ def _detect_golden_cross(df: pd.DataFrame, idx: int) -> bool:
         return False
     curr = df.iloc[idx]
     prev = df.iloc[idx - 1]
-    ema5_curr = curr.get("EMA10", 0)
-    ema20_curr = curr.get("EMA25", 0)
-    ema5_prev = prev.get("EMA10", 0)
-    ema20_prev = prev.get("EMA25", 0)
-    if any(pd.isna(v) for v in [ema5_curr, ema20_curr, ema5_prev, ema20_prev]):
+    ema7_curr = curr.get("EMA7", 0)
+    ema50_curr = curr.get("EMA50", 0)
+    ema7_prev = prev.get("EMA7", 0)
+    ema50_prev = prev.get("EMA50", 0)
+    if any(pd.isna(v) for v in [ema7_curr, ema50_curr, ema7_prev, ema50_prev]):
         return False
-    return ema5_prev <= ema20_prev and ema5_curr > ema20_curr
+    return ema7_prev <= ema50_prev and ema7_curr > ema50_curr
 
 
 def _detect_death_cross(df: pd.DataFrame, idx: int) -> bool:
@@ -96,13 +96,13 @@ def _detect_death_cross(df: pd.DataFrame, idx: int) -> bool:
         return False
     curr = df.iloc[idx]
     prev = df.iloc[idx - 1]
-    ema5_curr = curr.get("EMA10", 0)
-    ema20_curr = curr.get("EMA25", 0)
-    ema5_prev = prev.get("EMA10", 0)
-    ema20_prev = prev.get("EMA25", 0)
-    if any(pd.isna(v) for v in [ema5_curr, ema20_curr, ema5_prev, ema20_prev]):
+    ema7_curr = curr.get("EMA7", 0)
+    ema50_curr = curr.get("EMA50", 0)
+    ema7_prev = prev.get("EMA7", 0)
+    ema50_prev = prev.get("EMA50", 0)
+    if any(pd.isna(v) for v in [ema7_curr, ema50_curr, ema7_prev, ema50_prev]):
         return False
-    return ema5_prev >= ema20_prev and ema5_curr < ema20_curr
+    return ema7_prev >= ema50_prev and ema7_curr < ema50_curr
 
 
 def _calc_cross_price(df: pd.DataFrame, idx: int) -> float:
@@ -110,19 +110,19 @@ def _calc_cross_price(df: pd.DataFrame, idx: int) -> float:
         return 0.0
     curr = df.iloc[idx]
     prev = df.iloc[idx - 1]
-    ema5_curr = curr.get("EMA10", 0)
-    ema20_curr = curr.get("EMA25", 0)
-    ema5_prev = prev.get("EMA10", 0)
-    ema20_prev = prev.get("EMA25", 0)
-    if any(pd.isna(v) for v in [ema5_curr, ema20_curr, ema5_prev, ema20_prev]):
+    ema7_curr = curr.get("EMA7", 0)
+    ema50_curr = curr.get("EMA50", 0)
+    ema7_prev = prev.get("EMA7", 0)
+    ema50_prev = prev.get("EMA50", 0)
+    if any(pd.isna(v) for v in [ema7_curr, ema50_curr, ema7_prev, ema50_prev]):
         return 0.0
-    diff_prev = ema5_prev - ema20_prev
-    diff_curr = ema5_curr - ema20_curr
+    diff_prev = ema7_prev - ema50_prev
+    diff_curr = ema7_curr - ema50_curr
     delta = diff_curr - diff_prev
     if delta == 0:
         return 0.0
     ratio = -diff_prev / delta
-    return ema5_prev + ratio * (ema5_curr - ema5_prev)
+    return ema7_prev + ratio * (ema7_curr - ema7_prev)
 
 
 def _detect_early_long(df: pd.DataFrame, idx: int) -> bool:
@@ -130,17 +130,17 @@ def _detect_early_long(df: pd.DataFrame, idx: int) -> bool:
         return False
     curr = df.iloc[idx]
     prev = df.iloc[idx - 1]
-    ema5_curr = curr.get("EMA10", 0)
-    ema20_curr = curr.get("EMA25", 0)
-    ema5_prev = prev.get("EMA10", 0)
-    ema20_prev = prev.get("EMA25", 0)
+    ema7_curr = curr.get("EMA7", 0)
+    ema50_curr = curr.get("EMA50", 0)
+    ema7_prev = prev.get("EMA7", 0)
+    ema50_prev = prev.get("EMA50", 0)
     rsi = curr.get("RSI", 0)
-    if any(pd.isna(v) for v in [ema5_curr, ema20_curr, ema5_prev, ema20_prev, rsi]):
+    if any(pd.isna(v) for v in [ema7_curr, ema50_curr, ema7_prev, ema50_prev, rsi]):
         return False
-    if ema5_curr >= ema20_curr:
+    if ema7_curr >= ema50_curr:
         return False
-    gap_curr = ema5_curr - ema20_curr
-    gap_prev = ema5_prev - ema20_prev
+    gap_curr = ema7_curr - ema50_curr
+    gap_prev = ema7_prev - ema50_prev
     return gap_curr > gap_prev and rsi > 55
 
 
@@ -149,17 +149,17 @@ def _detect_early_short(df: pd.DataFrame, idx: int) -> bool:
         return False
     curr = df.iloc[idx]
     prev = df.iloc[idx - 1]
-    ema5_curr = curr.get("EMA10", 0)
-    ema20_curr = curr.get("EMA25", 0)
-    ema5_prev = prev.get("EMA10", 0)
-    ema20_prev = prev.get("EMA25", 0)
+    ema7_curr = curr.get("EMA7", 0)
+    ema50_curr = curr.get("EMA50", 0)
+    ema7_prev = prev.get("EMA7", 0)
+    ema50_prev = prev.get("EMA50", 0)
     rsi = curr.get("RSI", 0)
-    if any(pd.isna(v) for v in [ema5_curr, ema20_curr, ema5_prev, ema20_prev, rsi]):
+    if any(pd.isna(v) for v in [ema7_curr, ema50_curr, ema7_prev, ema50_prev, rsi]):
         return False
-    if ema5_curr <= ema20_curr:
+    if ema7_curr <= ema50_curr:
         return False
-    gap_curr = ema5_curr - ema20_curr
-    gap_prev = ema5_prev - ema20_prev
+    gap_curr = ema7_curr - ema50_curr
+    gap_prev = ema7_prev - ema50_prev
     return gap_curr < gap_prev and rsi < 45
 
 
@@ -227,17 +227,17 @@ def run_backtest(
         early_short = _detect_early_short(df_entry, i)
 
         # --- Macro 4h filter (rekomendasi) ---
-        ema5_4h = candle.get("EMA10_4h", 0)
+        ema7_4h = candle.get("EMA7_4h", 0)
         close_price = candle["close"]
-        if pd.isna(ema5_4h) or ema5_4h <= 0:
+        if pd.isna(ema7_4h) or ema7_4h <= 0:
             macro_pass = False
-            macro_label = "N/A (no EMA10_4h)"
+            macro_label = "N/A (no EMA7_4h)"
         elif gc_raw or early_long:
-            macro_pass = close_price > ema5_4h
-            macro_label = f"{'PASS' if macro_pass else 'FAIL'} (Close {'>' if macro_pass else '<='} EMA10_4h)"
+            macro_pass = close_price > ema7_4h
+            macro_label = f"{'PASS' if macro_pass else 'FAIL'} (Close {'>' if macro_pass else '<='} EMA7_4h)"
         elif dc_raw or early_short:
-            macro_pass = close_price < ema5_4h
-            macro_label = f"{'PASS' if macro_pass else 'FAIL'} (Close {'<' if macro_pass else '>='} EMA10_4h)"
+            macro_pass = close_price < ema7_4h
+            macro_label = f"{'PASS' if macro_pass else 'FAIL'} (Close {'<' if macro_pass else '>='} EMA7_4h)"
         else:
             macro_pass = False
             macro_label = "N/A (no signal)"
@@ -246,8 +246,8 @@ def run_backtest(
         signal_detected = gc_raw or dc_raw or early_long or early_short
         if signal_detected:
             close = candle["close"]
-            ema20_val = candle.get("EMA25", 0)
-            ema5_val = candle.get("EMA10", 0)
+            ema50_val = candle.get("EMA50", 0)
+            ema7_val = candle.get("EMA7", 0)
             rsi_val = candle.get("RSI", 0)
             cross_price = _calc_cross_price(df_entry, i) if (gc_raw or dc_raw) else 0.0
 
@@ -268,8 +268,8 @@ def run_backtest(
                 "type": signal_type,
                 "close": close,
                 "cross_price": round(cross_price, 4),
-                "ema20": ema20_val,
-                "ema5": ema5_val,
+                "ema50": ema50_val,
+                "ema7": ema7_val,
                 "rsi": rsi_val,
                 "volume_check": "PASS" if vol_ok_raw else "FAIL",
                 "volume_ratio": round(vol_ratio, 2),
@@ -563,7 +563,7 @@ def run_backtest(
 
 def print_report(result: BacktestResult) -> None:
     print("=" * 68)
-    print("           BACKTEST SETUP — Market Order (EMA10/20 + RSI)")
+    print("           BACKTEST SETUP — Market Order (EMA7/50 + RSI)")
     print("=" * 68)
     print(f"Symbol               : {result.symbol}")
     print(f"TF Stack             : {result.timeframe} / {result.htf}")
@@ -632,35 +632,35 @@ def generate_trade_chart(df: pd.DataFrame, results: BacktestResult, output_path:
         showlegend=False,
     ), row=1, col=1)
 
-    ema20_color = "rgba(255, 165, 0, 0.85)"
-    ema5_color = "rgba(100, 149, 237, 0.85)"
-    ema20_4h_color = "rgba(255, 99, 132, 0.8)"
-    ema5_4h_color = "rgba(255, 255, 0, 0.7)"
+    ema50_color = "rgba(255, 165, 0, 0.85)"
+    ema7_color = "rgba(100, 149, 237, 0.85)"
+    ema50_4h_color = "rgba(255, 99, 132, 0.8)"
+    ema7_4h_color = "rgba(255, 255, 0, 0.7)"
 
     fig.add_trace(go.Scatter(
-        x=df["timestamp"], y=df["EMA25"],
-        line=dict(color=ema20_color, width=1.5),
-        name="EMA25 (30m)",
+        x=df["timestamp"], y=df["EMA50"],
+        line=dict(color=ema50_color, width=1.5),
+        name="EMA50 (30m)",
     ), row=1, col=1)
 
     fig.add_trace(go.Scatter(
-        x=df["timestamp"], y=df["EMA10"],
-        line=dict(color=ema5_color, width=1.5),
-        name="EMA10 (30m)",
+        x=df["timestamp"], y=df["EMA7"],
+        line=dict(color=ema7_color, width=1.5),
+        name="EMA7 (30m)",
     ), row=1, col=1)
 
-    if "EMA10_4h" in df.columns:
+    if "EMA7_4h" in df.columns:
         fig.add_trace(go.Scatter(
-            x=df["timestamp"], y=df["EMA10_4h"],
-            line=dict(color=ema5_4h_color, width=1.5, dash="dot"),
-            name="EMA10 (4h) — Macro",
+            x=df["timestamp"], y=df["EMA7_4h"],
+            line=dict(color=ema7_4h_color, width=1.5, dash="dot"),
+            name="EMA7 (4h) — Macro",
         ), row=1, col=1)
 
-    if "EMA25_4h" in df.columns:
+    if "EMA50_4h" in df.columns:
         fig.add_trace(go.Scatter(
-            x=df["timestamp"], y=df["EMA25_4h"],
-            line=dict(color=ema20_4h_color, width=1.5, dash="dash"),
-            name="EMA25 (4h)",
+            x=df["timestamp"], y=df["EMA50_4h"],
+            line=dict(color=ema50_4h_color, width=1.5, dash="dash"),
+            name="EMA50 (4h)",
         ), row=1, col=1)
 
     # --- Raw Cross Markers ---
@@ -701,7 +701,7 @@ def generate_trade_chart(df: pd.DataFrame, results: BacktestResult, output_path:
         hover = (
             f"<b>[{label}]</b><br>"
             f"Time: {ts}<br>"
-            f"Close: {close:.4f} | EMA25: {xc['ema20']:.4f} | EMA10: {xc['ema5']:.4f}<br>"
+            f"Close: {close:.4f} | EMA50: {xc['ema50']:.4f} | EMA7: {xc['ema7']:.4f}<br>"
             f"RSI: {xc.get('rsi', 0):.1f}<br>"
             f"Volume Confirm: [{xc['volume_check']}] ({xc['volume_ratio']:.2f}x)<br>"
             f"Macro Filter: {xc['macro_check']}<br>"
@@ -836,7 +836,7 @@ def generate_trade_chart(df: pd.DataFrame, results: BacktestResult, output_path:
         ), row=2, col=1)
 
     fig.update_layout(
-        title=f"Backtest: {results.symbol} — Market Order (EMA10/20 + RSI) 1:2 R:R<br><sup>{results.start_date} to {results.end_date} | "
+        title=f"Backtest: {results.symbol} — Market Order (EMA7/50 + RSI) 1:2 R:R<br><sup>{results.start_date} to {results.end_date} | "
                f"Signals: {results.total_signals} | Filled: {results.filled} | Win Rate: {results.win_rate:.1f}% | "
                f"PnL: ${results.final_balance - results.initial_balance:+.2f}</sup>",
         xaxis_title="Time",
@@ -875,7 +875,7 @@ def fetch_klines_paginated(client, symbol, interval, total_candles=10000, limit=
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Market Order Backtester (EMA10/20 + RSI Early Entry)")
+    parser = argparse.ArgumentParser(description="Market Order Backtester (EMA7/50 + RSI Early Entry)")
     parser.add_argument("--symbol", default="BTCUSDT", help="Trading pair")
     parser.add_argument("--timeframe", default="30m", help="Entry timeframe (golden cross)")
     parser.add_argument("--htf", default="4h", help="Macro timeframe")
@@ -906,11 +906,11 @@ def main():
     raw_btc = fetch_klines_paginated(client, "BTCUSDT", args.htf, total_candles=macro_limit)
     df_btc = compute_indicators(_raw_to_df(raw_btc)) if raw_btc and len(raw_btc) >= 100 else None
 
-    if df_macro is not None and "EMA10" in df_macro.columns:
-        macro_cols = df_macro[["timestamp", "close", "EMA10", "EMA25"]].dropna().rename(
-            columns={"close": "close_4h", "EMA10": "EMA10_4h", "EMA25": "EMA25_4h"})
+    if df_macro is not None and "EMA7" in df_macro.columns:
+        macro_cols = df_macro[["timestamp", "close", "EMA7", "EMA50"]].dropna().rename(
+            columns={"close": "close_4h", "EMA7": "EMA7_4h", "EMA50": "EMA50_4h"})
         df_entry = pd.merge_asof(df_entry, macro_cols, on="timestamp", direction="backward")
-        df_entry = df_entry.dropna(subset=["EMA10_4h"]).reset_index(drop=True)
+        df_entry = df_entry.dropna(subset=["EMA7_4h"]).reset_index(drop=True)
     else:
         print("No macro data available for merge")
         return

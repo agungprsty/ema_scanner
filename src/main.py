@@ -62,7 +62,7 @@ app = FastAPI(title="Crypto Blueprint Bot", lifespan=lifespan)
 @app.get("/")
 def root():
     mode = "DRY_RUN" if DRY_RUN else "PRODUCTION"
-    return {"status": "running", "version": "v8.0.0", "mode": mode, "strategy": "EMA10/EMA25 Cross LONG/SHORT (1h/4h)"}
+    return {"status": "running", "version": "v8.0.0", "mode": mode, "strategy": "EMA7/EMA50 Cross LONG/SHORT (1h/4h)"}
 
 
 @app.get("/api/scan")
@@ -130,10 +130,10 @@ async def scan(
                 if df_entry is None:
                     return None
 
-                macro_cols = df_macro[["timestamp", "close", "EMA25"]].dropna().rename(
-                    columns={"close": "close_4h", "EMA25": "EMA25_4h"})
+                macro_cols = df_macro[["timestamp", "close", "EMA50"]].dropna().rename(
+                    columns={"close": "close_4h", "EMA50": "EMA50_4h"})
                 df_entry = pd.merge_asof(df_entry, macro_cols, on="timestamp", direction="backward")
-                df_entry = df_entry.dropna(subset=["EMA25_4h"])
+                df_entry = df_entry.dropna(subset=["EMA50_4h"])
 
                 if len(df_entry) < 50:
                     return None

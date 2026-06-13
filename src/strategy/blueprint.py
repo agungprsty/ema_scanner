@@ -21,7 +21,7 @@ class Signal:
     atr_1h: float
     timestamp: str
     reason: str
-    ema20_4h: float = 0.0
+    ema50_4h: float = 0.0
     cross_candle_ms: int = 0
 
 
@@ -31,21 +31,21 @@ def macroscan_4h(df_4h: pd.DataFrame) -> str:
 
     last = df_4h.iloc[-1]
     close = last["close"]
-    ema20 = last.get("EMA25", 0)
+    ema50 = last.get("EMA50", 0)
 
-    if pd.isna(ema20) or ema20 <= 0 or len(df_4h) < 4:
+    if pd.isna(ema50) or ema50 <= 0 or len(df_4h) < 4:
         return "NEUTRAL"
 
-    ema20_now = ema20
-    ema20_3ago = df_4h.iloc[-4].get("EMA25", 0)
+    ema50_now = ema50
+    ema50_3ago = df_4h.iloc[-4].get("EMA50", 0)
 
-    if pd.isna(ema20_3ago) or ema20_3ago <= 0:
+    if pd.isna(ema50_3ago) or ema50_3ago <= 0:
         return "NEUTRAL"
 
-    if close > ema20 and ema20_now > ema20_3ago:
+    if close > ema50 and ema50_now > ema50_3ago:
         return "BULLISH"
 
-    if close < ema20 and ema20_now < ema20_3ago:
+    if close < ema50 and ema50_now < ema50_3ago:
         return "BEARISH"
 
     return "NEUTRAL"
@@ -73,21 +73,21 @@ def check_entry(
         prev = df_1h.iloc[i - 1]
 
         volume = curr["volume"]
-        ema5_curr = curr.get("EMA10", 0)
-        ema20_curr = curr.get("EMA25", 0)
-        ema5_prev = prev.get("EMA10", 0)
-        ema20_prev = prev.get("EMA25", 0)
+        ema7_curr = curr.get("EMA7", 0)
+        ema50_curr = curr.get("EMA50", 0)
+        ema7_prev = prev.get("EMA7", 0)
+        ema50_prev = prev.get("EMA50", 0)
 
-        if any(pd.isna(v) for v in [ema5_curr, ema20_curr, ema5_prev, ema20_prev]):
+        if any(pd.isna(v) for v in [ema7_curr, ema50_curr, ema7_prev, ema50_prev]):
             continue
 
-        diff_prev = ema5_prev - ema20_prev
-        diff_curr = ema5_curr - ema20_curr
+        diff_prev = ema7_prev - ema50_prev
+        diff_curr = ema7_curr - ema50_curr
         delta = diff_curr - diff_prev
         if delta == 0:
             continue
         ratio = -diff_prev / delta
-        cross_price = ema5_prev + ratio * (ema5_curr - ema5_prev)
+        cross_price = ema7_prev + ratio * (ema7_curr - ema7_prev)
         if cross_price <= 0:
             continue
 
@@ -99,14 +99,14 @@ def check_entry(
         if pd.isna(atr) or atr <= 0:
             continue
 
-        ema20_4h = curr.get("EMA25_4h", 0)
-        if pd.isna(ema20_4h) or ema20_4h <= 0:
+        ema50_4h = curr.get("EMA50_4h", 0)
+        if pd.isna(ema50_4h) or ema50_4h <= 0:
             continue
 
         cross_ms = int(curr["timestamp"].timestamp() * 1000)
 
         if scan_long:
-            if ema5_prev <= ema20_prev and ema5_curr > ema20_curr:
+            if ema7_prev <= ema50_prev and ema7_curr > ema50_curr:
                 if btc_bias == "BEARISH":
                     continue
 
@@ -123,12 +123,12 @@ def check_entry(
                     atr_1h=atr,
                     timestamp=str(curr.name),
                     reason="golden_cross_1h",
-                    ema20_4h=ema20_4h,
+                    ema50_4h=ema50_4h,
                     cross_candle_ms=cross_ms,
                 )
 
         if scan_short:
-            if ema5_prev >= ema20_prev and ema5_curr < ema20_curr:
+            if ema7_prev >= ema50_prev and ema7_curr < ema50_curr:
                 if btc_bias == "BULLISH":
                     continue
 
@@ -145,7 +145,7 @@ def check_entry(
                     atr_1h=atr,
                     timestamp=str(curr.name),
                     reason="death_cross_1h",
-                    ema20_4h=ema20_4h,
+                    ema50_4h=ema50_4h,
                     cross_candle_ms=cross_ms,
                 )
 
