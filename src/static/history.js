@@ -1,0 +1,175 @@
+(function() {
+    const state = {
+        symbol: '',
+        status: '',
+        limit: 50,
+        offset: 0,
+        sort_by: 'timestamps.closed_at',
+        sort_order: 'desc',
+    };
+
+    async function fetchJSON(url) {
+        try {
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return await res.json();
+        } catch (e) {
+            console.error('Fetch error:', e);
+            return null;
+        }
+    }
+
+    function formatPrice(val) {
+        if (val == null) return '—';
+        return Number(val).toLocaleString(undefined, { maximumFractionDigits: 4 });
+    }
+
+    function formatPnl(pct) {
+        if (pct == null) return '—';
+        const cls = pct >= 0 ? 'green' : 'red';
+        const sign = pct >= 0 ? '+' : '';
+        return `<span class="${cls}">${sign}${pct.toFixed(2)}%</span>`;
+    }
+
+    function formatDate(iso) {
+        if (!iso) return '—';
+        try {
+            const d = new Date(iso.replace('Z', '+00:00'));
+            return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        } catch {
+            return iso;
+        }
+    }
+
+    function statusClass(status) {
+        if (!status) return '';
+        const s = status.toLowerCase().replace(/[\s_-]+/g, '_');
+        return `status-${s}`;
+    }
+
+    async function loadSummary() {
+        const data = await fetchJSON('/api/summary');
+        if (!data) return;
+
+        const container = document.getElementById('summary');
+        const cards = [
+            { label: 'Total Trades', value: data.total_trades },
+            { label: 'Win Rate', value: `${data.win_rate_pct}%`, cls: data.win_rate_pct >= 50 ? 'green' : 'red' },
+            { label: 'Avg PnL', value: formatPnl(data.avg_pnl_pct) },
+            { label: 'Best / Worst', value: `${formatPnl(data.best_trade_pct)} / ${formatPnl(data.worst_trade_pct)}` },
+        ];
+
+        container.innerHTML = cards.map(c => `
+            <div class="card">
+                <div class="card-label">${c.label}</div>
+                <div class="card-value ${c.cls || ''}">${c.value}</div>
+            </div>
+        `).join('');
+    }
+
+    async function loadTrades() {
+        const container = document.getElementById('trades-container');
+        container.innerHTML = '<div class="loading">Loading trades...</div>';
+
+        const params = new URLSearchParams({
+            symbol: state.symbol || '',
+            status: state.status || '',
+            limit: state.limit,
+            offset: state.offset,
+            sort_by: state.sort_by,
+            sort_order: state.sort_order,
+        });
+
+        const data = await fetchJSON(`/api/trades?${params}`);
+        if (!data) {
+            container.innerHTML = '<div class="error">Failed to load trades.</div>';
+            return;
+        }
+
+        const { total, trades } = data;
+        const totalPages = Math.ceil(total / state.limit);
+
+        if (trades.length === 0) {
+            container.innerHTML = '<div class="loading">No trades found.</div>';
+            return;
+        }
+
+        const rows = trades.map(t => `
+            <tr>
+                <td>${formatDate(t.timestamps?.signal_generated)}</td>
+                <td><strong>${t.symbol}</strong></td>
+                <td><span class="status-badge status-${t.side}">${t.side}</span></td>
+                <td>${formatPrice(t.entry_price)}</td>
+                <td>${formatPrice(t.sl_price)}</td>
+                <td>${formatPrice(t.tp1_price)}</td>
+                <td>${t.quantity ? Number(t.quantity).toFixed(4) : '—'}</td>
+                <td><span class="status-badge ${statusClass(t.status)}">${t.status}</span></td>
+                <td>${t.duration_str || '—'}</td>
+                <td>${formatPnl(t.pnl_pct)}</td>
+            </tr>
+        `).join('');
+
+        container.innerHTML = `
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Symbol</th>
+                            <th>Side</th>
+                            <th>Entry</th>
+                            <th>SL</th>
+                            <th>TP1</th>
+                            <th>Qty</th>
+                            <th>Status</th>
+                            <th>Duration</th>
+                            <th>PnL%</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+            <div class="pagination">
+                <span>Showing ${state.offset + 1}–${Math.min(state.offset + state.limit, total)} of ${total}</span>
+                <div style="display:flex;gap:8px;">
+                    <button class="btn-secondary" onclick="window.__history.prev()" ${state.offset === 0 ? 'disabled' : ''}>Previous</button>
+                    <button class="btn-secondary" onclick="window.__history.next()" ${state.offset >= (totalPages - 1) * state.limit ? 'disabled' : ''}>Next</button>
+                </div>
+            </div>
+        `;
+    }
+
+    window.__history = {
+        prev: () => { if (state.offset >= state.limit) { state.offset -= state.limit; loadTrades(); } },
+        next: () => { state.offset += state.limit; loadTrades(); },
+        applyFilters,
+        resetFilters,
+    };
+
+    function applyFilters() {
+        state.symbol = document.getElementById('filter-symbol').value.trim();
+        state.status = document.getElementById('filter-status').value;
+        state.offset = 0;
+        loadSummary();
+        loadTrades();
+    }
+
+    function resetFilters() {
+        document.getElementById('filter-symbol').value = '';
+        document.getElementById('filter-status').value = '';
+        applyFilters();
+    }
+
+    // Mode badge from query param
+    const params = new URLSearchParams(window.location.search);
+    const modeBadge = document.getElementById('mode-badge');
+    if (params.get('dry_run') === 'true' || params.get('dry_run') === '1') {
+        modeBadge.textContent = 'DRY RUN';
+        modeBadge.classList.add('dry-run');
+    } else {
+        modeBadge.textContent = 'PRODUCTION';
+    }
+
+    loadSummary();
+    loadTrades();
+})();

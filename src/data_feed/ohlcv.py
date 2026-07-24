@@ -23,7 +23,8 @@ def fetch_klines(
             "close_time", "quote_av", "trades", "tb_base_av",
             "tb_quote_av", "ignore",
         ])
-        df = df.iloc[:-1].copy()
+        
+        # df = df.iloc[:-1].copy()
         for col in ["open", "high", "low", "close", "volume"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")

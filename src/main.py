@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 
 import pandas as pd
 from fastapi import FastAPI, Query
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from typing import Annotated
 
 from src.config.settings import (
@@ -21,10 +23,11 @@ from src.strategy.blueprint import macroscan_4h, check_entry, Signal
 from src.risk_manager.calculator import calculate_position
 from src.execution.order import place_limit_order
 from google.cloud.firestore_v1.base_query import FieldFilter
-from src.services.firebase import init_firebase, create_trade, update_trade_status, get_db
+from src.services.firebase import init_firebase, create_trade, update_trade_status, get_db, get_all_trades, get_trade_summary
 from src.services.telegram import send_alert
 from src.services.redis_client import init_redis, close_redis, is_cross_detected, mark_cross_detected
 from src.execution.monitor import monitor_loop
+from fastapi.middleware.cors import CORSMiddleware
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -58,6 +61,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Crypto Blueprint Bot", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.mount("/static", StaticFiles(directory="src/static"), name="static")
 
 
 @app.get("/")
@@ -285,3 +298,32 @@ async def scan(
     except Exception as e:
         logger.error("Scan error: %s", e, exc_info=True)
         return {"status": "error", "message": str(e)}
+
+
+@app.get("/history")
+def history_page():
+    return FileResponse("src/static/history.html")
+
+
+@app.get("/api/trades")
+async def get_trades(
+    symbol: Annotated[str | None, Query(description="Filter by symbol")] = None,
+    status: Annotated[str | None, Query(description="Filter by status")] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    sort_by: Annotated[str, Query] = "timestamps.closed_at",
+    sort_order: Annotated[str, Query] = "desc",
+):
+    return get_all_trades(
+        symbol=symbol,
+        status=status,
+        limit=limit,
+        offset=offset,
+        sort_by=sort_by,
+        sort_order=sort_order,
+    )
+
+
+@app.get("/api/summary")
+async def get_summary(symbol: Annotated[str | None, Query(description="Filter by symbol")] = None):
+    return get_trade_summary(symbol=symbol)

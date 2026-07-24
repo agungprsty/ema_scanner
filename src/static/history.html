@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EMA Scanner — Trade History</title>
+    <style>
+        :root {
+            --bg: #f8f9fa;
+            --card-bg: #ffffff;
+            --border: #e2e8f0;
+            --text: #1a202c;
+            --text-muted: #718096;
+            --primary: #3182ce;
+            --green: #38a169;
+            --green-bg: #f0fff4;
+            --red: #e53e3e;
+            --red-bg: #fff5f5;
+            --yellow: #d69e2e;
+            --yellow-bg: #fffff0;
+            --blue-bg: #ebf8ff;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+        }
+
+        .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+
+        h1 { font-size: 1.5rem; font-weight: 600; }
+
+        .badge {
+            padding: 4px 12px;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            background: var(--primary);
+            color: white;
+        }
+
+        .badge.dry-run { background: var(--yellow); color: #744210; }
+
+        /* Summary Cards */
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+        }
+
+        .card-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+        .card-value { font-size: 1.75rem; font-weight: 600; margin-top: 4px; }
+
+        .green { color: var(--green); }
+        .red { color: var(--red); }
+
+        /* Filters */
+        .filters {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 24px;
+            display: flex;
+            gap: 12px;
+            align-items: end;
+            flex-wrap: wrap;
+        }
+
+        .filter-group { display: flex; flex-direction: column; gap: 4px; }
+        .filter-group label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+
+        input, select {
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 0.875rem;
+            background: white;
+            color: var(--text);
+        }
+
+        input:focus, select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px rgba(49,130,206,0.1); }
+
+        button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            cursor: pointer;
+            font-weight: 500;
+        }
+
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-primary:hover { background: #2b6cb0; }
+        .btn-secondary { background: #edf2f7; color: var(--text); }
+        .btn-secondary:hover { background: #e2e8f0; }
+
+        /* Table */
+        .table-container {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow-x: auto;
+        }
+
+        table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+        th { background: #f7fafc; padding: 12px 16px; text-align: left; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); border-bottom: 2px solid var(--border); }
+        td { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+        tr:last-child td { border-bottom: none; }
+        tr:hover { background: #f7fafc; }
+
+        .status-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .status-LONG { background: var(--green-bg); color: var(--green); }
+        .status-SHORT { background: var(--red-bg); color: var(--red); }
+        .status-CLOSED_TP { background: var(--green-bg); color: var(--green); }
+        .status-CLOSED_SL { background: var(--red-bg); color: var(--red); }
+        .status-CLOSED_BEP { background: var(--yellow-bg); color: #744210; }
+        .status-LIMIT_PLACED, .status-PENDING, .status-FILLED { background: var(--blue-bg); color: #2b6cb0; }
+        .status-EXPIRED_CANCELLED { background: #f0f0f0; color: #718096; }
+
+        .pagination {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px;
+            font-size: 0.875rem;
+            color: var(--text-muted);
+        }
+
+        .pagination button { min-width: 80px; }
+        .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .loading { text-align: center; padding: 48px; color: var(--text-muted); }
+        .error { text-align: center; padding: 48px; color: var(--red); }
+
+        @media (max-width: 768px) {
+            .container { padding: 16px; }
+            .summary-grid { grid-template-columns: repeat(2, 1fr); }
+            .filters { flex-direction: column; align-items: stretch; }
+            th, td { padding: 8px 12px; font-size: 0.75rem; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Trade History</h1>
+            <span id="mode-badge" class="badge"></span>
+        </header>
+
+        <div class="summary-grid" id="summary"></div>
+
+        <div class="filters">
+            <div class="filter-group">
+                <label>Symbol</label>
+                <input type="text" id="filter-symbol" placeholder="e.g. BTCUSDT">
+            </div>
+            <div class="filter-group">
+                <label>Status</label>
+                <select id="filter-status">
+                    <option value="">All</option>
+                    <option value="PENDING">PENDING</option>
+                    <option value="LIMIT_PLACED">LIMIT PLACED</option>
+                    <option value="FILLED">FILLED</option>
+                    <option value="TP1_HIT">TP1 HIT</option>
+                    <option value="CLOSED_TP">CLOSED TP</option>
+                    <option value="CLOSED_SL">CLOSED SL</option>
+                    <option value="CLOSED_BEP">CLOSED BEP</option>
+                    <option value="EXPIRED_CANCELLED">EXPIRED</option>
+                </select>
+            </div>
+            <button class="btn-primary" onclick="window.__history.applyFilters()">Apply</button>
+            <button class="btn-secondary" onclick="window.__history.resetFilters()">Reset</button>
+        </div>
+
+        <div id="trades-container">
+            <div class="loading">Loading trades...</div>
+        </div>
+    </div>
+
+    <script src="/static/history.js"></script>
+</body>
+</html>
