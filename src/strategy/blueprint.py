@@ -73,21 +73,21 @@ def check_entry(
         prev = df_1h.iloc[i - 1]
 
         volume = curr["volume"]
-        ema7_curr = curr.get("EMA7", 0)
+        ema20_curr = curr.get("EMA20", 0)
         ema50_curr = curr.get("EMA50", 0)
-        ema7_prev = prev.get("EMA7", 0)
+        ema20_prev = prev.get("EMA20", 0)
         ema50_prev = prev.get("EMA50", 0)
 
-        if any(pd.isna(v) for v in [ema7_curr, ema50_curr, ema7_prev, ema50_prev]):
+        if any(pd.isna(v) for v in [ema20_curr, ema50_curr, ema20_prev, ema50_prev]):
             continue
 
-        diff_prev = ema7_prev - ema50_prev
-        diff_curr = ema7_curr - ema50_curr
+        diff_prev = ema20_prev - ema50_prev
+        diff_curr = ema20_curr - ema50_curr
         delta = diff_curr - diff_prev
         if delta == 0:
             continue
         ratio = -diff_prev / delta
-        cross_price = ema7_prev + ratio * (ema7_curr - ema7_prev)
+        cross_price = ema20_prev + ratio * (ema20_curr - ema20_prev)
         if cross_price <= 0:
             continue
 
@@ -106,7 +106,7 @@ def check_entry(
         cross_ms = int(curr["timestamp"].timestamp() * 1000)
 
         if scan_long:
-            if ema7_prev <= ema50_prev and ema7_curr > ema50_curr:
+            if ema20_prev <= ema50_prev and ema20_curr > ema50_curr:
                 if btc_bias == "BEARISH":
                     continue
 
@@ -128,7 +128,7 @@ def check_entry(
                 )
 
         if scan_short:
-            if ema7_prev >= ema50_prev and ema7_curr < ema50_curr:
+            if ema20_prev >= ema50_prev and ema20_curr < ema50_curr:
                 if btc_bias == "BULLISH":
                     continue
 

@@ -1,11 +1,11 @@
-# EMA7/EMA50 Cross Scanner — Quantitative Futures Trading Bot
+# EMA20/EMA50 Cross Scanner — Quantitative Futures Trading Bot
 
-A production-grade Python bot for Binance USDⓈ-M Futures that implements a quantitative **EMA7/EMA50 cross strategy** with a **4H macro trend filter**. The system features a modular architecture with Firebase-backed state management and real-time Telegram notifications.
+A production-grade Python bot for Binance USDⓈ-M Futures that implements a quantitative **EMA20/EMA50 cross strategy** with a **4H macro trend filter**. The system features a modular architecture with Firebase-backed state management and real-time Telegram notifications.
 
 ## Key Capabilities
 
 - **Two-Stage Screening Pipeline**: Macro-level trend filter (4H) narrows the watchlist before triggering entry signals on the 1H timeframe
-- **EMA7/EMA50 Cross Entry**: Detects EMA7/EMA50 crossovers (golden cross for LONG, death cross for SHORT) on the 1H chart
+- **EMA20/EMA50 Cross Entry**: Detects EMA20/EMA50 crossovers (golden cross for LONG, death cross for SHORT) on the 1H chart
 - **4H Macro Trend Filter**: Restricts trading to symbols trading above a rising EMA50 on the 4H timeframe
 - **Volume-Confirmed Entries**: Requires volume to exceed the 20-period moving average before triggering
 - **ATR-Based Stop Loss**: Dynamic stop loss calculated from the lowest low of the lookback window minus 1.5× ATR(14)
@@ -13,7 +13,7 @@ A production-grade Python bot for Binance USDⓈ-M Futures that implements a qua
 - **Automated Breakeven Management**: Stop loss automatically moves to breakeven (entry + 0.05% fee buffer) after TP1 is hit
 - **Real-Time Telegram Alerts**: Trade signals, fills, and status updates delivered via Telegram Bot API
 - **Firestore State Management**: Crash-resistant state persistence using Firestore transactions and write batches
-- **BTC Macro Bias Filter**: Scans are gated by Bitcoin's EMA7/EMA50 directional bias (bullish/bearish) on the 4H timeframe with configurable strength thresholds
+- **BTC Macro Bias Filter**: Scans are gated by Bitcoin's EMA20/EMA50 directional bias (bullish/bearish) on the 4H timeframe with configurable strength thresholds
 - **Liquidity Filter**: Automatically excludes low-volume pairs below a configurable daily USDT threshold
 - **Auto-Cancel Stale Orders**: Monitors open limit orders and cancels those exceeding a configurable time-to-live
 - **Concurrent Symbol Scanning**: Processes up to 10 symbols in parallel, reducing scan time by approximately 4x
@@ -43,7 +43,7 @@ src/
 └── main.py           # FastAPI application entry point and orchestrator
 ```
 
-## Strategy Overview: EMA7/EMA50 Cross (1H / 4H)
+## Strategy Overview: EMA20/EMA50 Cross (1H / 4H)
 
 ### Stage 1 — Macro Trend Filter (4H Watchlist)
 
@@ -60,8 +60,8 @@ Symbols that pass the macro filter are evaluated on the 1H timeframe for an entr
 
 | Condition | Formula |
 |---|---|
-| Golden Cross (LONG) | `EMA7(1H) crosses above EMA50(1H)` when macro is **BULLISH** |
-| Death Cross (SHORT) | `EMA7(1H) crosses below EMA50(1H)` when macro is **BEARISH** |
+| Golden Cross (LONG) | `EMA20(1H) crosses above EMA50(1H)` when macro is **BULLISH** |
+| Death Cross (SHORT) | `EMA20(1H) crosses below EMA50(1H)` when macro is **BEARISH** |
 | Volume confirmation | `Volume(1H) > SMA_Volume_20(1H)` |
 
 ### Risk Management Framework
@@ -156,7 +156,7 @@ The server starts at `http://localhost:8000`.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `timeframe` | string | `1h` | Entry timeframe for EMA7/EMA50 cross detection |
+| `timeframe` | string | `1h` | Entry timeframe for EMA20/EMA50 cross detection |
 | `htf` | string | `4h` | Macro timeframe for the trend filter |
 | `limit` | integer | `500` | Number of entry candles to fetch |
 | `macro_limit` | integer | `200` | Number of macro candles to fetch |
@@ -195,7 +195,7 @@ The server starts at `http://localhost:8000`.
 
 ## Backtesting
 
-The backtesting engine simulates the EMA7/EMA50 cross strategy (4H macro filter + 1H entry) against historical Binance data. It supports golden cross, death cross, and early-entry signals (LONG/SHORT) with partial TP1/BEP/TP2 exit logic.
+The backtesting engine simulates the EMA20/EMA50 cross strategy (4H macro filter + 1H entry) against historical Binance data. It supports golden cross, death cross, and early-entry signals (LONG/SHORT) with partial TP1/BEP/TP2 exit logic.
 
 ### Running a Backtest
 
@@ -210,7 +210,7 @@ This produces a console report and an interactive HTML trade chart.
 | Parameter | Default | Description |
 |---|---|---|
 | `--symbol` | `SOLUSDT` | Trading pair to backtest |
-| `--timeframe` | `1h` | Entry timeframe for the EMA7/EMA50 cross |
+| `--timeframe` | `1h` | Entry timeframe for the EMA20/EMA50 cross |
 | `--htf` | `4h` | Macro timeframe for the trend filter |
 | `--limit` | `2000` | Number of historical candles |
 | `--balance` | `100` | Simulated starting capital (USDT) |
@@ -219,7 +219,7 @@ This produces a console report and an interactive HTML trade chart.
 
 ```
 ====================================================================
-           BACKTEST SETUP — Market Order (EMA7/50 + RSI)
+           BACKTEST SETUP — Market Order (EMA20/50 + RSI)
 ====================================================================
 Symbol               : SOLUSDT
 TF Stack             : 1h / 4h
@@ -278,7 +278,7 @@ EARLY_SHORT (RSI < 45)   : 2
 ### Interactive Trade Chart
 
 Running a backtest generates an interactive **HTML chart** (Plotly) displaying:
-- Price candles with EMA7 and EMA50 overlays
+- Price candles with EMA20 and EMA50 overlays
 - Entry markers (green triangles for longs, red for shorts)
 - TP1, TP2, BEP, and Stop Loss levels per trade
 - Annotated trade timeline with PnL labels

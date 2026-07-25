@@ -76,7 +76,7 @@ app.mount("/static", StaticFiles(directory="src/static"), name="static")
 @app.get("/")
 def root():
     mode = "DRY_RUN" if DRY_RUN else "PRODUCTION"
-    return {"status": "running", "version": "v8.0.0", "mode": mode, "strategy": "EMA7/EMA50 Cross LONG/SHORT (1h/4h)"}
+    return {"status": "running", "version": "v8.0.0", "mode": mode, "strategy": "EMA20/EMA50 Cross LONG/SHORT (1h/4h)"}
 
 
 @app.get("/api/scan")
