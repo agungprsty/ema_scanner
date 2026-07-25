@@ -310,7 +310,7 @@ async def get_trades(
     status: Annotated[str | None, Query(description="Filter by status")] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
-    sort_by: Annotated[str, Query] = "closed_at",
+    sort_by: Annotated[str, Query] = "created_at",
     sort_order: Annotated[str, Query] = "desc",
 ):
     return get_all_trades(
