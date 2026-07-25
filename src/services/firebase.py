@@ -155,7 +155,7 @@ def get_all_trades(
     status: Optional[str] = None,
     limit: int = 20,
     offset: int = 0,
-    sort_by: str = "closed_at",
+    sort_by: str = "created_at",
     sort_order: str = "desc",
 ) -> dict:
     db = get_db()
@@ -166,7 +166,7 @@ def get_all_trades(
     if status:
         query = query.where(filter=FieldFilter("status", "==", status))
 
-    order_field = sort_by or "closed_at"
+    order_field = sort_by or "created_at"
     direction = firestore.Query.DESCENDING if sort_order == "desc" else firestore.Query.ASCENDING
     query = query.order_by(order_field, direction=direction)
 

@@ -4,7 +4,7 @@
         status: '',
         limit: 50,
         offset: 0,
-        sort_by: 'timestamps.closed_at',
+        sort_by: 'created_at',
         sort_order: 'desc',
     };
 
@@ -29,6 +29,26 @@
         const cls = pct >= 0 ? 'green' : 'red';
         const sign = pct >= 0 ? '+' : '';
         return `<span class="${cls}">${sign}${pct.toFixed(2)}%</span>`;
+    }
+
+    function formatDuration(hours) {
+        if (hours == null || hours === 0) return '—';
+        if (hours < 1) return `${Math.round(hours * 60)}m`;
+        if (hours < 24) return `${hours.toFixed(1)}h`;
+        return `${(hours / 24).toFixed(1)}d`;
+    }
+
+    function computeDuration(trade) {
+        const closed = trade.closed_at || trade.timestamps?.closed_at;
+        const created = trade.created_at || trade.timestamps?.created_at;
+        if (!closed || !created) return null;
+        try {
+            const c_dt = new Date(closed.replace('Z', '+00:00'));
+            const cr_dt = new Date(created.replace('Z', '+00:00'));
+            return (c_dt - cr_dt) / 3600000;
+        } catch {
+            return null;
+        }
     }
 
     function formatDate(iso) {
@@ -96,7 +116,7 @@
 
         const rows = trades.map(t => `
             <tr>
-                <td>${formatDate(t.timestamps?.signal_generated)}</td>
+                <td>${formatDate(t.created_at)}</td>
                 <td><strong>${t.symbol}</strong></td>
                 <td><span class="status-badge status-${t.side}">${t.side}</span></td>
                 <td>${formatPrice(t.entry_price)}</td>
@@ -104,7 +124,7 @@
                 <td>${formatPrice(t.tp1_price)}</td>
                 <td>${t.quantity ? Number(t.quantity).toFixed(4) : '—'}</td>
                 <td><span class="status-badge ${statusClass(t.status)}">${t.status}</span></td>
-                <td>${t.duration_str || '—'}</td>
+                <td>${formatDuration(computeDuration(t))}</td>
                 <td>${formatPnl(t.pnl_pct)}</td>
             </tr>
         `).join('');
