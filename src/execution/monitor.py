@@ -60,7 +60,7 @@ async def _check_order_fill(
         logger.info("Order FILLED: %s %s", symbol, order_id)
         return
 
-    placed_at = trade.get("timestamps", {}).get("order_placed")
+    placed_at = trade.get("order_place_at")
     if placed_at:
         placed_dt = datetime.fromisoformat(placed_at.replace("Z", "+00:00"))
         elapsed = (now - placed_dt).total_seconds()

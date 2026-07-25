@@ -59,13 +59,11 @@ def create_trade(symbol: str, side: str, tf: str, entry: float, sl: float, tp: f
         },
         "status": "PENDING",
         "binance_order_id": None,
-        "timestamps": {
-            "signal_generated": datetime.now(timezone.utc).isoformat(),
-            "order_placed": None,
-            "filled_at": None,
-            "tp1_hit_at": None,
-            "closed_at": None,
-        },
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "order_place_at": None,
+        "filled_at": None,
+        "tp1_hit_at": None,
+        "closed_at": None,
     }
     db.collection("active_trades").document(trade_id).set(doc)
     return trade_id
@@ -83,13 +81,13 @@ def update_trade_status(trade_id: str, status: str, **extra) -> None:
             return
         update_data = {"status": status, **extra}
         if status == "LIMIT_PLACED":
-            update_data["timestamps.order_placed"] = datetime.now(timezone.utc).isoformat()
+            update_data["order_place_at"] = datetime.now(timezone.utc).isoformat()
         elif status == "FILLED":
-            update_data["timestamps.filled_at"] = datetime.now(timezone.utc).isoformat()
+            update_data["filled_at"] = datetime.now(timezone.utc).isoformat()
         elif status == "TP1_HIT":
-            update_data["timestamps.tp1_hit_at"] = datetime.now(timezone.utc).isoformat()
+            update_data["tp1_hit_at"] = datetime.now(timezone.utc).isoformat()
         elif status in ("CLOSED_SL", "CLOSED_TP", "CLOSED_BEP", "EXPIRED_CANCELLED"):
-            update_data["timestamps.closed_at"] = datetime.now(timezone.utc).isoformat()
+            update_data["closed_at"] = datetime.now(timezone.utc).isoformat()
         transaction.update(ref, update_data)
 
     _update(tx)
@@ -118,9 +116,8 @@ def _compute_pnl_pct(trade: dict) -> float:
 
 
 def _compute_duration(trade: dict) -> float:
-    ts = trade.get("timestamps", {})
-    filled_at = ts.get("filled_at")
-    closed_at = ts.get("closed_at")
+    filled_at = trade.get("filled_at")
+    closed_at = trade.get("closed_at")
 
     if not filled_at or not closed_at:
         return 0.0
@@ -148,7 +145,7 @@ def get_all_trades(
     status: Optional[str] = None,
     limit: int = 20,
     offset: int = 0,
-    sort_by: str = "timestamps.closed_at",
+    sort_by: str = "closed_at",
     sort_order: str = "desc",
 ) -> dict:
     db = get_db()
@@ -159,7 +156,7 @@ def get_all_trades(
     if status:
         query = query.where(filter=FieldFilter("status", "==", status))
 
-    order_field = sort_by or "timestamps.closed_at"
+    order_field = sort_by or "closed_at"
     direction = firestore.Query.DESCENDING if sort_order == "desc" else firestore.Query.ASCENDING
     query = query.order_by(order_field, direction=direction)
 
@@ -187,7 +184,11 @@ def get_all_trades(
             "duration_hours": _compute_duration(t),
             "duration_str": _compute_duration_str(t),
             "pnl_pct": _compute_pnl_pct(t),
-            "timestamps": t.get("timestamps", {}),
+            "created_at": t.get("created_at"),
+            "order_place_at": t.get("order_place_at"),
+            "filled_at": t.get("filled_at"),
+            "tp1_hit_at": t.get("tp1_hit_at"),
+            "closed_at": t.get("closed_at"),
         })
 
     return {"total": total, "trades": enriched}

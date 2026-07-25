@@ -221,18 +221,27 @@ async def scan(
             else:
                 bep = float(spec.entry) * (1 - SHORT_ENTRY_FEE_PCT / 100)
 
-            trade_id = str(uuid.uuid4())
-            # trade_id = create_trade(
-            #     symbol=spec.symbol,
-            #     side=spec.side,
-            #     tf=f"{timeframe}/{htf}",
-            #     entry=float(spec.entry),
-            #     sl=float(spec.stop_loss),
-            #     tp=float(spec.take_profit),
-            #     qty=float(spec.quantity),
-            #     atr=sig.atr_1h,
-            #     bep=bep,
-            # )
+            db = get_db()
+            existing = list(db.collection("active_trades")
+                .where(filter=FieldFilter("symbol", "==", spec.symbol))
+                .where(filter=FieldFilter("side", "==", sig.side))
+                .where(filter=FieldFilter("status", "in", ["PENDING", "LIMIT_PLACED", "FILLED"]))
+                .stream())
+            if existing:
+                logger.info("%s %s already has active trade — skipping", sig.side, spec.symbol)
+                continue
+
+            trade_id = create_trade(
+                symbol=spec.symbol,
+                side=spec.side,
+                tf=f"{timeframe}/{htf}",
+                entry=float(spec.entry),
+                sl=float(spec.stop_loss),
+                tp=float(spec.take_profit),
+                qty=float(spec.quantity),
+                atr=sig.atr_1h,
+                bep=bep,
+            )
 
             if is_dry_run:
                 status_msg = "DRY RUN"
@@ -311,7 +320,7 @@ async def get_trades(
     status: Annotated[str | None, Query(description="Filter by status")] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
-    sort_by: Annotated[str, Query] = "timestamps.closed_at",
+    sort_by: Annotated[str, Query] = "closed_at",
     sort_order: Annotated[str, Query] = "desc",
 ):
     return get_all_trades(
