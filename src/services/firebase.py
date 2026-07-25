@@ -41,6 +41,16 @@ def get_db():
 
 def create_trade(symbol: str, side: str, tf: str, entry: float, sl: float, tp: float, qty: float, atr: float, bep: float = 0.0) -> str:
     db = get_db()
+
+    existing = list(db.collection("active_trades")
+        .where(filter=FieldFilter("symbol", "==", symbol))
+        .where(filter=FieldFilter("side", "==", side))
+        .where(filter=FieldFilter("status", "in", ["PENDING", "LIMIT_PLACED", "FILLED"]))
+        .stream())
+
+    if existing:
+        return existing[0].id
+
     trade_id = str(uuid.uuid4())
     doc = {
         "trade_id": trade_id,

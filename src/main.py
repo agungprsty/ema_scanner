@@ -221,16 +221,6 @@ async def scan(
             else:
                 bep = float(spec.entry) * (1 - SHORT_ENTRY_FEE_PCT / 100)
 
-            db = get_db()
-            existing = list(db.collection("active_trades")
-                .where(filter=FieldFilter("symbol", "==", spec.symbol))
-                .where(filter=FieldFilter("side", "==", sig.side))
-                .where(filter=FieldFilter("status", "in", ["PENDING", "LIMIT_PLACED", "FILLED"]))
-                .stream())
-            if existing:
-                logger.info("%s %s already has active trade — skipping", sig.side, spec.symbol)
-                continue
-
             trade_id = create_trade(
                 symbol=spec.symbol,
                 side=spec.side,
