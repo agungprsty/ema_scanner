@@ -8,6 +8,7 @@ from firebase_admin import credentials, firestore
 
 from google.cloud.firestore_v1.base_query import FieldFilter
 from src.config.settings import FIREBASE_CRED_PATH, FIREBASE_CRED_JSON
+from src.services.redis_client import get_cached, set_cached, invalidate_trades_cache
 
 _db = None
 
@@ -76,6 +77,7 @@ def create_trade(symbol: str, side: str, tf: str, entry: float, sl: float, tp: f
         "closed_at": None,
     }
     db.collection("active_trades").document(trade_id).set(doc)
+    invalidate_trades_cache()
     return trade_id
 
 
@@ -101,6 +103,7 @@ def update_trade_status(trade_id: str, status: str, **extra) -> None:
         transaction.update(ref, update_data)
 
     _update(tx)
+    invalidate_trades_cache()
 
 
 def get_active_trades() -> list[dict]:
@@ -154,10 +157,15 @@ def get_all_trades(
     symbol: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = 20,
-    offset: int = 0,
+    cursor: Optional[str] = None,
     sort_by: str = "created_at",
     sort_order: str = "desc",
 ) -> dict:
+    cache_key = f"trades:{symbol or ''}:{status or ''}:{limit}:{cursor or ''}:{sort_by}:{sort_order}"
+    cached = get_cached(cache_key)
+    if cached is not None:
+        return cached
+
     db = get_db()
     query = db.collection("active_trades")
 
@@ -170,11 +178,18 @@ def get_all_trades(
     direction = firestore.Query.DESCENDING if sort_order == "desc" else firestore.Query.ASCENDING
     query = query.order_by(order_field, direction=direction)
 
-    docs_snapshot = query.limit(limit + 1).offset(offset).stream()
+    if cursor:
+        query = query.start_after({order_field: cursor})
+
+    docs_snapshot = query.limit(limit + 1).stream()
     trades_raw = [doc.to_dict() for doc in docs_snapshot]
 
-    total = len(trades_raw) - 1 if len(trades_raw) > limit else len(trades_raw)
+    has_more = len(trades_raw) > limit
     trades = trades_raw[:limit]
+
+    next_cursor = None
+    if has_more and trades:
+        next_cursor = trades[-1].get(order_field)
 
     enriched = []
     for t in trades:
@@ -201,10 +216,17 @@ def get_all_trades(
             "closed_at": t.get("closed_at"),
         })
 
-    return {"total": total, "trades": enriched}
+    result = {"trades": enriched, "next_cursor": next_cursor, "has_more": has_more}
+    set_cached(cache_key, result)
+    return result
 
 
 def get_trade_summary(symbol: Optional[str] = None) -> dict:
+    cache_key = f"summary:{symbol or ''}"
+    cached = get_cached(cache_key)
+    if cached is not None:
+        return cached
+
     db = get_db()
     query = db.collection("active_trades")
 
@@ -245,7 +267,7 @@ def get_trade_summary(symbol: Optional[str] = None) -> dict:
         s = t.get("side", "UNKNOWN")
         by_side[s] = by_side.get(s, 0) + 1
 
-    return {
+    result = {
         "total_trades": total_trades,
         "closed_trades": closed_count,
         "active_trades": active_count,
@@ -257,3 +279,5 @@ def get_trade_summary(symbol: Optional[str] = None) -> dict:
         "by_status": by_status,
         "by_side": by_side,
     }
+    set_cached(cache_key, result)
+    return result

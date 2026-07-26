@@ -308,29 +308,30 @@ def history_page():
 async def get_trades(
     symbol: Annotated[str | None, Query(description="Filter by symbol")] = None,
     status: Annotated[str | None, Query(description="Filter by status")] = None,
-    limit: Annotated[int, Query(ge=1, le=200)] = 20,
-    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    cursor: Annotated[str | None, Query(description="Cursor for next page (created_at of last item)")] = None,
     sort_by: Annotated[str, Query] = "created_at",
     sort_order: Annotated[str, Query] = "desc",
 ):
     try:
-        return get_all_trades(
+        return await asyncio.to_thread(
+            get_all_trades,
             symbol=symbol,
             status=status,
             limit=limit,
-            offset=offset,
+            cursor=cursor,
             sort_by=sort_by,
             sort_order=sort_order,
         )
     except Exception as e:
         logger.error("GET /api/trades error: %s", e, exc_info=True)
-        return {"total": 0, "trades": [], "error": str(e)}
+        return {"trades": [], "next_cursor": None, "has_more": False, "error": str(e)}
 
 
 @app.get("/api/summary")
 async def get_summary(symbol: Annotated[str | None, Query(description="Filter by symbol")] = None):
     try:
-        return get_trade_summary(symbol=symbol)
+        return await asyncio.to_thread(get_trade_summary, symbol=symbol)
     except Exception as e:
         logger.error("GET /api/summary error: %s", e, exc_info=True)
         return {"error": str(e)}
