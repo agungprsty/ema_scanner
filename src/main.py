@@ -62,6 +62,26 @@ def _get_client():
     return _client
 
 
+_ERROR_KEYWORDS = {
+    "index": "System is initializing. Please try again later.",
+    "permission": "Access denied.",
+    "unauthenticated": "Authentication failed.",
+    "not found": "Resource not found.",
+    "timeout": "Service is busy. Please try again.",
+    "unavailable": "Service temporarily unavailable.",
+    "deadline exceeded": "Service is busy. Please try again.",
+    "connection": "Connection error. Please try again.",
+}
+
+
+def _sanitize_error(e: Exception) -> str:
+    msg = str(e).lower()
+    for keyword, friendly in _ERROR_KEYWORDS.items():
+        if keyword in msg:
+            return friendly
+    return "Something went wrong. Please try again."
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_firebase()
@@ -402,7 +422,7 @@ async def get_trades(
         )
     except Exception as e:
         logger.error("GET /api/trades error: %s", e, exc_info=True)
-        return {"trades": [], "next_cursor": None, "has_more": False, "error": str(e)}
+        return {"trades": [], "next_cursor": None, "has_more": False, "error": _sanitize_error(e)}
 
 
 @app.get("/api/summary")
@@ -413,4 +433,4 @@ async def get_summary(
         return await asyncio.to_thread(get_trade_summary, symbol=symbol)
     except Exception as e:
         logger.error("GET /api/summary error: %s", e, exc_info=True)
-        return {"error": str(e)}
+        return {"error": _sanitize_error(e)}

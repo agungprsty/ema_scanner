@@ -70,13 +70,19 @@
         return `status-${s}`;
     }
 
+    function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
     async function loadSummary() {
         const summaryParams = new URLSearchParams();
         if (state.symbol) summaryParams.set('symbol', state.symbol);
         const data = await fetchJSON(`/api/summary?${summaryParams}`);
         if (!data || data.error) {
             const container = document.getElementById('summary');
-            container.innerHTML = data ? `<div class="error">${data.error}</div>` : '';
+            container.innerHTML = data ? `<div class="error">${escapeHtml(data.error)}</div>` : '';
             return;
         }
 
@@ -118,7 +124,7 @@
         }
 
         if (data.error) {
-            container.innerHTML = `<div class="error">${data.error}</div>`;
+            container.innerHTML = `<div class="error">${escapeHtml(data.error)}</div>`;
             return;
         }
 
