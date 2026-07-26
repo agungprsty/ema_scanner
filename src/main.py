@@ -75,7 +75,7 @@ _ERROR_KEYWORDS = {
 
 
 def _sanitize_error(e: Exception) -> str:
-    msg = str(e).lower()
+    msg = str(e).lower().replace('_', ' ')
     for keyword, friendly in _ERROR_KEYWORDS.items():
         if keyword in msg:
             return friendly
@@ -391,7 +391,7 @@ async def scan(
 
     except Exception as e:
         logger.error("Scan error: %s", e, exc_info=True)
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": _sanitize_error(e)}
 
 
 @app.get("/history")
