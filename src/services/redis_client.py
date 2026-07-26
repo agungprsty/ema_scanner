@@ -12,6 +12,8 @@ _redis: aioredis.Redis | None = None
 _redis_sync: redis.Redis | None = None
 CROSS_TTL = 3600
 CACHE_TTL = 15
+
+
 def _get_sync_redis() -> redis.Redis | None:
     global _redis_sync
     if _redis_sync is not None:
@@ -36,11 +38,14 @@ async def init_redis() -> None:
 
 
 async def close_redis() -> None:
-    global _redis
+    global _redis, _redis_sync
     if _redis:
         await _redis.close()
         _redis = None
-        logger.info("Redis disconnected")
+    if _redis_sync:
+        _redis_sync.close()
+        _redis_sync = None
+    logger.info("Redis disconnected")
 
 
 def _dedup_key(side: str, symbol: str, candle_ms: int) -> str:
@@ -97,6 +102,3 @@ def invalidate_trades_cache() -> None:
                     break
     except Exception as e:
         logger.warning("Cache invalidate error: %s", e)
-
-
-

@@ -16,6 +16,7 @@ _db = None
 def _load_cred():
     if FIREBASE_CRED_JSON:
         import json
+
         return credentials.Certificate(json.loads(FIREBASE_CRED_JSON))
     if FIREBASE_CRED_PATH:
         return credentials.Certificate(FIREBASE_CRED_PATH)
@@ -40,14 +41,28 @@ def get_db():
     return _db
 
 
-def create_trade(symbol: str, side: str, tf: str, entry: float, sl: float, tp: float, qty: float, atr: float, bep: float = 0.0) -> str:
+def create_trade(
+    symbol: str,
+    side: str,
+    tf: str,
+    entry: float,
+    sl: float,
+    tp: float,
+    qty: float,
+    atr: float,
+    bep: float = 0.0,
+) -> str:
     db = get_db()
 
-    existing = list(db.collection("active_trades")
+    existing = list(
+        db.collection("active_trades")
         .where(filter=FieldFilter("symbol", "==", symbol))
         .where(filter=FieldFilter("side", "==", side))
-        .where(filter=FieldFilter("status", "in", ["PENDING", "LIMIT_PLACED", "FILLED"]))
-        .stream())
+        .where(
+            filter=FieldFilter("status", "in", ["PENDING", "LIMIT_PLACED", "FILLED"])
+        )
+        .stream()
+    )
 
     if existing:
         return existing[0].id
@@ -108,14 +123,20 @@ def update_trade_status(trade_id: str, status: str, **extra) -> None:
 
 def get_active_trades() -> list[dict]:
     db = get_db()
-    docs = db.collection("active_trades").where(filter=FieldFilter("status", "==", "LIMIT_PLACED")).stream()
+    docs = (
+        db.collection("active_trades")
+        .where(filter=FieldFilter("status", "==", "LIMIT_PLACED"))
+        .stream()
+    )
     return [doc.to_dict() for doc in docs]
 
 
 def _compute_pnl_pct(trade: dict) -> float:
     prices = trade.get("prices", {})
     entry = prices.get("entry_target", 0)
-    close_price = prices.get("take_profit") or prices.get("bep") or prices.get("stop_loss", entry)
+    close_price = (
+        prices.get("take_profit") or prices.get("bep") or prices.get("stop_loss", entry)
+    )
     side = trade.get("side", "LONG")
 
     if side == "LONG":
@@ -123,7 +144,11 @@ def _compute_pnl_pct(trade: dict) -> float:
     else:
         pnl_pct = (entry - close_price) / entry * 100
 
-    fee_pct = float(os.getenv("LONG_ENTRY_FEE_PCT", "0.05")) if side == "LONG" else float(os.getenv("SHORT_ENTRY_FEE_PCT", "0.05"))
+    fee_pct = (
+        float(os.getenv("LONG_ENTRY_FEE_PCT", "0.05"))
+        if side == "LONG"
+        else float(os.getenv("SHORT_ENTRY_FEE_PCT", "0.05"))
+    )
     pnl_pct -= fee_pct
     return round(pnl_pct, 2)
 
@@ -175,7 +200,11 @@ def get_all_trades(
         query = query.where(filter=FieldFilter("status", "==", status))
 
     order_field = sort_by or "created_at"
-    direction = firestore.Query.DESCENDING if sort_order == "desc" else firestore.Query.ASCENDING
+    direction = (
+        firestore.Query.DESCENDING
+        if sort_order == "desc"
+        else firestore.Query.ASCENDING
+    )
     query = query.order_by(order_field, direction=direction)
 
     if cursor:
@@ -193,28 +222,30 @@ def get_all_trades(
 
     enriched = []
     for t in trades:
-        enriched.append({
-            "trade_id": t.get("trade_id"),
-            "symbol": t.get("symbol"),
-            "side": t.get("side"),
-            "timeframe": t.get("tf"),
-            "signal_reason": t.get("signal_reason", ""),
-            "entry_price": t.get("prices", {}).get("entry_target"),
-            "sl_price": t.get("prices", {}).get("stop_loss"),
-            "tp1_price": t.get("prices", {}).get("take_profit"),
-            "bep_price": t.get("prices", {}).get("bep"),
-            "quantity": t.get("metrics", {}).get("qty_coins"),
-            "status": t.get("status"),
-            "binance_order_id": t.get("binance_order_id"),
-            "duration_hours": _compute_duration(t),
-            "duration_str": _compute_duration_str(t),
-            "pnl_pct": _compute_pnl_pct(t),
-            "created_at": t.get("created_at"),
-            "order_place_at": t.get("order_place_at"),
-            "filled_at": t.get("filled_at"),
-            "tp1_hit_at": t.get("tp1_hit_at"),
-            "closed_at": t.get("closed_at"),
-        })
+        enriched.append(
+            {
+                "trade_id": t.get("trade_id"),
+                "symbol": t.get("symbol"),
+                "side": t.get("side"),
+                "timeframe": t.get("tf"),
+                "signal_reason": t.get("signal_reason", ""),
+                "entry_price": t.get("prices", {}).get("entry_target"),
+                "sl_price": t.get("prices", {}).get("stop_loss"),
+                "tp1_price": t.get("prices", {}).get("take_profit"),
+                "bep_price": t.get("prices", {}).get("bep"),
+                "quantity": t.get("metrics", {}).get("qty_coins"),
+                "status": t.get("status"),
+                "binance_order_id": t.get("binance_order_id"),
+                "duration_hours": _compute_duration(t),
+                "duration_str": _compute_duration_str(t),
+                "pnl_pct": _compute_pnl_pct(t),
+                "created_at": t.get("created_at"),
+                "order_place_at": t.get("order_place_at"),
+                "filled_at": t.get("filled_at"),
+                "tp1_hit_at": t.get("tp1_hit_at"),
+                "closed_at": t.get("closed_at"),
+            }
+        )
 
     result = {"trades": enriched, "next_cursor": next_cursor, "has_more": has_more}
     set_cached(cache_key, result)

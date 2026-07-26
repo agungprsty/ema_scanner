@@ -135,7 +135,7 @@
             </tr>
         `).join('');
 
-        const pageNum = state.cursors.length + (state.cursor ? 1 : 0);
+        const pageNum = state.cursors.length;
         const showingFrom = pageNum * state.limit + 1;
         const showingTo = showingFrom + trades.length - 1;
 
