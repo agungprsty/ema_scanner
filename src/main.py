@@ -313,16 +313,24 @@ async def get_trades(
     sort_by: Annotated[str, Query] = "created_at",
     sort_order: Annotated[str, Query] = "desc",
 ):
-    return get_all_trades(
-        symbol=symbol,
-        status=status,
-        limit=limit,
-        offset=offset,
-        sort_by=sort_by,
-        sort_order=sort_order,
-    )
+    try:
+        return get_all_trades(
+            symbol=symbol,
+            status=status,
+            limit=limit,
+            offset=offset,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+    except Exception as e:
+        logger.error("GET /api/trades error: %s", e, exc_info=True)
+        return {"total": 0, "trades": [], "error": str(e)}
 
 
 @app.get("/api/summary")
 async def get_summary(symbol: Annotated[str | None, Query(description="Filter by symbol")] = None):
-    return get_trade_summary(symbol=symbol)
+    try:
+        return get_trade_summary(symbol=symbol)
+    except Exception as e:
+        logger.error("GET /api/summary error: %s", e, exc_info=True)
+        return {"error": str(e)}
