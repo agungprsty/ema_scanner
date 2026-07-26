@@ -71,8 +71,14 @@
     }
 
     async function loadSummary() {
-        const data = await fetchJSON('/api/summary');
-        if (!data) return;
+        const summaryParams = new URLSearchParams();
+        if (state.symbol) summaryParams.set('symbol', state.symbol);
+        const data = await fetchJSON(`/api/summary?${summaryParams}`);
+        if (!data || data.error) {
+            const container = document.getElementById('summary');
+            container.innerHTML = data ? `<div class="error">${data.error}</div>` : '';
+            return;
+        }
 
         const container = document.getElementById('summary');
         const cards = [
@@ -108,6 +114,11 @@
         const data = await fetchJSON(`/api/trades?${params}`);
         if (!data) {
             container.innerHTML = '<div class="error">Failed to load trades.</div>';
+            return;
+        }
+
+        if (data.error) {
+            container.innerHTML = `<div class="error">${data.error}</div>`;
             return;
         }
 
