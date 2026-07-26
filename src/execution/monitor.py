@@ -6,6 +6,8 @@ from binance.um_futures import UMFutures
 
 from src.config.settings import LONG_ENTRY_FEE_PCT
 from src.execution.order import cancel_order
+from src.execution.bitunix_client import BitunixClient
+from src.execution.bitunix_order import cancel_order as bitunix_cancel_order, get_order_detail as bitunix_get_order_detail
 from src.services.firebase import get_active_trades, update_trade_status
 
 logger = logging.getLogger(__name__)
@@ -13,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 async def monitor_loop(
     client: UMFutures,
+    bitunix_client: BitunixClient | None = None,
     check_interval: int = 60,
     max_candles: int = 5,
     candle_seconds: int = 3600,
@@ -26,7 +29,10 @@ async def monitor_loop(
                 status = trade.get("status")
 
                 if status == "LIMIT_PLACED":
-                    await _check_order_fill(client, trade, now, max_candles, candle_seconds)
+                    if trade.get("bitunix_order_id"):
+                        await _check_bitunix_order_fill(bitunix_client, trade, now, max_candles, candle_seconds)
+                    else:
+                        await _check_order_fill(client, trade, now, max_candles, candle_seconds)
 
                 elif status == "FILLED":
                     await _check_tp1_hit(client, trade)
@@ -68,6 +74,47 @@ async def _check_order_fill(
             cancel_order(client, symbol, order_id)
             update_trade_status(trade["trade_id"], "EXPIRED_CANCELLED")
             logger.info("Order CANCELLED (timeout): %s %s", symbol, order_id)
+
+
+async def _check_bitunix_order_fill(
+    bitunix_client: BitunixClient | None,
+    trade: dict,
+    now: datetime,
+    max_candles: int,
+    candle_seconds: int,
+) -> None:
+    if not bitunix_client:
+        return
+
+    order_id = trade.get("bitunix_order_id")
+    symbol = trade.get("symbol")
+    if not order_id or not symbol:
+        return
+
+    order_detail = await bitunix_get_order_detail(bitunix_client, order_id)
+    if not order_detail:
+        return
+
+    bx_status = order_detail.get("status", "")
+
+    if bx_status == "FILLED":
+        update_trade_status(trade["trade_id"], "FILLED")
+        logger.info("Bitunix Order FILLED: %s %s", symbol, order_id)
+        return
+
+    if bx_status in ("CANCELED", "EXPIRED"):
+        update_trade_status(trade["trade_id"], "EXPIRED_CANCELLED")
+        logger.info("Bitunix Order %s: %s %s", bx_status, symbol, order_id)
+        return
+
+    placed_at = trade.get("order_place_at")
+    if placed_at:
+        placed_dt = datetime.fromisoformat(placed_at.replace("Z", "+00:00"))
+        elapsed = (now - placed_dt).total_seconds()
+        if elapsed > max_candles * candle_seconds:
+            await bitunix_cancel_order(bitunix_client, symbol, order_id)
+            update_trade_status(trade["trade_id"], "EXPIRED_CANCELLED")
+            logger.info("Bitunix Order CANCELLED (timeout): %s %s", symbol, order_id)
 
 
 async def _check_tp1_hit(

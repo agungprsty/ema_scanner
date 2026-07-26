@@ -52,6 +52,7 @@ Setiap skill berisi instruksi detail untuk AI Agent. **Load skill sebelum menger
 | `skill-firebase-db` | `src/services/` | Schema Firestore, state management |
 | `skill-backtester` | `backtester.py` | Simulasi historis, metrik performa |
 | `skill-best-practices` | Semua modul | FastAPI, Firebase, Telegram, Binance patterns |
+| `skill-bitunix-futures-api` | `src/execution/` (Bitunix) | Integrasi Bitunix Futures API - auth, order, cancel, modify |
 
 ### Cara Load Skill
 ```

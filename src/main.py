@@ -25,7 +25,9 @@ from src.data_feed.macro_filter import compute_btc_bias
 from src.strategy.indicators import compute_indicators
 from src.strategy.blueprint import macroscan_4h, check_entry, Signal
 from src.risk_manager.calculator import calculate_position
-from src.execution.order import place_limit_order
+from src.execution.order import place_limit_order as binance_place_order
+from src.execution.bitunix_client import create_bitunix_client, BitunixClient
+from src.execution.bitunix_order import place_limit_order as bitunix_place_order
 from google.cloud.firestore_v1.base_query import FieldFilter
 from src.services.firebase import (
     init_firebase,
@@ -52,6 +54,7 @@ logger = logging.getLogger(__name__)
 
 _monitor_task = None
 _client = None
+_bitunix_client = None
 CONCURRENCY = 10
 
 
@@ -60,6 +63,13 @@ def _get_client():
     if _client is None:
         _client = create_futures_client()
     return _client
+
+
+def _get_bitunix_client() -> BitunixClient | None:
+    global _bitunix_client
+    if _bitunix_client is None:
+        _bitunix_client = create_bitunix_client()
+    return _bitunix_client
 
 
 _ERROR_KEYWORDS = {
@@ -86,14 +96,17 @@ def _sanitize_error(e: Exception) -> str:
 async def lifespan(app: FastAPI):
     init_firebase()
     await init_redis()
-    global _monitor_task
+    global _monitor_task, _bitunix_client
     client = _get_client()
+    _bitunix_client = _get_bitunix_client()
     if not DRY_RUN:
-        _monitor_task = asyncio.create_task(monitor_loop(client))
+        _monitor_task = asyncio.create_task(monitor_loop(client, _bitunix_client))
     else:
         logger.info("DRY RUN mode — monitor loop disabled")
     yield
     await close_redis()
+    if _bitunix_client:
+        await _bitunix_client.close()
     if _monitor_task:
         _monitor_task.cancel()
 
@@ -315,16 +328,30 @@ async def scan(
             if is_dry_run:
                 status_msg = "DRY RUN"
             else:
-                resp = await asyncio.to_thread(place_limit_order, client, spec)
-                if resp and resp.get("orderId"):
-                    order_id = resp["orderId"]
-                    update_trade_status(
-                        trade_id, "LIMIT_PLACED", binance_order_id=order_id
-                    )
-                    status_msg = "ORDER PLACED"
+                bx_client = _get_bitunix_client()
+                if bx_client:
+                    resp = await bitunix_place_order(bx_client, spec, with_sl=True)
+                    if resp and resp.get("orderId"):
+                        order_id = resp["orderId"]
+                        leverage = resp.get("leverage", 5)
+                        update_trade_status(
+                            trade_id, "LIMIT_PLACED", bitunix_order_id=order_id, leverage=leverage
+                        )
+                        status_msg = "BITUNIX ORDER PLACED"
+                    else:
+                        update_trade_status(trade_id, "PENDING")
+                        status_msg = "SETUP CALL"
                 else:
-                    update_trade_status(trade_id, "PENDING")
-                    status_msg = "SETUP CALL"
+                    resp = await asyncio.to_thread(binance_place_order, client, spec)
+                    if resp and resp.get("orderId"):
+                        order_id = resp["orderId"]
+                        update_trade_status(
+                            trade_id, "LIMIT_PLACED", binance_order_id=order_id
+                        )
+                        status_msg = "BINANCE ORDER PLACED"
+                    else:
+                        update_trade_status(trade_id, "PENDING")
+                        status_msg = "SETUP CALL"
 
             pct_sl = (
                 abs(float(spec.entry) - float(spec.stop_loss)) / float(spec.entry) * 100
