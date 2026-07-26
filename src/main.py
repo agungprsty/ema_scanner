@@ -11,8 +11,12 @@ from fastapi.staticfiles import StaticFiles
 from typing import Annotated
 
 from src.config.settings import (
-    TOTAL_SIGNALS, RISK_PER_TRADE_PERCENT, DRY_RUN,
-    BTC_STRENGTH_MIN, LONG_ENTRY_FEE_PCT, SHORT_ENTRY_FEE_PCT,
+    TOTAL_SIGNALS,
+    RISK_PER_TRADE_PERCENT,
+    DRY_RUN,
+    BTC_STRENGTH_MIN,
+    LONG_ENTRY_FEE_PCT,
+    SHORT_ENTRY_FEE_PCT,
     CROSS_LOOKBACK_CANDLES,
 )
 from src.data_feed.binance_client import create_futures_client
@@ -23,13 +27,27 @@ from src.strategy.blueprint import macroscan_4h, check_entry, Signal
 from src.risk_manager.calculator import calculate_position
 from src.execution.order import place_limit_order
 from google.cloud.firestore_v1.base_query import FieldFilter
-from src.services.firebase import init_firebase, create_trade, update_trade_status, get_db, get_all_trades, get_trade_summary
+from src.services.firebase import (
+    init_firebase,
+    create_trade,
+    update_trade_status,
+    get_db,
+    get_all_trades,
+    get_trade_summary,
+)
 from src.services.telegram import send_alert
-from src.services.redis_client import init_redis, close_redis, is_cross_detected, mark_cross_detected
+from src.services.redis_client import (
+    init_redis,
+    close_redis,
+    is_cross_detected,
+    mark_cross_detected,
+)
 from src.execution.monitor import monitor_loop
 from fastapi.middleware.cors import CORSMiddleware
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 _monitor_task = None
@@ -42,6 +60,26 @@ def _get_client():
     if _client is None:
         _client = create_futures_client()
     return _client
+
+
+_ERROR_KEYWORDS = {
+    "index": "System is initializing. Please try again later.",
+    "permission": "Access denied.",
+    "unauthenticated": "Authentication failed.",
+    "not found": "Resource not found.",
+    "timeout": "Service is busy. Please try again.",
+    "unavailable": "Service temporarily unavailable.",
+    "deadline exceeded": "Service is busy. Please try again.",
+    "connection": "Connection error. Please try again.",
+}
+
+
+def _sanitize_error(e: Exception) -> str:
+    msg = str(e).lower().replace('_', ' ')
+    for keyword, friendly in _ERROR_KEYWORDS.items():
+        if keyword in msg:
+            return friendly
+    return "Something went wrong. Please try again."
 
 
 @asynccontextmanager
@@ -76,12 +114,19 @@ app.mount("/static", StaticFiles(directory="src/static"), name="static")
 @app.get("/")
 def root():
     mode = "DRY_RUN" if DRY_RUN else "PRODUCTION"
-    return {"status": "running", "version": "v8.0.0", "mode": mode, "strategy": "EMA20/EMA50 Cross LONG/SHORT (1h/4h)"}
+    return {
+        "status": "running",
+        "version": "v8.0.0",
+        "mode": mode,
+        "strategy": "EMA20/EMA50 Cross LONG/SHORT (1h/4h)",
+    }
 
 
 @app.get("/api/scan")
 async def scan(
-    timeframe: Annotated[str, Query(description="Entry timeframe (cross detection)")] = "1h",
+    timeframe: Annotated[
+        str, Query(description="Entry timeframe (cross detection)")
+    ] = "1h",
     htf: Annotated[str, Query(description="Macro timeframe (filter)")] = "4h",
     limit: Annotated[int, Query(description="Candles to fetch for LTF")] = 500,
     macro_limit: Annotated[int, Query(description="Candles to fetch for HTF")] = 200,
@@ -102,11 +147,22 @@ async def scan(
 
         if btc_bias.side == "NEUTRAL":
             scan_time = f"{time.perf_counter() - start:.2f}s"
-            return {"status": "skipped", "btc_bias": "NEUTRAL", "execution_time": scan_time, "message": "No clear BTC bias"}
+            return {
+                "status": "skipped",
+                "btc_bias": "NEUTRAL",
+                "execution_time": scan_time,
+                "message": "No clear BTC bias",
+            }
 
         if btc_bias.strength < BTC_STRENGTH_MIN:
             scan_time = f"{time.perf_counter() - start:.2f}s"
-            return {"status": "skipped", "btc_bias": btc_bias.side, "strength": btc_bias.strength, "execution_time": scan_time, "message": "BTC bias too weak"}
+            return {
+                "status": "skipped",
+                "btc_bias": btc_bias.side,
+                "strength": btc_bias.strength,
+                "execution_time": scan_time,
+                "message": "BTC bias too weak",
+            }
 
         exchange_info = await asyncio.to_thread(client.exchange_info)
         symbols_meta = {}
@@ -117,7 +173,8 @@ async def scan(
         vol_threshold = volume_m * 1_000_000
         stats_24h = await asyncio.to_thread(client.ticker_24hr_price_change)
         liquid_symbols = [
-            s["symbol"] for s in stats_24h
+            s["symbol"]
+            for s in stats_24h
             if float(s.get("quoteVolume", 0)) > vol_threshold
             and s["symbol"] in symbols_meta
         ]
@@ -126,7 +183,9 @@ async def scan(
 
         async def _detect(sym: str) -> Signal | None:
             async with sem:
-                df_macro = await asyncio.to_thread(fetch_klines, client, sym, htf, macro_limit)
+                df_macro = await asyncio.to_thread(
+                    fetch_klines, client, sym, htf, macro_limit
+                )
                 if df_macro is None:
                     return None
                 df_macro = compute_indicators(df_macro)
@@ -137,16 +196,23 @@ async def scan(
                 if macro_bias == "NEUTRAL":
                     return None
 
-                df_entry = await asyncio.to_thread(fetch_klines, client, sym, timeframe, limit)
+                df_entry = await asyncio.to_thread(
+                    fetch_klines, client, sym, timeframe, limit
+                )
                 if df_entry is None:
                     return None
                 df_entry = compute_indicators(df_entry)
                 if df_entry is None:
                     return None
 
-                macro_cols = df_macro[["timestamp", "close", "EMA50"]].dropna().rename(
-                    columns={"close": "close_4h", "EMA50": "EMA50_4h"})
-                df_entry = pd.merge_asof(df_entry, macro_cols, on="timestamp", direction="backward")
+                macro_cols = (
+                    df_macro[["timestamp", "close", "EMA50"]]
+                    .dropna()
+                    .rename(columns={"close": "close_4h", "EMA50": "EMA50_4h"})
+                )
+                df_entry = pd.merge_asof(
+                    df_entry, macro_cols, on="timestamp", direction="backward"
+                )
                 df_entry = df_entry.dropna(subset=["EMA50_4h"])
 
                 if len(df_entry) < 50:
@@ -162,7 +228,12 @@ async def scan(
 
                 if sig:
                     if await is_cross_detected(sig.side, sym, sig.cross_candle_ms):
-                        logger.debug("Dedup skip: %s %s at %s", sig.side, sym, sig.cross_candle_ms)
+                        logger.debug(
+                            "Dedup skip: %s %s at %s",
+                            sig.side,
+                            sym,
+                            sig.cross_candle_ms,
+                        )
                         return None
                     await mark_cross_detected(sig.side, sym, sig.cross_candle_ms)
 
@@ -175,14 +246,22 @@ async def scan(
         results_json = []
         telegram_parts = []
         for sig in signals:
-            existing_active = list(get_db().collection("active_trades")
+            existing_active = list(
+                get_db()
+                .collection("active_trades")
                 .where(filter=FieldFilter("symbol", "==", sig.symbol))
-                .where(filter=FieldFilter("status", "in", ["PENDING", "LIMIT_PLACED", "FILLED"]))
-                .stream())
+                .where(
+                    filter=FieldFilter(
+                        "status", "in", ["PENDING", "LIMIT_PLACED", "FILLED"]
+                    )
+                )
+                .stream()
+            )
             if existing_active:
                 logger.info(
                     "%s has %d active trade(s) — creating additional entry (trend following)",
-                    sig.symbol, len(existing_active),
+                    sig.symbol,
+                    len(existing_active),
                 )
 
             meta = symbols_meta.get(sig.symbol, {})
@@ -239,18 +318,36 @@ async def scan(
                 resp = await asyncio.to_thread(place_limit_order, client, spec)
                 if resp and resp.get("orderId"):
                     order_id = resp["orderId"]
-                    update_trade_status(trade_id, "LIMIT_PLACED", binance_order_id=order_id)
+                    update_trade_status(
+                        trade_id, "LIMIT_PLACED", binance_order_id=order_id
+                    )
                     status_msg = "ORDER PLACED"
                 else:
                     update_trade_status(trade_id, "PENDING")
                     status_msg = "SETUP CALL"
 
-            pct_sl = abs(float(spec.entry) - float(spec.stop_loss)) / float(spec.entry) * 100
-            pct_tp = abs(float(spec.take_profit) - float(spec.entry)) / float(spec.entry) * 100
+            pct_sl = (
+                abs(float(spec.entry) - float(spec.stop_loss)) / float(spec.entry) * 100
+            )
+            pct_tp = (
+                abs(float(spec.take_profit) - float(spec.entry))
+                / float(spec.entry)
+                * 100
+            )
             logger.info(
                 "%s | %s\n%s %s\nEntry: %s\nSL: %s (%.2f%%)\nTP1 (50%%): %s (%.2f%%)\nBEP after TP1: %.4f\nQty: %s | TP1 Qty: %s",
-                mode_label, status_msg, spec.side, spec.symbol, spec.entry,
-                spec.stop_loss, pct_sl, spec.take_profit, pct_tp, bep, spec.quantity, spec.quantity_tp1,
+                mode_label,
+                status_msg,
+                spec.side,
+                spec.symbol,
+                spec.entry,
+                spec.stop_loss,
+                pct_sl,
+                spec.take_profit,
+                pct_tp,
+                bep,
+                spec.quantity,
+                spec.quantity_tp1,
             )
             emoji = "🟢" if spec.side == "LONG" else "🔴"
             telegram_parts.append(
@@ -261,24 +358,22 @@ async def scan(
                 f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈"
             )
 
-            results_json.append({
-                "symbol": spec.symbol,
-                "side": spec.side,
-                "entry": float(spec.entry),
-                "stop_loss": float(spec.stop_loss),
-                "take_profit": float(spec.take_profit),
-                "quantity": float(spec.quantity),
-                "quantity_tp1": float(spec.quantity_tp1),
-                "reason": sig.reason,
-                "status": status_msg,
-            })
+            results_json.append(
+                {
+                    "symbol": spec.symbol,
+                    "side": spec.side,
+                    "entry": float(spec.entry),
+                    "stop_loss": float(spec.stop_loss),
+                    "take_profit": float(spec.take_profit),
+                    "quantity": float(spec.quantity),
+                    "quantity_tp1": float(spec.quantity_tp1),
+                    "reason": sig.reason,
+                    "status": status_msg,
+                }
+            )
 
         if send_telegram and telegram_parts:
-            header = (
-                "🔔 EMA CROSSOVER\n"
-                "Asymmetric Bets (RR 1:1.5)\n"
-                "━━━━━━━━━━━━━━━\n"
-            )
+            header = "🔔 EMA CROSSOVER\nAsymmetric Bets (RR 1:1.5)\n━━━━━━━━━━━━━━━\n"
             await send_alert(header + "\n".join(telegram_parts))
 
         return {
@@ -296,7 +391,7 @@ async def scan(
 
     except Exception as e:
         logger.error("Scan error: %s", e, exc_info=True)
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": _sanitize_error(e)}
 
 
 @app.get("/history")
@@ -308,21 +403,34 @@ def history_page():
 async def get_trades(
     symbol: Annotated[str | None, Query(description="Filter by symbol")] = None,
     status: Annotated[str | None, Query(description="Filter by status")] = None,
-    limit: Annotated[int, Query(ge=1, le=200)] = 20,
-    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    cursor: Annotated[
+        str | None, Query(description="Cursor for next page (created_at of last item)")
+    ] = None,
     sort_by: Annotated[str, Query] = "created_at",
     sort_order: Annotated[str, Query] = "desc",
 ):
-    return get_all_trades(
-        symbol=symbol,
-        status=status,
-        limit=limit,
-        offset=offset,
-        sort_by=sort_by,
-        sort_order=sort_order,
-    )
+    try:
+        return await asyncio.to_thread(
+            get_all_trades,
+            symbol=symbol,
+            status=status,
+            limit=limit,
+            cursor=cursor,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+    except Exception as e:
+        logger.error("GET /api/trades error: %s", e, exc_info=True)
+        return {"trades": [], "next_cursor": None, "has_more": False, "error": _sanitize_error(e)}
 
 
 @app.get("/api/summary")
-async def get_summary(symbol: Annotated[str | None, Query(description="Filter by symbol")] = None):
-    return get_trade_summary(symbol=symbol)
+async def get_summary(
+    symbol: Annotated[str | None, Query(description="Filter by symbol")] = None,
+):
+    try:
+        return await asyncio.to_thread(get_trade_summary, symbol=symbol)
+    except Exception as e:
+        logger.error("GET /api/summary error: %s", e, exc_info=True)
+        return {"error": _sanitize_error(e)}

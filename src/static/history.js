@@ -2,10 +2,13 @@
     const state = {
         symbol: '',
         status: '',
-        limit: 50,
-        offset: 0,
+        limit: 20,
+        cursor: null,
+        cursors: [],
         sort_by: 'created_at',
         sort_order: 'desc',
+        has_more: false,
+        next_cursor: null,
     };
 
     async function fetchJSON(url) {
@@ -67,9 +70,21 @@
         return `status-${s}`;
     }
 
+    function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
     async function loadSummary() {
-        const data = await fetchJSON('/api/summary');
-        if (!data) return;
+        const summaryParams = new URLSearchParams();
+        if (state.symbol) summaryParams.set('symbol', state.symbol);
+        const data = await fetchJSON(`/api/summary?${summaryParams}`);
+        if (!data || data.error) {
+            const container = document.getElementById('summary');
+            container.innerHTML = data ? `<div class="error">${escapeHtml(data.error)}</div>` : '';
+            return;
+        }
 
         const container = document.getElementById('summary');
         const cards = [
@@ -95,10 +110,12 @@
             symbol: state.symbol || '',
             status: state.status || '',
             limit: state.limit,
-            offset: state.offset,
             sort_by: state.sort_by,
             sort_order: state.sort_order,
         });
+        if (state.cursor) {
+            params.set('cursor', state.cursor);
+        }
 
         const data = await fetchJSON(`/api/trades?${params}`);
         if (!data) {
@@ -106,8 +123,14 @@
             return;
         }
 
-        const { total, trades } = data;
-        const totalPages = Math.ceil(total / state.limit);
+        if (data.error) {
+            container.innerHTML = `<div class="error">${escapeHtml(data.error)}</div>`;
+            return;
+        }
+
+        const { trades, has_more, next_cursor } = data;
+        state.has_more = has_more;
+        state.next_cursor = next_cursor;
 
         if (trades.length === 0) {
             container.innerHTML = '<div class="loading">No trades found.</div>';
@@ -128,6 +151,10 @@
                 <td>${formatPnl(t.pnl_pct)}</td>
             </tr>
         `).join('');
+
+        const pageNum = state.cursors.length;
+        const showingFrom = pageNum * state.limit + 1;
+        const showingTo = showingFrom + trades.length - 1;
 
         container.innerHTML = `
             <div class="table-container">
@@ -150,18 +177,29 @@
                 </table>
             </div>
             <div class="pagination">
-                <span>Showing ${state.offset + 1}–${Math.min(state.offset + state.limit, total)} of ${total}</span>
+                <span>Showing ${showingFrom}–${showingTo}</span>
                 <div style="display:flex;gap:8px;">
-                    <button class="btn-secondary" onclick="window.__history.prev()" ${state.offset === 0 ? 'disabled' : ''}>Previous</button>
-                    <button class="btn-secondary" onclick="window.__history.next()" ${state.offset >= (totalPages - 1) * state.limit ? 'disabled' : ''}>Next</button>
+                    <button class="btn-secondary" onclick="window.__history.prev()" ${state.cursors.length === 0 ? 'disabled' : ''}>Previous</button>
+                    <button class="btn-secondary" onclick="window.__history.next()" ${!state.has_more ? 'disabled' : ''}>Next</button>
                 </div>
             </div>
         `;
     }
 
     window.__history = {
-        prev: () => { if (state.offset >= state.limit) { state.offset -= state.limit; loadTrades(); } },
-        next: () => { state.offset += state.limit; loadTrades(); },
+        prev: () => {
+            if (state.cursors.length > 0) {
+                state.cursor = state.cursors.pop();
+                loadTrades();
+            }
+        },
+        next: () => {
+            if (state.has_more && state.next_cursor) {
+                state.cursors.push(state.cursor);
+                state.cursor = state.next_cursor;
+                loadTrades();
+            }
+        },
         applyFilters,
         resetFilters,
     };
@@ -169,7 +207,10 @@
     function applyFilters() {
         state.symbol = document.getElementById('filter-symbol').value.trim();
         state.status = document.getElementById('filter-status').value;
-        state.offset = 0;
+        state.cursor = null;
+        state.cursors = [];
+        state.has_more = false;
+        state.next_cursor = null;
         loadSummary();
         loadTrades();
     }
