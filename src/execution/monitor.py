@@ -66,7 +66,7 @@ async def _check_order_fill(
         elapsed = (now - placed_dt).total_seconds()
         if elapsed > max_candles * candle_seconds:
             cancel_order(client, symbol, order_id)
-            update_trade_status(trade["trade_id"], "EXPIRED_CANCELLED")
+            update_trade_status(trade["trade_id"], "EXPIRED")
             logger.info("Order CANCELLED (timeout): %s %s", symbol, order_id)
 
 
@@ -117,5 +117,9 @@ async def _check_bep_sl(
     bep_hit = (side == "LONG" and current_price <= bep) or (side == "SHORT" and current_price >= bep)
 
     if bep_hit:
-        update_trade_status(trade["trade_id"], "CLOSED_BEP")
+        update_trade_status(
+            trade["trade_id"],
+            "CLOSED_BEP",
+            exit_price=current_price,
+        )
         logger.info("BEP HIT: %s at %.2f, position closed", symbol, current_price)

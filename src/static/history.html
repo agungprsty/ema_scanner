@@ -142,7 +142,11 @@
         .status-CLOSED_SL { background: var(--red-bg); color: var(--red); }
         .status-CLOSED_BEP { background: var(--yellow-bg); color: #744210; }
         .status-LIMIT_PLACED, .status-PENDING, .status-FILLED { background: var(--blue-bg); color: #2b6cb0; }
-        .status-EXPIRED_CANCELLED { background: #f0f0f0; color: #718096; }
+        .status-EXPIRED { background: #f0f0f0; color: #0c0c0c; }
+
+        .rr-positive { color: var(--green); }
+        .rr-negative { color: var(--red); }
+        .rr-neutral { color: var(--text-muted); }
 
         .pagination {
             display: flex;
@@ -192,8 +196,16 @@
                     <option value="CLOSED_TP">CLOSED TP</option>
                     <option value="CLOSED_SL">CLOSED SL</option>
                     <option value="CLOSED_BEP">CLOSED BEP</option>
-                    <option value="EXPIRED_CANCELLED">EXPIRED</option>
+                    <option value="EXPIRED">EXPIRED</option>
                 </select>
+            </div>
+            <div class="filter-group">
+                <label>Date From</label>
+                <input type="datetime-local" id="filter-date-from">
+            </div>
+            <div class="filter-group">
+                <label>Date To</label>
+                <input type="datetime-local" id="filter-date-to">
             </div>
             <button class="btn-primary" onclick="window.__history.applyFilters()">Apply</button>
             <button class="btn-secondary" onclick="window.__history.resetFilters()">Reset</button>

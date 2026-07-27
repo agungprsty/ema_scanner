@@ -36,7 +36,7 @@ Mengelola state transaksi menggunakan Firebase Firestore.
 
 ### Enum Status
 `PENDING` → `LIMIT_PLACED` → `FILLED` → `CLOSED_SL` / `CLOSED_TP`
-↘ `EXPIRED_CANCELLED` / `FAILED_MARGIN`
+↘ `EXPIRED` / `FAILED_MARGIN`
 
 ## 3. Aturan State Management
 - Auto-cancel hanya untuk status `LIMIT_PLACED`
