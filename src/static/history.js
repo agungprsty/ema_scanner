@@ -32,7 +32,7 @@
     function formatPnl(pct) {
         if (pct == null) return '—';
         const cls = pct > 0 ? 'green' : 'red';
-        const sign = pct >= 0 ? '+' : '';
+        const sign = pct > 0 ? '+' : '';
         return `<span class="${cls}">${sign}${pct.toFixed(2)}%</span>`;
     }
 

@@ -179,6 +179,16 @@ async def scan(
             and s["symbol"] in symbols_meta
         ]
 
+        logger.info(
+            "Scanning %d tokens (%s timeframe / %s macro, BTC bias: %s %.1f%%): %s",
+            len(liquid_symbols),
+            timeframe,
+            htf,
+            btc_bias.side,
+            btc_bias.strength,
+            ", ".join(sorted(liquid_symbols)),
+        )
+
         sem = asyncio.Semaphore(CONCURRENCY)
 
         async def _detect(sym: str) -> Signal | None:
@@ -194,6 +204,7 @@ async def scan(
 
                 macro_bias = macroscan_4h(df_macro)
                 if macro_bias == "NEUTRAL":
+                    logger.debug("Skipped %s — macro NEUTRAL", sym)
                     return None
 
                 df_entry = await asyncio.to_thread(
@@ -227,6 +238,7 @@ async def scan(
                 )
 
                 if sig:
+                    logger.info("Signal detected: %s %s (%s)", sig.side, sym, sig.reason)
                     if await is_cross_detected(sig.side, sym, sig.cross_candle_ms):
                         logger.debug(
                             "Dedup skip: %s %s at %s",
@@ -242,6 +254,13 @@ async def scan(
         tasks = [_detect(sym) for sym in liquid_symbols]
         results = await asyncio.gather(*tasks)
         signals: list[Signal] = [r for r in results if r is not None][:TOTAL_SIGNALS]
+
+        logger.info(
+            "Scan complete: %d/%d tokens produced signals (%.2fs)",
+            len(signals),
+            len(liquid_symbols),
+            time.perf_counter() - start,
+        )
 
         results_json = []
         telegram_parts = []
