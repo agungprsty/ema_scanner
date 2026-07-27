@@ -113,8 +113,10 @@ def update_trade_status(trade_id: str, status: str, **extra) -> None:
             update_data["filled_at"] = datetime.now(timezone.utc).isoformat()
         elif status == "TP1_HIT":
             update_data["tp1_hit_at"] = datetime.now(timezone.utc).isoformat()
-        elif status in ("CLOSED_SL", "CLOSED_TP", "CLOSED_BEP", "EXPIRED_CANCELLED"):
+        elif status in ("CLOSED_SL", "CLOSED_TP", "CLOSED_BEP", "EXPIRED"):
             update_data["closed_at"] = datetime.now(timezone.utc).isoformat()
+            if "exit_price" in extra:
+                pass  # already included in update_data
         transaction.update(ref, update_data)
 
     _update(tx)
@@ -132,13 +134,50 @@ def get_active_trades() -> list[dict]:
 
 
 def _compute_pnl_pct(trade: dict) -> float:
+    status = trade.get("status", "")
     prices = trade.get("prices", {})
     entry = prices.get("entry_target", 0)
-    close_price = (
-        prices.get("take_profit") or prices.get("bep") or prices.get("stop_loss", entry)
-    )
+    exit_price = prices.get("exit_price")
     side = trade.get("side", "LONG")
 
+    if not entry:
+        return 0.0
+
+    if status == "EXPIRED":
+        return 0.0
+
+    elif status == "CLOSED_SL":
+        if exit_price is not None and exit_price > 0:
+            close_price = exit_price
+        else:
+            close_price = prices.get("stop_loss", entry)
+            sl_pnl = _compute_pnl_from_prices(entry, close_price, side)
+            bep_pnl = _compute_pnl_from_prices(entry, prices.get("bep", 0), side)
+            if bep_pnl > 0 and sl_pnl < 0:
+                return round(bep_pnl - float(os.getenv("LONG_ENTRY_FEE_PCT", "0.05")), 2)
+
+    elif status == "CLOSED_BEP":
+        close_price = prices.get("bep", entry)
+        if exit_price is not None and exit_price > 0:
+            close_price = exit_price
+
+    elif status == "CLOSED_TP":
+        close_price = prices.get("take_profit", entry)
+        if exit_price is not None and exit_price > 0:
+            close_price = exit_price
+
+    else:
+        if exit_price is not None and exit_price > 0:
+            close_price = exit_price
+        else:
+            close_price = (
+                prices.get("take_profit") or prices.get("bep") or prices.get("stop_loss", entry)
+            )
+
+    return round(_compute_pnl_from_prices(entry, close_price, side), 2)
+
+
+def _compute_pnl_from_prices(entry: float, close_price: float, side: str) -> float:
     if side == "LONG":
         pnl_pct = (close_price - entry) / entry * 100
     else:
@@ -150,7 +189,7 @@ def _compute_pnl_pct(trade: dict) -> float:
         else float(os.getenv("SHORT_ENTRY_FEE_PCT", "0.05"))
     )
     pnl_pct -= fee_pct
-    return round(pnl_pct, 2)
+    return pnl_pct
 
 
 def _compute_duration(trade: dict) -> float:
@@ -178,6 +217,48 @@ def _compute_duration_str(trade: dict) -> str:
         return f"{hours / 24:.1f}d"
 
 
+def _calculate_rr_planned(trade: dict) -> float:
+    prices = trade.get("prices", {})
+    entry = prices.get("entry_target", 0)
+    tp = prices.get("take_profit", 0)
+    sl = prices.get("stop_loss", 0)
+
+    if not entry or not tp or not sl:
+        return 0.0
+
+    side = trade.get("side", "LONG")
+    if side == "LONG":
+        risk = entry - sl
+        reward = tp - entry
+    else:
+        risk = sl - entry
+        reward = entry - tp
+
+    return round(reward / risk, 2) if risk > 0 else 0.0
+
+
+def _calculate_rr_actual(trade: dict) -> float:
+    prices = trade.get("prices", {})
+    entry = prices.get("entry_target", 0)
+    exit_price = prices.get("exit_price")
+    sl = prices.get("stop_loss", 0)
+
+    if not entry or not sl:
+        return 0.0
+
+    actual_exit = exit_price if (exit_price and exit_price > 0) else entry
+    side = trade.get("side", "LONG")
+
+    if side == "LONG":
+        risk = entry - sl
+        reward = actual_exit - entry
+    else:
+        risk = sl - entry
+        reward = entry - actual_exit
+
+    return round(reward / risk, 2) if risk > 0 else 0.0
+
+
 def get_all_trades(
     symbol: Optional[str] = None,
     status: Optional[str] = None,
@@ -185,8 +266,10 @@ def get_all_trades(
     cursor: Optional[str] = None,
     sort_by: str = "created_at",
     sort_order: str = "desc",
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
 ) -> dict:
-    cache_key = f"trades:{symbol or ''}:{status or ''}:{limit}:{cursor or ''}:{sort_by}:{sort_order}"
+    cache_key = f"trades:{symbol or ''}:{status or ''}:{limit}:{cursor or ''}:{sort_by}:{sort_order}:{date_from or ''}:{date_to or ''}"
     cached = get_cached(cache_key)
     if cached is not None:
         return cached
@@ -213,6 +296,25 @@ def get_all_trades(
     docs_snapshot = query.limit(limit + 1).stream()
     trades_raw = [doc.to_dict() for doc in docs_snapshot]
 
+    if date_from or date_to:
+        filtered_trades = []
+        for t in trades_raw:
+            created = t.get("created_at", "")
+            if not created:
+                continue
+            try:
+                trade_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            except Exception:
+                filtered_trades.append(t)
+                continue
+
+            if date_from and trade_dt < datetime.fromisoformat(date_from):
+                continue
+            if date_to and trade_dt > datetime.fromisoformat(date_to):
+                continue
+            filtered_trades.append(t)
+        trades_raw = filtered_trades
+
     has_more = len(trades_raw) > limit
     trades = trades_raw[:limit]
 
@@ -222,6 +324,11 @@ def get_all_trades(
 
     enriched = []
     for t in trades:
+        prices = t.get("prices", {})
+        entry = prices.get("entry_target")
+        exit_price = prices.get("exit_price")
+        status = t.get("status", "")
+
         enriched.append(
             {
                 "trade_id": t.get("trade_id"),
@@ -229,16 +336,19 @@ def get_all_trades(
                 "side": t.get("side"),
                 "timeframe": t.get("tf"),
                 "signal_reason": t.get("signal_reason", ""),
-                "entry_price": t.get("prices", {}).get("entry_target"),
-                "sl_price": t.get("prices", {}).get("stop_loss"),
-                "tp1_price": t.get("prices", {}).get("take_profit"),
-                "bep_price": t.get("prices", {}).get("bep"),
+                "entry_price": entry,
+                "sl_price": prices.get("stop_loss"),
+                "tp1_price": prices.get("take_profit"),
+                "bep_price": prices.get("bep"),
+                "exit_price": exit_price if (exit_price and exit_price > 0) else None,
                 "quantity": t.get("metrics", {}).get("qty_coins"),
-                "status": t.get("status"),
+                "status": status,
                 "binance_order_id": t.get("binance_order_id"),
                 "duration_hours": _compute_duration(t),
                 "duration_str": _compute_duration_str(t),
                 "pnl_pct": _compute_pnl_pct(t),
+                "rr_planned": _calculate_rr_planned(t),
+                "rr_actual": _calculate_rr_actual(t),
                 "created_at": t.get("created_at"),
                 "order_place_at": t.get("order_place_at"),
                 "filled_at": t.get("filled_at"),
@@ -288,6 +398,19 @@ def get_trade_summary(symbol: Optional[str] = None) -> dict:
     durations = [_compute_duration(t) for t in closed]
     avg_duration = round(sum(durations) / len(durations), 1) if durations else 0.0
 
+    max_drawdown = 0.0
+    if pnl_values:
+        cumulative = 0.0
+        peak = 0.0
+        for pnl in pnl_values:
+            cumulative += pnl
+            if cumulative > peak:
+                peak = cumulative
+            drawdown = peak - cumulative
+            if drawdown > max_drawdown:
+                max_drawdown = drawdown
+    max_drawdown = round(max_drawdown, 2)
+
     by_status = {}
     for t in trades_raw:
         s = t.get("status", "UNKNOWN")
@@ -306,6 +429,7 @@ def get_trade_summary(symbol: Optional[str] = None) -> dict:
         "avg_pnl_pct": avg_pnl,
         "best_trade_pct": best_pnl,
         "worst_trade_pct": worst_pnl,
+        "max_drawdown_pct": max_drawdown,
         "avg_duration_hours": avg_duration,
         "by_status": by_status,
         "by_side": by_side,

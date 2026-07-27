@@ -24,7 +24,7 @@ Terapkan order routing dan mekanisme auto-cancel untuk posisi trading.
 - Catat `created_at` saat order dibuat
 - Cek status via Binance API berkala
 - **Batal jika:** order belum `FILLED` setelah 5× periode timeframe (misal: TF 1h → 5 jam)
-- **Aksi:** Cancel order Binance → update Firebase ke `EXPIRED_CANCELLED`
+- **Aksi:** Cancel order Binance → update Firebase ke `EXPIRED`
 
 ## 3. Fill Handling
 - Jika Binance return `FILLED`:

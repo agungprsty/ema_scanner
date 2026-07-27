@@ -2,6 +2,8 @@
     const state = {
         symbol: '',
         status: '',
+        date_from: '',
+        date_to: '',
         limit: 20,
         cursor: null,
         cursors: [],
@@ -29,7 +31,7 @@
 
     function formatPnl(pct) {
         if (pct == null) return '—';
-        const cls = pct >= 0 ? 'green' : 'red';
+        const cls = pct > 0 ? 'green' : 'red';
         const sign = pct >= 0 ? '+' : '';
         return `<span class="${cls}">${sign}${pct.toFixed(2)}%</span>`;
     }
@@ -39,6 +41,19 @@
         if (hours < 1) return `${Math.round(hours * 60)}m`;
         if (hours < 24) return `${hours.toFixed(1)}h`;
         return `${(hours / 24).toFixed(1)}d`;
+    }
+
+    function formatRR(rr, actual = false) {
+        if (rr == null || rr === 0) return '<span class="rr-neutral">—</span>';
+        const cls = rr >= 1 ? 'rr-positive' : rr > 0 ? 'rr-neutral' : 'rr-negative';
+        const label = actual ? 'Actual' : 'Planned';
+        return `<span class="${cls}">${rr.toFixed(2)}${actual ? ' (A)' : ''}</span>`;
+    }
+
+    function formatMaxDrawdown(dd) {
+        if (dd == null) return '—';
+        const cls = dd > 5 ? 'red' : dd > 2 ? 'yellow' : 'green';
+        return `<span class="${cls}">${dd.toFixed(2)}%</span>`;
     }
 
     function computeDuration(trade) {
@@ -91,7 +106,8 @@
             { label: 'Total Trades', value: data.total_trades },
             { label: 'Win Rate', value: `${data.win_rate_pct}%`, cls: data.win_rate_pct >= 50 ? 'green' : 'red' },
             { label: 'Avg PnL', value: formatPnl(data.avg_pnl_pct) },
-            { label: 'Best / Worst', value: `${formatPnl(data.best_trade_pct)} / ${formatPnl(data.worst_trade_pct)}` },
+            { label: 'Best', value: `${formatPnl(data.best_trade_pct)}` },
+            { label: 'Max Drawdown', value: formatMaxDrawdown(data.max_drawdown_pct), cls: 'red' },
         ];
 
         container.innerHTML = cards.map(c => `
@@ -112,6 +128,8 @@
             limit: state.limit,
             sort_by: state.sort_by,
             sort_order: state.sort_order,
+            date_from: state.date_from || '',
+            date_to: state.date_to || '',
         });
         if (state.cursor) {
             params.set('cursor', state.cursor);
@@ -149,6 +167,9 @@
                 <td><span class="status-badge ${statusClass(t.status)}">${t.status}</span></td>
                 <td>${formatDuration(computeDuration(t))}</td>
                 <td>${formatPnl(t.pnl_pct)}</td>
+                <td>${formatPrice(t.exit_price)}</td>
+                <td>${formatRR(t.rr_planned)}</td>
+                <td>${formatRR(t.rr_actual, true)}</td>
             </tr>
         `).join('');
 
@@ -171,6 +192,9 @@
                             <th>Status</th>
                             <th>Duration</th>
                             <th>PnL%</th>
+                            <th>Exit Price</th>
+                            <th>R:R Planned</th>
+                            <th>R:R Actual</th>
                         </tr>
                     </thead>
                     <tbody>${rows}</tbody>
@@ -204,9 +228,11 @@
         resetFilters,
     };
 
-    function applyFilters() {
+   function applyFilters() {
         state.symbol = document.getElementById('filter-symbol').value.trim();
         state.status = document.getElementById('filter-status').value;
+        state.date_from = document.getElementById('filter-date-from').value;
+        state.date_to = document.getElementById('filter-date-to').value;
         state.cursor = null;
         state.cursors = [];
         state.has_more = false;
@@ -218,6 +244,8 @@
     function resetFilters() {
         document.getElementById('filter-symbol').value = '';
         document.getElementById('filter-status').value = '';
+        document.getElementById('filter-date-from').value = '';
+        document.getElementById('filter-date-to').value = '';
         applyFilters();
     }
 

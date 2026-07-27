@@ -409,6 +409,8 @@ async def get_trades(
     ] = None,
     sort_by: Annotated[str, Query] = "created_at",
     sort_order: Annotated[str, Query] = "desc",
+    date_from: Annotated[str | None, Query(description="Start date (ISO format)")] = None,
+    date_to: Annotated[str | None, Query(description="End date (ISO format)")] = None,
 ):
     try:
         return await asyncio.to_thread(
@@ -419,6 +421,8 @@ async def get_trades(
             cursor=cursor,
             sort_by=sort_by,
             sort_order=sort_order,
+            date_from=date_from,
+            date_to=date_to,
         )
     except Exception as e:
         logger.error("GET /api/trades error: %s", e, exc_info=True)
