@@ -13,9 +13,9 @@
         next_cursor: null,
     };
 
-    async function fetchJSON(url) {
+    async function fetchJSON(url, options = {}) {
         try {
-            const res = await fetch(url);
+            const res = await fetch(url, options);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             return await res.json();
         } catch (e) {
@@ -89,6 +89,61 @@
         const div = document.createElement('div');
         div.textContent = str;
         return div.innerHTML;
+    }
+
+    let currentTradeId = null;
+
+    function canClose(status) {
+        return ['PENDING', 'LIMIT_PLACED', 'FILLED', 'TP1_HIT'].includes(status);
+    }
+
+    function canExpire(status) {
+        return status === 'LIMIT_PLACED';
+    }
+
+    function isTerminal(status) {
+        return ['CLOSED_TP', 'CLOSED_SL', 'CLOSED_BEP', 'EXPIRED'].includes(status);
+    }
+
+    function openCloseModal(tradeId, symbol) {
+        currentTradeId = tradeId;
+        document.getElementById('modal-symbol').textContent = symbol;
+        document.getElementById('close-modal').style.display = '';
+    }
+
+    function closeModal() {
+        currentTradeId = null;
+        document.getElementById('close-modal').style.display = 'none';
+    }
+
+    async function confirmClose(status) {
+        if (!currentTradeId) return;
+        const res = await fetchJSON(`/api/trades/${currentTradeId}/status`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status }),
+        });
+        closeModal();
+        if (res && res.success) {
+            loadSummary();
+            loadTrades();
+        } else {
+            alert('Failed to update trade: ' + (res?.error || 'unknown error'));
+        }
+    }
+
+    async function confirmExpired(tradeId) {
+        const res = await fetchJSON(`/api/trades/${tradeId}/status`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'EXPIRED' }),
+        });
+        if (res && res.success) {
+            loadSummary();
+            loadTrades();
+        } else {
+            alert('Failed to expire trade: ' + (res?.error || 'unknown error'));
+        }
     }
 
     async function loadSummary() {
@@ -170,6 +225,11 @@
                 <td>${formatPrice(t.exit_price)}</td>
                 <td>${formatRR(t.rr_planned)}</td>
                 <td>${formatRR(t.rr_actual, true)}</td>
+                <td class="actions-cell">
+                    ${canClose(t.status) ? `<button class="btn-sm btn-danger" onclick="window.__history.openCloseModal('${t.trade_id}','${t.symbol}')">Close</button>` : ''}
+                    ${canExpire(t.status) ? `<button class="btn-sm btn-secondary" onclick="window.__history.confirmExpired('${t.trade_id}')">Expired</button>` : ''}
+                    ${isTerminal(t.status) ? '—' : ''}
+                </td>
             </tr>
         `).join('');
 
@@ -195,6 +255,7 @@
                             <th>Exit Price</th>
                             <th>R:R Planned</th>
                             <th>R:R Actual</th>
+                            <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody>${rows}</tbody>
@@ -226,6 +287,10 @@
         },
         applyFilters,
         resetFilters,
+        openCloseModal,
+        closeModal,
+        confirmClose,
+        confirmExpired,
     };
 
    function applyFilters() {
