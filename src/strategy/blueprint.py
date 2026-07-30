@@ -105,11 +105,7 @@ def check_entry(
 
         cross_ms = int(curr["timestamp"].timestamp() * 1000)
 
-        if scan_long:
-            if ema20_prev <= ema50_prev and ema20_curr > ema50_curr:
-                if btc_bias == "BEARISH":
-                    continue
-
+        if scan_long and ema20_prev <= ema50_prev and ema20_curr > ema50_curr:
                 lookback_sl = min(LONG_LOOKBACK_CANDLES, len(df_1h))
                 lowest_low = df_1h["low"].iloc[-lookback_sl:].min()
                 sl_price = lowest_low - LONG_ATR_SL_MULTIPLIER * atr
@@ -127,26 +123,22 @@ def check_entry(
                     cross_candle_ms=cross_ms,
                 )
 
-        if scan_short:
-            if ema20_prev >= ema50_prev and ema20_curr < ema50_curr:
-                if btc_bias == "BULLISH":
-                    continue
+        if scan_short and ema20_prev >= ema50_prev and ema20_curr < ema50_curr:
+            lookback_sl = min(SHORT_LOOKBACK_CANDLES, len(df_1h))
+            highest_high = df_1h["high"].iloc[-lookback_sl:].max()
+            sl_price = highest_high + SHORT_ATR_SL_MULTIPLIER * atr
 
-                lookback_sl = min(SHORT_LOOKBACK_CANDLES, len(df_1h))
-                highest_high = df_1h["high"].iloc[-lookback_sl:].max()
-                sl_price = highest_high + SHORT_ATR_SL_MULTIPLIER * atr
-
-                return Signal(
-                    symbol=symbol,
-                    side="SHORT",
-                    entry_price=cross_price,
-                    sl_price=sl_price,
-                    tp1_price=0,
-                    atr_1h=atr,
-                    timestamp=str(curr.name),
-                    reason="death_cross_1h",
-                    ema50_4h=ema50_4h,
-                    cross_candle_ms=cross_ms,
-                )
+            return Signal(
+                symbol=symbol,
+                side="SHORT",
+                entry_price=cross_price,
+                sl_price=sl_price,
+                tp1_price=0,
+                atr_1h=atr,
+                timestamp=str(curr.name),
+                reason="death_cross_1h",
+                ema50_4h=ema50_4h,
+                cross_candle_ms=cross_ms,
+            )
 
     return None

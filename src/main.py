@@ -14,7 +14,6 @@ from src.config.settings import (
     TOTAL_SIGNALS,
     RISK_PER_TRADE_PERCENT,
     DRY_RUN,
-    BTC_STRENGTH_MIN,
     LONG_ENTRY_FEE_PCT,
     SHORT_ENTRY_FEE_PCT,
     CROSS_LOOKBACK_CANDLES,
@@ -144,25 +143,6 @@ async def scan(
         if btc_df is None:
             return {"status": "error", "message": "Failed to fetch BTC data"}
         btc_bias = compute_btc_bias(btc_df)
-
-        if btc_bias.side == "NEUTRAL":
-            scan_time = f"{time.perf_counter() - start:.2f}s"
-            return {
-                "status": "skipped",
-                "btc_bias": "NEUTRAL",
-                "execution_time": scan_time,
-                "message": "No clear BTC bias",
-            }
-
-        if btc_bias.strength < BTC_STRENGTH_MIN:
-            scan_time = f"{time.perf_counter() - start:.2f}s"
-            return {
-                "status": "skipped",
-                "btc_bias": btc_bias.side,
-                "strength": btc_bias.strength,
-                "execution_time": scan_time,
-                "message": "BTC bias too weak",
-            }
 
         exchange_info = await asyncio.to_thread(client.exchange_info)
         symbols_meta = {}
