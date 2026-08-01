@@ -1,14 +1,14 @@
 import asyncio
 import logging
 import time
-import uuid
 from contextlib import asynccontextmanager
+from typing import Annotated, Literal
 
 import pandas as pd
 from fastapi import FastAPI, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from typing import Annotated
+from pydantic import BaseModel
 
 from src.config.settings import (
     TOTAL_SIGNALS,
@@ -96,6 +96,8 @@ async def lifespan(app: FastAPI):
     if _monitor_task:
         _monitor_task.cancel()
 
+class UpdateTradeRequest(BaseModel):
+    status: Literal["CLOSED_TP", "CLOSED_BEP", "CLOSED_SL", "EXPIRED"]
 
 app = FastAPI(title="Crypto Blueprint Bot", lifespan=lifespan)
 
@@ -437,3 +439,24 @@ async def get_summary(
     except Exception as e:
         logger.error("GET /api/summary error: %s", e, exc_info=True)
         return {"error": _sanitize_error(e)}
+
+
+@app.patch("/api/trades/{trade_id}/status")
+async def update_trade(trade_id: str, body: UpdateTradeRequest):
+    try:
+        db = get_db()
+        ref = db.collection("active_trades").document(trade_id)
+        doc = await asyncio.to_thread(ref.get)
+        if not doc.exists:
+            return {"success": False, "error": "Trade not found"}
+
+        current_status = doc.to_dict().get("status", "")
+        terminal = {"CLOSED_TP", "CLOSED_SL", "CLOSED_BEP", "EXPIRED"}
+        if current_status in terminal:
+            return {"success": False, "error": f"Trade already in terminal status: {current_status}"}
+
+        await asyncio.to_thread(update_trade_status, trade_id, body.status)
+        return {"success": True}
+    except Exception as e:
+        logger.error("PATCH /api/trades/%s/status error: %s", trade_id, e, exc_info=True)
+        return {"success": False, "error": _sanitize_error(e)}

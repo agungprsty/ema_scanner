@@ -13,9 +13,9 @@
         next_cursor: null,
     };
 
-    async function fetchJSON(url) {
+    async function fetchJSON(url, options = {}) {
         try {
-            const res = await fetch(url);
+            const res = await fetch(url, options);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             return await res.json();
         } catch (e) {
@@ -41,13 +41,6 @@
         if (hours < 1) return `${Math.round(hours * 60)}m`;
         if (hours < 24) return `${hours.toFixed(1)}h`;
         return `${(hours / 24).toFixed(1)}d`;
-    }
-
-    function formatRR(rr, actual = false) {
-        if (rr == null || rr === 0) return '<span class="rr-neutral">—</span>';
-        const cls = rr >= 1 ? 'rr-positive' : rr > 0 ? 'rr-neutral' : 'rr-negative';
-        const label = actual ? 'Actual' : 'Planned';
-        return `<span class="${cls}">${rr.toFixed(2)}${actual ? ' (A)' : ''}</span>`;
     }
 
     function formatMaxDrawdown(dd) {
@@ -89,6 +82,39 @@
         const div = document.createElement('div');
         div.textContent = str;
         return div.innerHTML;
+    }
+
+    let currentTradeId = null;
+
+    function isTerminal(status) {
+        return ['CLOSED_TP', 'CLOSED_SL', 'CLOSED_BEP', 'EXPIRED'].includes(status);
+    }
+
+    function openCloseModal(tradeId, symbol) {
+        currentTradeId = tradeId;
+        document.getElementById('modal-symbol').textContent = symbol;
+        document.getElementById('close-modal').style.display = '';
+    }
+
+    function closeModal() {
+        currentTradeId = null;
+        document.getElementById('close-modal').style.display = 'none';
+    }
+
+    async function confirmClose(status) {
+        if (!currentTradeId) return;
+        const res = await fetchJSON(`/api/trades/${currentTradeId}/status`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status }),
+        });
+        closeModal();
+        if (res && res.success) {
+            loadSummary();
+            loadTrades();
+        } else {
+            alert('Failed to update trade: ' + (res?.error || 'unknown error'));
+        }
     }
 
     async function loadSummary() {
@@ -167,9 +193,9 @@
                 <td><span class="status-badge ${statusClass(t.status)}">${t.status}</span></td>
                 <td>${formatDuration(computeDuration(t))}</td>
                 <td>${formatPnl(t.pnl_pct)}</td>
-                <td>${formatPrice(t.exit_price)}</td>
-                <td>${formatRR(t.rr_planned)}</td>
-                <td>${formatRR(t.rr_actual, true)}</td>
+                <td class="actions-cell">
+                    ${isTerminal(t.status) ? '—' : `<button class="btn-sm btn-danger" onclick="window.__history.openCloseModal('${t.trade_id}','${t.symbol}')">Close</button>`}
+                </td>
             </tr>
         `).join('');
 
@@ -192,9 +218,7 @@
                             <th>Status</th>
                             <th>Duration</th>
                             <th>PnL%</th>
-                            <th>Exit Price</th>
-                            <th>R:R Planned</th>
-                            <th>R:R Actual</th>
+                            <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody>${rows}</tbody>
@@ -226,6 +250,9 @@
         },
         applyFilters,
         resetFilters,
+        openCloseModal,
+        closeModal,
+        confirmClose,
     };
 
    function applyFilters() {
