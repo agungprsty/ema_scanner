@@ -144,10 +144,6 @@
         .status-LIMIT_PLACED, .status-PENDING, .status-FILLED { background: var(--blue-bg); color: #2b6cb0; }
         .status-EXPIRED { background: #f0f0f0; color: #0c0c0c; }
 
-        .rr-positive { color: var(--green); }
-        .rr-negative { color: var(--red); }
-        .rr-neutral { color: var(--text-muted); }
-
         .pagination {
             display: flex;
             justify-content: space-between;
@@ -163,10 +159,10 @@
         .loading { text-align: center; padding: 48px; color: var(--text-muted); }
         .error { text-align: center; padding: 48px; color: var(--red); }
 
-        .btn-sm { padding: 4px 8px; font-size: 0.7rem; border-radius: 4px; }
+        .btn-sm { padding: 4px 16px; font-size: 0.7rem; border-radius: 4px; }
         .btn-danger { background: #e53e3e; color: white; }
         .btn-danger:hover { background: #c53030; }
-        .actions-cell { white-space: nowrap; display: flex; gap: 4px; }
+        .actions-cell { white-space: nowrap; }
 
         .modal-overlay {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
@@ -245,6 +241,7 @@
                 <button class="btn-primary" onclick="window.__history.confirmClose('CLOSED_TP')">Close TP (Take Profit)</button>
                 <button class="btn-primary" style="background:var(--yellow);color:#744210" onclick="window.__history.confirmClose('CLOSED_BEP')">Close BEP (Breakeven)</button>
                 <button class="btn-danger" onclick="window.__history.confirmClose('CLOSED_SL')">Close SL (Stop Loss)</button>
+                <button class="btn-secondary" onclick="window.__history.confirmClose('EXPIRED')">Close Expired</button>
                 <button class="btn-cancel" onclick="window.__history.closeModal()">Cancel</button>
             </div>
         </div>
