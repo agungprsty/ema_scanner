@@ -73,5 +73,12 @@ REDIS_URL = os.getenv("REDIS_URL", "")
 # Cross Detection
 CROSS_LOOKBACK_CANDLES = int(os.getenv("CROSS_LOOKBACK_CANDLES", "5"))
 
+# MACD Overcross Strategy
+MACD_FAST = int(os.getenv("MACD_FAST", "12"))
+MACD_SLOW = int(os.getenv("MACD_SLOW", "26"))
+MACD_SIGNAL = int(os.getenv("MACD_SIGNAL", "9"))
+MACD_CROSS_LOOKBACK_CANDLES = int(os.getenv("MACD_CROSS_LOOKBACK_CANDLES", "5"))
+MACD_MAX_SYMBOLS = int(os.getenv("MACD_MAX_SYMBOLS", "50"))
+
 # Backtest
 BACKTEST_INITIAL_BALANCE = float(os.getenv("BACKTEST_INITIAL_BALANCE", "100"))

@@ -17,12 +17,15 @@ from src.config.settings import (
     LONG_ENTRY_FEE_PCT,
     SHORT_ENTRY_FEE_PCT,
     CROSS_LOOKBACK_CANDLES,
+    MACD_CROSS_LOOKBACK_CANDLES,
+    MACD_MAX_SYMBOLS,
 )
 from src.data_feed.binance_client import create_futures_client
 from src.data_feed.ohlcv import fetch_klines
 from src.data_feed.macro_filter import compute_btc_bias
 from src.strategy.indicators import compute_indicators
 from src.strategy.blueprint import macroscan_4h, check_entry, Signal
+from src.strategy.macd import compute_macd, detect_macd_cross
 from src.risk_manager.calculator import calculate_position
 from src.execution.order import place_limit_order
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -392,6 +395,117 @@ async def scan(
 
     except Exception as e:
         logger.error("Scan error: %s", e, exc_info=True)
+        return {"status": "error", "message": _sanitize_error(e)}
+
+
+@app.get("/api/macd-scan")
+async def macd_scan(
+    symbols: Annotated[
+        str, Query(description="Comma-separated whitelist symbols (e.g. SOLUSDT,BTCUSDT)")
+    ],
+    timeframe: Annotated[str, Query(description="MACD timeframe")] = "4h",
+    limit: Annotated[int, Query(ge=50, le=1000, description="Candles to fetch")] = 100,
+    lookback: Annotated[
+        int, Query(ge=1, le=20, description="Candles to scan for the most recent cross")
+    ] = MACD_CROSS_LOOKBACK_CANDLES,
+    send_telegram: Annotated[bool, Query(description="Send to Telegram")] = False,
+):
+    start = time.perf_counter()
+    client = _get_client()
+
+    try:
+        symbol_list = list(dict.fromkeys(s.upper().strip() for s in symbols.split(",") if s.strip()))
+        if not symbol_list:
+            return {"status": "error", "message": "symbols parameter is required"}
+        if len(symbol_list) > MACD_MAX_SYMBOLS:
+            return {
+                "status": "error",
+                "message": f"Too many symbols (max {MACD_MAX_SYMBOLS})",
+            }
+
+        logger.info(
+            "MACD scanning %d symbols (%s / limit=%d / lookback=%d)",
+            len(symbol_list),
+            timeframe,
+            limit,
+            lookback,
+        )
+
+        sem = asyncio.Semaphore(CONCURRENCY)
+
+        async def _detect(sym: str):
+            async with sem:
+                df = await asyncio.to_thread(fetch_klines, client, sym, timeframe, limit)
+                if df is None:
+                    return None
+                df = df.iloc[:-1].copy()
+                df = compute_macd(df)
+                if df is None:
+                    return None
+                return detect_macd_cross(df, sym, lookback_candles=lookback)
+
+        tasks = [_detect(sym) for sym in symbol_list]
+        results = await asyncio.gather(*tasks)
+        signals = [r for r in results if r is not None]
+
+        logger.info(
+            "MACD scan complete: %d/%d symbols produced crosses (%.2fs)",
+            len(signals),
+            len(symbol_list),
+            time.perf_counter() - start,
+        )
+
+        signals_json = []
+        telegram_parts = []
+        for sig in signals:
+            dedup_side = f"macd:{sig.side}"
+            if await is_cross_detected(dedup_side, sig.symbol, sig.cross_candle_ms):
+                logger.debug(
+                    "MACD dedup skip: %s %s at %s",
+                    sig.side,
+                    sig.symbol,
+                    sig.cross_candle_ms,
+                )
+                continue
+            await mark_cross_detected(dedup_side, sig.symbol, sig.cross_candle_ms)
+
+            signals_json.append(
+                {
+                    "symbol": sig.symbol,
+                    "side": sig.side,
+                    "reason": sig.reason,
+                    "cross_time": sig.cross_time,
+                    "cross_price": round(sig.cross_price, 6),
+                    "close": round(sig.close, 6),
+                    "macd": round(sig.macd, 6),
+                    "signal": round(sig.signal, 6),
+                    "histogram": round(sig.histogram, 6),
+                    "bars_ago": sig.bars_ago,
+                }
+            )
+            emoji = "🟢" if sig.side == "LONG" else "🔴"
+            telegram_parts.append(
+                f"{emoji} {sig.side} ${sig.symbol}\n"
+                f"📍 Cross: {sig.cross_price} (now {sig.close})\n"
+                f"📊 MACD: {sig.macd:.4f} | Signal: {sig.signal:.4f} | Hist: {sig.histogram:.4f}"
+            )
+
+        if send_telegram and telegram_parts:
+            header = "🔔 MACD OVERCROSS\n━━━━━━━━━━━━━━━\n"
+            await send_alert(header + "\n\n".join(telegram_parts))
+
+        return {
+            "status": "success",
+            "timeframe": timeframe,
+            "limit": limit,
+            "lookback": lookback,
+            "execution_time": f"{time.perf_counter() - start:.2f}s",
+            "total_scanned": len(symbol_list),
+            "signals": signals_json,
+        }
+
+    except Exception as e:
+        logger.error("MACD scan error: %s", e, exc_info=True)
         return {"status": "error", "message": _sanitize_error(e)}
 
 
