@@ -19,6 +19,7 @@ from src.config.settings import (
     CROSS_LOOKBACK_CANDLES,
     MACD_CROSS_LOOKBACK_CANDLES,
     MACD_MAX_SYMBOLS,
+    MACD_INCLUDE_CURRENT,
 )
 from src.data_feed.binance_client import create_futures_client
 from src.data_feed.ohlcv import fetch_klines
@@ -408,6 +409,9 @@ async def macd_scan(
     lookback: Annotated[
         int, Query(ge=1, le=20, description="Candles to scan for the most recent cross")
     ] = MACD_CROSS_LOOKBACK_CANDLES,
+    include_current: Annotated[
+        bool, Query(description="Include in-progress candle for faster detection")
+    ] = MACD_INCLUDE_CURRENT,
     send_telegram: Annotated[bool, Query(description="Send to Telegram")] = False,
 ):
     start = time.perf_counter()
@@ -424,11 +428,12 @@ async def macd_scan(
             }
 
         logger.info(
-            "MACD scanning %d symbols (%s / limit=%d / lookback=%d)",
+            "MACD scanning %d symbols (%s / limit=%d / lookback=%d / include_current=%s)",
             len(symbol_list),
             timeframe,
             limit,
             lookback,
+            include_current,
         )
 
         sem = asyncio.Semaphore(CONCURRENCY)
@@ -438,11 +443,12 @@ async def macd_scan(
                 df = await asyncio.to_thread(fetch_klines, client, sym, timeframe, limit)
                 if df is None:
                     return None
-                df = df.iloc[:-1].copy()
+                if not include_current:
+                    df = df.iloc[:-1].copy()
                 df = compute_macd(df)
                 if df is None:
                     return None
-                return detect_macd_cross(df, sym, lookback_candles=lookback)
+                return detect_macd_cross(df, sym, lookback_candles=lookback, include_current=include_current)
 
         tasks = [_detect(sym) for sym in symbol_list]
         results = await asyncio.gather(*tasks)
@@ -481,11 +487,13 @@ async def macd_scan(
                     "signal": round(sig.signal, 6),
                     "histogram": round(sig.histogram, 6),
                     "bars_ago": sig.bars_ago,
+                    "confirmed": sig.is_confirmed,
                 }
             )
             emoji = "🟢" if sig.side == "LONG" else "🔴"
+            status = "✅" if sig.is_confirmed else "⏳"
             telegram_parts.append(
-                f"{emoji} {sig.side} ${sig.symbol}\n"
+                f"{emoji} {sig.side} ${sig.symbol} {status}\n"
                 f"📍 Cross: {sig.cross_price} (now {sig.close})\n"
                 f"📊 MACD: {sig.macd:.4f} | Signal: {sig.signal:.4f} | Hist: {sig.histogram:.4f}"
             )
@@ -499,6 +507,7 @@ async def macd_scan(
             "timeframe": timeframe,
             "limit": limit,
             "lookback": lookback,
+            "include_current": include_current,
             "execution_time": f"{time.perf_counter() - start:.2f}s",
             "total_scanned": len(symbol_list),
             "signals": signals_json,

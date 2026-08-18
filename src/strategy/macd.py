@@ -22,6 +22,7 @@ class MacdSignal:
     histogram: float
     close: float
     bars_ago: int
+    is_confirmed: bool = True
 
 
 def compute_macd(
@@ -67,10 +68,12 @@ def detect_macd_cross(
     df: pd.DataFrame,
     symbol: str,
     lookback_candles: int = 5,
+    include_current: bool = False,
 ) -> MacdSignal | None:
     if df is None or len(df) < 2:
         return None
 
+    last_idx = len(df) - 1
     n = min(lookback_candles, len(df) - 1)
     for i in range(len(df) - 1, len(df) - n - 1, -1):
         curr = df.iloc[i]
@@ -91,6 +94,8 @@ def detect_macd_cross(
         else:
             continue
 
+        is_confirmed = not (include_current and i == last_idx)
+
         return MacdSignal(
             symbol=symbol,
             side=side,
@@ -102,7 +107,8 @@ def detect_macd_cross(
             signal=float(sig_curr),
             histogram=float(macd_curr - sig_curr),
             close=float(curr["close"]),
-            bars_ago=len(df) - 1 - i,
+            bars_ago=last_idx - i,
+            is_confirmed=is_confirmed,
         )
 
     return None
