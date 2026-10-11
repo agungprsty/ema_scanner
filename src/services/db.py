@@ -809,49 +809,34 @@ async def get_macd_signals_summary() -> dict:
 
     try:
         async with _session_maker() as session:
-            total = (await session.execute(select(func.count(MacdSignalModel.id)))).scalar_one() or 0
-            long_cnt = (
-                await session.execute(
-                    select(func.count(MacdSignalModel.id)).where(MacdSignalModel.side == "LONG")
-                )
-            ).scalar_one() or 0
-            short_cnt = (
-                await session.execute(
-                    select(func.count(MacdSignalModel.id)).where(MacdSignalModel.side == "SHORT")
-                )
-            ).scalar_one() or 0
-            symbols_cnt = (
-                await session.execute(select(func.count(func.distinct(MacdSignalModel.symbol))))
-            ).scalar_one() or 0
-
-            tp1_hits = (
-                await session.execute(
-                    select(func.count(MacdSignalModel.id)).where(MacdSignalModel.win_status == "TP1_HIT")
-                )
-            ).scalar_one() or 0
-            sl_hits = (
-                await session.execute(
-                    select(func.count(MacdSignalModel.id)).where(MacdSignalModel.win_status == "SL_HIT")
-                )
-            ).scalar_one() or 0
-            pending = (
-                await session.execute(
-                    select(func.count(MacdSignalModel.id)).where(MacdSignalModel.win_status == "PENDING")
-                )
-            ).scalar_one() or 0
+            stmt = select(
+                func.count(MacdSignalModel.id).label("total"),
+                func.count().filter(MacdSignalModel.side == "LONG").label("long_cnt"),
+                func.count().filter(MacdSignalModel.side == "SHORT").label("short_cnt"),
+                func.count(func.distinct(MacdSignalModel.symbol)).label("symbols_cnt"),
+                func.count().filter(MacdSignalModel.win_status == "TP1_HIT").label("tp1_hits"),
+                func.count().filter(MacdSignalModel.win_status == "SL_HIT").label("sl_hits"),
+                func.count().filter(MacdSignalModel.win_status == "PENDING").label("pending"),
+            )
+            row = (await session.execute(stmt)).one()
+            total = row.total or 0
+            long_cnt = row.long_cnt or 0
+            short_cnt = row.short_cnt or 0
+            symbols_cnt = row.symbols_cnt or 0
+            tp1_hits = row.tp1_hits or 0
+            sl_hits = row.sl_hits or 0
+            pending = row.pending or 0
 
             resolved = tp1_hits + sl_hits
             winrate = round((tp1_hits / resolved) * 100, 1) if resolved > 0 else 0.0
 
-            pnl_sum_res = await session.execute(
-                select(func.coalesce(func.sum(ProfitLossHistoryModel.pnl_percent), 0.0))
+            pl_stmt = select(
+                func.coalesce(func.sum(ProfitLossHistoryModel.pnl_percent), 0.0).label("total_pnl"),
+                func.count(ProfitLossHistoryModel.id).label("closed_trades"),
             )
-            total_net_pnl = round(float(pnl_sum_res.scalar_one() or 0.0), 2)
-            closed_trades = (
-                await session.execute(
-                    select(func.count(ProfitLossHistoryModel.id))
-                )
-            ).scalar_one() or resolved
+            pl_row = (await session.execute(pl_stmt)).one()
+            total_net_pnl = round(float(pl_row.total_pnl or 0.0), 2)
+            closed_trades = pl_row.closed_trades or resolved
 
             wl_count = (
                 await session.execute(

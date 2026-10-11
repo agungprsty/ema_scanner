@@ -21,8 +21,10 @@ from src.services.db import (
     save_macd_signal,
 )
 from src.services.redis_client import (
+    acquire_lock,
     is_cross_detected,
     mark_cross_detected,
+    release_lock,
 )
 from src.services.telegram import send_alert
 from src.strategy.macd import compute_macd, detect_macd_cross
@@ -131,18 +133,25 @@ class MacdCronScheduler:
                 await asyncio.sleep(60)
 
     async def _execute_job(self, is_manual: bool = False) -> dict:
-        async with self._lock:
-            client = self._client_getter() if self._client_getter else None
-            if client is None:
-                logger.warning("Cron job execution skipped: Binance client not initialized")
-                return {"status": "error", "message": "Client not initialized"}
+        lock_name = "cron:2h_execution"
+        acquired = await acquire_lock(lock_name, timeout_seconds=180)
+        if not acquired and not is_manual:
+            logger.info("[CRON] Job skipped: already acquired/executed by another worker")
+            return {"status": "skipped", "message": "Already executed by another worker"}
 
-            start_time = time.perf_counter()
-            exec_iso = datetime.now(timezone.utc).isoformat()
-            self._last_run = exec_iso
-            self._total_runs += 1
+        try:
+            async with self._lock:
+                client = self._client_getter() if self._client_getter else None
+                if client is None:
+                    logger.warning("Cron job execution skipped: Binance client not initialized")
+                    return {"status": "error", "message": "Client not initialized"}
 
-            logger.info(">>> [CRON] Starting 2H Scheduled Job (Manual: %s) <<<", is_manual)
+                start_time = time.perf_counter()
+                exec_iso = datetime.now(timezone.utc).isoformat()
+                self._last_run = exec_iso
+                self._total_runs += 1
+
+                logger.info(">>> [CRON] Starting 2H Scheduled Job (Manual: %s) <<<", is_manual)
 
             # Step 1: Evaluate existing pending signals in database
             eval_res = await evaluate_pending_signals(client)
@@ -217,6 +226,9 @@ class MacdCronScheduler:
                 "new_signals_count": new_signals_found,
                 "symbols_scanned": len(symbols),
             }
+        finally:
+            if is_manual:
+                await release_lock(lock_name)
 
 
 cron_scheduler = MacdCronScheduler()

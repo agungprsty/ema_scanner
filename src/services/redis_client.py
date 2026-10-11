@@ -107,3 +107,23 @@ async def set_cached_json(key: str, data: dict, ttl: int = SCAN_CACHE_TTL) -> No
         await _redis.setex(key, ttl, json.dumps(data, default=str))
     except Exception as e:
         logger.warning("Redis set error for key %s: %s", key, e)
+
+
+async def acquire_lock(lock_name: str, timeout_seconds: int = 300) -> bool:
+    if _redis is None:
+        return True
+    try:
+        res = await _redis.set(f"lock:{lock_name}", "1", nx=True, ex=timeout_seconds)
+        return bool(res)
+    except Exception as e:
+        logger.warning("Failed to acquire Redis lock %s: %s", lock_name, e)
+        return True
+
+
+async def release_lock(lock_name: str) -> None:
+    if _redis is None:
+        return
+    try:
+        await _redis.delete(f"lock:{lock_name}")
+    except Exception as e:
+        logger.warning("Failed to release Redis lock %s: %s", lock_name, e)
