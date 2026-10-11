@@ -41,15 +41,23 @@ BINANCE_PROXY = os.getenv("BINANCE_PROXY", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# MACD Parameters
+# MACD Parameters — Strict 2h timeframe
 MACD_FAST = int(os.getenv("MACD_FAST", "12"))
 MACD_SLOW = int(os.getenv("MACD_SLOW", "26"))
 MACD_SIGNAL = int(os.getenv("MACD_SIGNAL", "9"))
-MACD_TIMEFRAME = os.getenv("MACD_TIMEFRAME", "4h")
+MACD_TIMEFRAME = "2h"
 MACD_CROSS_LOOKBACK_CANDLES = int(os.getenv("MACD_CROSS_LOOKBACK_CANDLES", "5"))
 MACD_MAX_SYMBOLS = int(os.getenv("MACD_MAX_SYMBOLS", "50"))
 MACD_INCLUDE_CURRENT = os.getenv("MACD_INCLUDE_CURRENT", "false").lower() in ("true", "1", "yes")
 
+# Strategy Risk Parameters
+RISK_REWARD_RATIO = float(os.getenv("RISK_REWARD_RATIO", "1.5"))
+SWING_LOOKBACK_CANDLES = int(os.getenv("SWING_LOOKBACK_CANDLES", "5"))
+
 # Filtering & Concurrency
 VOLUME_THRESHOLD_USD = float(os.getenv("VOLUME_THRESHOLD_USD", "50000000"))
 SCAN_CONCURRENCY = int(os.getenv("SCAN_CONCURRENCY", "10"))
+
+# Cron Scheduler Parameters
+CRON_ENABLED = os.getenv("CRON_ENABLED", "true").lower() in ("true", "1", "yes")
+CRON_SAFETY_DELAY_SECONDS = int(os.getenv("CRON_SAFETY_DELAY_SECONDS", "15"))

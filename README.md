@@ -1,23 +1,24 @@
-# Crypto MACD Scanner — Binance USDⓈ-M Futures
+# 🏎️💨 Tokyo Drift // Crypto MACD 2H Quant Scanner
 
-A production-grade, asynchronous automated scanner for **Binance USDⓈ-M Futures** that identifies **MACD Crossovers** (Bullish Golden Crosses & Bearish Death Crosses) with **PostgreSQL state persistence**, **Redis signal deduplication & caching**, and optional **real-time Telegram notifications**.
-
-The application is completely containerized with **Docker Compose**, providing a streamlined stack with FastAPI, PostgreSQL, and Redis.
+A production-grade, asynchronous quantitative scanner for **Binance USDⓈ-M Futures** that identifies **MACD Crossovers** strictly on the **2H Timeframe**, featuring **PostgreSQL state persistence**, **Redis signal deduplication**, dynamic **Watchlist Management**, **Win Rate & Trade Outcome Tracking**, and a high-octane **Tokyo Drift** cyberpunk aesthetic dashboard with interactive candlestick charts.
 
 ---
 
-## 🚀 Key Features
+## ⚡ Highlights & Enhancements
 
-- **Focused Alpha Strategy**: Dedicated specifically to MACD (12, 26, 9) signal detection on any timeframe (15m, 1h, 4h, 1d).
-- **Sub-Second Precision & Interpolation**: Calculates exact cross prices using linear interpolation between candle closes.
-- **Forming vs. Confirmed Signals**: Supports both strictly closed candle confirmation or in-progress candle monitoring.
-- **Concurrent Async Screening**: Scans dozens of liquid symbols in parallel using `asyncio.Semaphore`.
-- **Top Liquidity Auto-Discovery**: Automatically queries Binance 24h ticker data to scan the highest-volume USDT futures pairs.
-- **PostgreSQL Persistence**: Stores detected crossover signals in a relational database with indexed query capabilities.
-- **Redis Deduplication & Caching**: Prevents duplicate alerts and re-processing for the same candle crossover.
-- **Telegram Alert Delivery**: Non-blocking asynchronous alerts formatted with status, prices, and MACD indicators.
-- **Modern Web Dashboard**: Glassmorphic, dark-themed UI to trigger scans, monitor system health, and view historical crosses.
-- **Containerized Deployment**: One-command launch via `docker compose` with built-in healthchecks for all services.
+- **Strict 2H Timeframe**: Strategy execution, candle ingestion, and signal tracking are strictly locked to `2h` bars.
+- **Database Watchlist Management**: Watchlist symbols are stored in PostgreSQL with dynamic controls (Add pair, Remove pair, Toggle active state). The scanner defaults to scanning active watchlist symbols.
+- **Tokyo Drift Aesthetics**: Neon Sakura Magenta (`#ff007f`) & Electric Cyan (`#00f0ff`) theme with circular RPM/Winrate Speedometer gauges, street racer telemetry cards, and Japanese cyberpunk styling (`東京ドリフト`).
+- **Signal Detail & Interactive Candlestick Charts**: Clicking on any detected signal opens a telemetry modal with full TradingView candlestick charts, MACD indicators, and price level markers.
+- **Strategy Parameters (Entry, Stop Loss, TP1)**:
+  - **Entry Price**: Exact crossover price calculated via linear interpolation.
+  - **Stop Loss**: Dynamic swing low/high of recent candles with buffer.
+  - **TP1 (Take Profit 1)**: Asymmetric reward target calibrated to a strict 1:1.5 Risk-to-Reward ratio.
+- **Automated 2H Cronjob (Jam 00, 02, 04, ...)**: Runs background scan and profit/loss verification precisely at the turn of every even hour, ensuring only confirmed 2H candles are evaluated and stored.
+- **Dedicated Profit/Loss History Ledger (`profitloss_history`)**: Records resolved trades with exact Entry price, Exit price, outcome (`PROFIT` / `LOSS`), PnL percentage, and timestamps.
+- **Multi-Parameter Filtering**: Full querying by Date (`YYYY-MM-DD` or range), Timeframe, Direction (`LONG` / `SHORT`), and Result (`PROFIT`, `LOSS`, `PENDING`) across both signals and profit/loss history.
+- **Automated Trade Outcome & Win Rate Evaluation**: Evaluates whether in-progress signals reached TP1 first (Win) or Stop Loss first (Loss), dynamically calculating historical win rates.
+- **Full Dockerized Stack**: Seamless deployment via Docker Compose with FastAPI app, PostgreSQL 16, and Redis 7.
 
 ---
 
@@ -31,6 +32,7 @@ The application is completely containerized with **Docker Compose**, providing a
 | Relational Database | [PostgreSQL 16](https://www.postgresql.org/) via [SQLAlchemy 2.0](https://www.sqlalchemy.org/) + [asyncpg](https://github.com/MagicStack/asyncpg) |
 | Cache & Dedup | [Redis 7](https://redis.io/) via `redis.asyncio` |
 | Notifications | [httpx](https://www.python-httpx.org/) → Telegram Bot API |
+| Charting & Frontend | TradingView Lightweight Charts (v4.2.1), Vanilla CSS, HTML5 |
 | Containerization | Docker & Docker Compose |
 
 ---
@@ -39,234 +41,97 @@ The application is completely containerized with **Docker Compose**, providing a
 
 ```
 .
-├── Dockerfile                   # Optimized multi-layer container definition
+├── Dockerfile                   # Multi-layer container definition
 ├── docker-compose.yml           # Compose spec (App, PostgreSQL, Redis)
 ├── requirements.txt             # Python dependencies
 ├── .env.example                 # Environment variables template
 ├── README.md                    # Documentation
 ├── src/
 │   ├── config/
-│   │   └── settings.py          # Centralized configuration via Pydantic/dotenv
+│   │   └── settings.py          # Strict 2h timeframe, MACD, and risk parameters
 │   ├── data_feed/
-│   │   ├── binance_client.py    # Binance Futures client (HMAC, RSA, Proxy support)
-│   │   └── ohlcv.py             # OHLCV Kline ingestion
+│   │   ├── binance_client.py    # Binance Futures client (RSA/HMAC, Proxy support)
+│   │   └── ohlcv.py             # 2H Kline ingestion and chart payload builder
 │   ├── strategy/
-│   │   └── macd.py              # MACD computation and crossover detection logic
+│   │   └── macd.py              # MACD crossover detection with swing SL & TP1 calculation
 │   ├── services/
-│   │   ├── db.py                # PostgreSQL schema, models, and query handlers
-│   │   ├── redis_client.py      # Redis async client and cross deduplication
+│   │   ├── db.py                # PostgreSQL schema (Signals & Watchlist), outcome evaluator
+│   │   ├── redis_client.py      # Redis async client and 2h cross deduplication
 │   │   └── telegram.py          # Asynchronous Telegram alert dispatcher
 │   ├── static/
-│   │   ├── index.html           # Modern dark-mode web dashboard
-│   │   └── app.js               # Reactive frontend client
-│   └── main.py                  # FastAPI application entrypoint & API routes
+│   │   ├── index.html           # Tokyo Drift theme dashboard with Speedometer gauge
+│   │   └── app.js               # Reactive client with interactive candlestick charting
+│   └── main.py                  # FastAPI routes (Scanner, Watchlist, Signals, Klines)
 └── tests/
-    ├── test_macd.py             # MACD strategy unit tests
-    └── test_api.py              # API endpoint integration tests
+    ├── test_macd.py             # MACD strategy and trade level unit tests
+    └── test_api.py              # Watchlist lifecycle and API integration tests
 ```
 
 ---
 
-## 🐳 Quick Start with Docker Compose
+## 🐳 Running with Docker Compose
 
-### 1. Clone & Configure Environment
-
-```bash
-git clone <repo-url>
-cd ema_scanner
-
-# Copy template to .env
-cp .env.example .env
-```
-
-Edit `.env` to configure your Binance API credentials, Telegram tokens, or custom parameters.
-
-### 2. Start the Stack
+### 1. Launch Services
 
 ```bash
 docker compose up --build -d
 ```
 
-This launches three interconnected containers:
-1. `macd_scanner_postgres`: PostgreSQL 16 database with persistent storage.
-2. `macd_scanner_redis`: Redis 7 in-memory cache and deduplication store.
-3. `macd_scanner_app`: FastAPI application running on port `7860`.
+### 2. Verify Stack Status
 
-### 3. Verify Health
-
-Check container status:
 ```bash
 docker compose ps
 ```
 
-Check the health endpoint:
-```bash
-curl http://localhost:7860/api/health
-```
+### 3. Open Tokyo Drift Dashboard
 
-Expected response:
-```json
-{
-  "status": "healthy",
-  "database": true,
-  "redis": true,
-  "version": "2.0.0"
-}
-```
-
-### 4. Access Web Dashboard
-
-Open your browser and navigate to:
-```
-http://localhost:7860
-```
+Navigate to [http://localhost:7860](http://localhost:7860) in your browser.
 
 ---
 
-## 💻 Local Development Setup (Without Docker)
+## 📡 API Endpoints
 
-If you prefer running directly on your host machine:
+### 1. Scanner & Charts
+- `GET /api/macd-scan`: Trigger a 2H MACD scan across active watchlist symbols.
+  - Query params: `lookback` (default: 5), `include_current` (default: false), `send_telegram` (default: true).
+- `GET /api/klines?symbol=BTCUSDT`: Returns 2H candlestick data and computed MACD series for charting.
+- `GET /api/signals/{signal_id}`: Fetch detailed trade telemetry for a specific signal.
+- `POST /api/evaluate`: Evaluates all pending signals against subsequent price action to determine `TP1_HIT` or `SL_HIT`.
 
-### 1. Prerequisites
-- Python 3.12 or 3.13
-- PostgreSQL & Redis running locally (e.g. via `docker compose up -d postgres redis`)
+### 2. Watchlist Management
+- `GET /api/watchlist`: List all watchlist symbols with active status and notes.
+- `POST /api/watchlist`: Add a new pair to the database watchlist.
+  ```json
+  { "symbol": "SUIUSDT", "notes": "Momentum L1" }
+  ```
+- `PATCH /api/watchlist/{symbol}/toggle`: Toggle symbol active state (`true` / `false`).
+- `DELETE /api/watchlist/{symbol}`: Remove symbol from watchlist.
 
-### 2. Install Dependencies
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 3. Run FastAPI Application
-
-```bash
-uvicorn src.main:app --host 0.0.0.0 --port 7860 --reload
-```
-
-### 4. Run Automated Tests
-
-```bash
-PYTHONPATH=. pytest tests/ -v
-```
-
----
-
-## 📡 API Reference
-
-### Scan Endpoints
-
-#### `GET /api/macd-scan` (or `/api/scan`)
-Executes an on-demand MACD crossover scan across specified symbols or top liquid Binance futures.
-
-**Query Parameters:**
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `symbols` | `string` | *(Optional)* | Comma-separated pairs (e.g. `BTCUSDT,ETHUSDT`). If omitted, scans top liquid pairs. |
-| `timeframe` | `string` | `4h` | Candle timeframe (`15m`, `1h`, `4h`, `1d`). |
-| `limit` | `int` | `100` | Number of historical candles to fetch (35 - 1000). |
-| `lookback` | `int` | `5` | Search window in candles for crossover occurrence. |
-| `include_current` | `bool` | `false` | Whether to evaluate in-progress (unclosed) candle. |
-| `send_telegram` | `bool` | `true` | Send Telegram alert for newly detected signals. |
-| `save_db` | `bool` | `true` | Persist new signals to PostgreSQL. |
-
-**Example Request:**
-```bash
-curl "http://localhost:7860/api/macd-scan?timeframe=4h&lookback=3"
-```
-
-**Example Response:**
-```json
-{
-  "status": "success",
-  "timeframe": "4h",
-  "limit": 100,
-  "lookback": 3,
-  "include_current": false,
-  "execution_time": "1.42s",
-  "total_scanned": 50,
-  "new_signals_count": 2,
-  "signals": [
-    {
-      "symbol": "BTCUSDT",
-      "side": "LONG",
-      "reason": "macd_golden_cross",
-      "cross_time": "2026-10-11T00:00:00Z",
-      "cross_price": 65120.45,
-      "close": 65350.0,
-      "macd": 12.45,
-      "signal": 10.12,
-      "histogram": 2.33,
-      "bars_ago": 1,
-      "confirmed": true,
-      "is_new": true
-    }
-  ]
-}
-```
+### 3. Performance & History
+- `GET /api/summary`: Returns aggregate performance metrics (Win Rate %, Wins, Losses, In-Progress, Active Watchlist Count, LONG/SHORT distribution).
+- `GET /api/signals`: Paginated historical signal records from PostgreSQL with filtering support:
+  - Query params: `symbol`, `direction` / `side` (`LONG`/`SHORT`), `timeframe` (default `2h`), `result` / `win_status` (`PROFIT`, `LOSS`, `PENDING`), `date` (`YYYY-MM-DD`), `start_date`, `end_date`, `limit`, `offset`.
+- `GET /api/profitloss-history`: Dedicated history of all resolved trades from `profitloss_history` table:
+  - Query params: `symbol`, `direction`, `timeframe`, `result` (`PROFIT`/`LOSS`), `date`, `start_date`, `end_date`, `limit`, `offset`.
+  - Returns paginated trade records plus performance summary (`total_trades`, `profit_count`, `loss_count`, `winrate`, `total_pnl_percent`).
+- `POST /api/profitloss-history/evaluate`: Evaluates pending signals against Binance candle price action, writes outcomes (`PROFIT` or `LOSS`) to `profitloss_history`, and updates database records.
+- `GET /api/cron/status`: Get the current execution status and next scheduled run for the 2H automated cronjob.
+- `POST /api/cron/trigger`: Manually trigger the 2H cronjob (runs trade outcome evaluation then confirmed candle scan).
+- `GET /api/health`: Healthcheck verifying PostgreSQL, Redis, Cron Scheduler, and 2H engine status.
 
 ---
 
-### History & Analytics Endpoints
+## 🏁 Strategy Mechanics (2H Frame)
 
-#### `GET /api/signals`
-Queries persisted MACD crossover signals from PostgreSQL.
-
-**Query Parameters:**
-- `symbol` (optional): Filter by symbol name (e.g. `BTCUSDT`).
-- `side` (optional): Filter by `LONG` or `SHORT`.
-- `timeframe` (optional): Filter by timeframe (e.g. `4h`).
-- `limit` (default: `50`): Max records returned.
-- `offset` (default: `0`): Pagination offset.
-
-#### `GET /api/summary`
-Returns aggregate statistics of detected crossovers stored in PostgreSQL:
-```json
-{
-  "total_signals": 142,
-  "long_signals": 84,
-  "short_signals": 58,
-  "symbols_count": 26,
-  "latest_signal_time": "2026-10-11T08:00:00Z"
-}
-```
-
-#### `GET /api/health`
-Checks database and Redis connectivity.
-
----
-
-## ⚙️ Environment Variables Reference
-
-| Variable | Default | Description |
-|---|---|---|
-| `HOST` | `0.0.0.0` | Server bind host |
-| `PORT` | `7860` | Server bind port |
-| `DRY_RUN` | `true` | Informational operating mode |
-| `POSTGRES_USER` | `postgres` | PostgreSQL username |
-| `POSTGRES_PASSWORD` | `postgres` | PostgreSQL password |
-| `POSTGRES_DB` | `macd_scanner` | PostgreSQL database name |
-| `POSTGRES_HOST` | `postgres` (or `localhost`) | PostgreSQL hostname |
-| `POSTGRES_PORT` | `5432` | PostgreSQL port |
-| `DATABASE_URL` | *(Built from above)* | Full SQLAlchemy `postgresql+asyncpg://` URI |
-| `REDIS_URL` | `redis://redis:6379/0` | Redis connection URL |
-| `BINANCE_API_KEY` | `""` | Binance API key |
-| `BINANCE_API_SECRET` | `""` | Binance API secret |
-| `BINANCE_PROXY` | `""` | HTTP/HTTPS Proxy (e.g. `http://user:pass@host:port`) |
-| `TELEGRAM_BOT_TOKEN` | `""` | Telegram Bot Token from @BotFather |
-| `TELEGRAM_CHAT_ID` | `""` | Target Telegram Chat / Channel ID |
-| `MACD_FAST` | `12` | MACD Fast EMA period |
-| `MACD_SLOW` | `26` | MACD Slow EMA period |
-| `MACD_SIGNAL` | `9` | MACD Signal EMA period |
-| `MACD_TIMEFRAME` | `4h` | Default scan timeframe |
-| `MACD_CROSS_LOOKBACK_CANDLES` | `5` | Maximum candles ago to detect crossover |
-| `MACD_MAX_SYMBOLS` | `50` | Maximum symbols to scan per request |
-| `VOLUME_THRESHOLD_USD` | `50000000` | Minimum 24h USD volume for auto-discovered pairs |
-| `SCAN_CONCURRENCY` | `10` | Parallel symbol scanner concurrency limit |
-
----
-
-## 🛡️ License
-
-MIT License. Designed for quantitative analysis and automated screening.
+1. **Indicator Setup**:
+   - Fast EMA = 12, Slow EMA = 26, Signal EMA = 9.
+   - Applied strictly to **2-Hour** candles.
+2. **Crossover Trigger**:
+   - **Bullish Golden Cross (LONG)**: MACD line crosses above Signal line.
+   - **Bearish Death Cross (SHORT)**: MACD line crosses below Signal line.
+3. **Dynamic Swing Risk Management**:
+   - **Entry Level**: Interpolated cross price.
+   - **Stop Loss**: Placed 0.2% beyond the swing low (LONG) or swing high (SHORT) of the lookback window.
+   - **Take Profit 1 (TP1)**: Target set at **1.5× Risk** ($RR = 1:1.5$).
+4. **Outcome Validation**:
+   - Signals are tracked until the 2H candle highs/lows reach either the TP1 target or the Stop Loss level.

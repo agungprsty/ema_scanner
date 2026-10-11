@@ -4,7 +4,13 @@ from dataclasses import asdict, dataclass
 import pandas as pd
 import pandas_ta as ta
 
-from src.config.settings import MACD_FAST, MACD_SIGNAL, MACD_SLOW
+from src.config.settings import (
+    MACD_FAST,
+    MACD_SIGNAL,
+    MACD_SLOW,
+    RISK_REWARD_RATIO,
+    SWING_LOOKBACK_CANDLES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -17,12 +23,17 @@ class MacdSignal:
     cross_candle_ms: int
     cross_time: str
     cross_price: float
+    entry_price: float
+    stop_loss: float
+    tp1: float
+    risk_reward_ratio: float
     macd: float
     signal: float
     histogram: float
     close: float
     bars_ago: int
     is_confirmed: bool = True
+    win_status: str = "PENDING"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -67,6 +78,35 @@ def _calc_cross_price(df: pd.DataFrame, idx: int) -> float:
     return float(price) if price > 0 else float(curr["close"])
 
 
+def calculate_trade_levels(
+    df: pd.DataFrame,
+    idx: int,
+    side: str,
+    entry_price: float,
+    lookback_candles: int = SWING_LOOKBACK_CANDLES,
+    rr_ratio: float = RISK_REWARD_RATIO,
+) -> tuple[float, float]:
+    start_idx = max(0, idx - lookback_candles)
+    window = df.iloc[start_idx : idx + 1]
+
+    if side == "LONG":
+        swing_low = float(window["low"].min()) if "low" in window else entry_price * 0.985
+        stop_loss = swing_low * 0.998
+        if stop_loss >= entry_price:
+            stop_loss = entry_price * 0.985
+        risk = entry_price - stop_loss
+        tp1 = entry_price + (risk * rr_ratio)
+    else:
+        swing_high = float(window["high"].max()) if "high" in window else entry_price * 1.015
+        stop_loss = swing_high * 1.002
+        if stop_loss <= entry_price:
+            stop_loss = entry_price * 1.015
+        risk = stop_loss - entry_price
+        tp1 = entry_price - (risk * rr_ratio)
+
+    return round(stop_loss, 6), round(tp1, 6)
+
+
 def detect_macd_cross(
     df: pd.DataFrame,
     symbol: str,
@@ -98,6 +138,17 @@ def detect_macd_cross(
             continue
 
         is_confirmed = not (include_current and i == last_idx)
+        cross_price = round(_calc_cross_price(df, i), 6)
+        entry_price = cross_price
+
+        stop_loss, tp1 = calculate_trade_levels(
+            df=df,
+            idx=i,
+            side=side,
+            entry_price=entry_price,
+            lookback_candles=SWING_LOOKBACK_CANDLES,
+            rr_ratio=RISK_REWARD_RATIO,
+        )
 
         return MacdSignal(
             symbol=symbol,
@@ -105,13 +156,18 @@ def detect_macd_cross(
             reason=reason,
             cross_candle_ms=int(curr["timestamp"].timestamp() * 1000),
             cross_time=curr["timestamp"].strftime("%Y-%m-%dT%H:%M:%SZ"),
-            cross_price=_calc_cross_price(df, i),
+            cross_price=cross_price,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            tp1=tp1,
+            risk_reward_ratio=RISK_REWARD_RATIO,
             macd=float(macd_curr),
             signal=float(sig_curr),
             histogram=float(macd_curr - sig_curr),
             close=float(curr["close"]),
             bars_ago=last_idx - i,
             is_confirmed=is_confirmed,
+            win_status="PENDING",
         )
 
     return None
