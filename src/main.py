@@ -180,6 +180,8 @@ class SummaryResponse(BaseModel):
     avg_rr: float
     watchlist_count: int
     latest_signal_time: str | None = None
+    total_net_pnl: float = 0.0
+    closed_trades: int = 0
 
 
 class HealthResponse(BaseModel):

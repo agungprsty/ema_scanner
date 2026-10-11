@@ -32,15 +32,7 @@ _session_maker: async_sessionmaker[AsyncSession] | None = None
 
 DEFAULT_WATCHLIST = [
     "BTCUSDT",
-    "ETHUSDT",
-    "SOLUSDT",
-    "BNBUSDT",
-    "DOGEUSDT",
-    "XRPUSDT",
-    "AVAXUSDT",
-    "NEARUSDT",
-    "SUIUSDT",
-    "PEPEUSDT",
+    "ETHUSDT"
 ]
 
 
@@ -811,6 +803,8 @@ async def get_macd_signals_summary() -> dict:
             "avg_rr": 1.5,
             "watchlist_count": len(DEFAULT_WATCHLIST),
             "latest_signal_time": None,
+            "total_net_pnl": 0.0,
+            "closed_trades": 0,
         }
 
     try:
@@ -849,6 +843,16 @@ async def get_macd_signals_summary() -> dict:
             resolved = tp1_hits + sl_hits
             winrate = round((tp1_hits / resolved) * 100, 1) if resolved > 0 else 0.0
 
+            pnl_sum_res = await session.execute(
+                select(func.coalesce(func.sum(ProfitLossHistoryModel.pnl_percent), 0.0))
+            )
+            total_net_pnl = round(float(pnl_sum_res.scalar_one() or 0.0), 2)
+            closed_trades = (
+                await session.execute(
+                    select(func.count(ProfitLossHistoryModel.id))
+                )
+            ).scalar_one() or resolved
+
             wl_count = (
                 await session.execute(
                     select(func.count(WatchlistModel.id)).where(WatchlistModel.is_active == True)  # noqa: E712
@@ -873,6 +877,8 @@ async def get_macd_signals_summary() -> dict:
                 "avg_rr": 1.5,
                 "watchlist_count": wl_count,
                 "latest_signal_time": latest,
+                "total_net_pnl": total_net_pnl,
+                "closed_trades": closed_trades,
             }
     except Exception as e:
         logger.error("Failed to calculate signals summary: %s", e, exc_info=True)
@@ -888,4 +894,6 @@ async def get_macd_signals_summary() -> dict:
             "avg_rr": 1.5,
             "watchlist_count": 0,
             "latest_signal_time": None,
+            "total_net_pnl": 0.0,
+            "closed_trades": 0,
         }

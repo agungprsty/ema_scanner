@@ -26,11 +26,8 @@ document.addEventListener('DOMContentLoaded', () => {
   // Profit/Loss DOM Elements
   const pnlTbody = document.getElementById('pnl-tbody');
   const pnlMobileContainer = document.getElementById('pnl-mobile-container');
-  const pnlTotalTrades = document.getElementById('pnl-total-trades');
-  const pnlWins = document.getElementById('pnl-wins');
-  const pnlLosses = document.getElementById('pnl-losses');
-  const pnlWinrate = document.getElementById('pnl-winrate');
-  const pnlCumPnl = document.getElementById('pnl-cum-pnl');
+  const statTotalPnl = document.getElementById('stat-total-pnl');
+  const statPnlSub = document.getElementById('stat-pnl-sub');
 
   // Filters
   const filterSymbol = document.getElementById('filter-symbol');
@@ -150,13 +147,28 @@ document.addEventListener('DOMContentLoaded', () => {
       const wins = data.tp1_hit_count || 0;
       const losses = data.sl_hit_count || 0;
       const pending = data.pending_count || 0;
-      document.getElementById('stat-win-ratio').textContent = `${wins} WINS / ${losses} LOSSES`;
-      document.getElementById('stat-active-pending').textContent = `${pending} IN-PROGRESS TRADES`;
+      const winRatioEl = document.getElementById('stat-win-ratio');
+      if (winRatioEl) {
+        winRatioEl.innerHTML = `<span class="color-long">${wins} Win</span> / <span class="color-short">${losses} Loss</span>`;
+      }
+      const pendingEl = document.getElementById('stat-active-pending');
+      if (pendingEl) {
+        pendingEl.textContent = `${pending} IN-PROGRESS TRADES`;
+      }
 
       document.getElementById('stat-total-signals').textContent = data.total_signals || 0;
       document.getElementById('stat-long').textContent = `${data.long_signals || 0} L`;
       document.getElementById('stat-short').textContent = `${data.short_signals || 0} S`;
-      document.getElementById('stat-watchlist-count').textContent = data.watchlist_count || 0;
+
+      if (statTotalPnl) {
+        const pnlVal = data.total_net_pnl || 0.0;
+        statTotalPnl.textContent = `${pnlVal >= 0 ? '+' : ''}${pnlVal.toFixed(2)}%`;
+        statTotalPnl.className = `hud-stat ${pnlVal >= 0 ? 'color-long' : 'color-short'}`;
+      }
+      if (statPnlSub) {
+        const closedCount = data.closed_trades ?? (wins + losses);
+        statPnlSub.textContent = `${closedCount} Closed Trades`;
+      }
     } catch (e) {
       console.warn('Summary load failed', e);
     }
@@ -315,14 +327,16 @@ document.addEventListener('DOMContentLoaded', () => {
       pnlHistory = data.history || [];
       const sum = data.summary || {};
 
-      pnlTotalTrades.textContent = sum.total_trades || 0;
-      pnlWins.textContent = `${sum.profit_count || 0} W`;
-      pnlLosses.textContent = `${sum.loss_count || 0} L`;
-      pnlWinrate.textContent = `${sum.winrate || 0.0}%`;
-
-      const pnlVal = sum.total_pnl_percent || 0.0;
-      pnlCumPnl.textContent = `${pnlVal >= 0 ? '+' : ''}${pnlVal.toFixed(2)}%`;
-      pnlCumPnl.className = pnlVal >= 0 ? 'color-long' : 'color-short';
+      if (!search && !side && !filterRes && !dateVal) {
+        if (statTotalPnl && sum.total_pnl_percent !== undefined) {
+          const pnlVal = sum.total_pnl_percent || 0.0;
+          statTotalPnl.textContent = `${pnlVal >= 0 ? '+' : ''}${pnlVal.toFixed(2)}%`;
+          statTotalPnl.className = `hud-stat ${pnlVal >= 0 ? 'color-long' : 'color-short'}`;
+        }
+        if (statPnlSub && sum.total_trades !== undefined) {
+          statPnlSub.textContent = `${sum.total_trades} Closed Trades`;
+        }
+      }
 
       renderProfitLossHistory(pnlHistory);
     } catch (e) {
@@ -643,9 +657,10 @@ document.addEventListener('DOMContentLoaded', () => {
   // Chart & Telemetry Modal
   async function openChartModal(sig) {
     modal.style.display = 'flex';
+    document.getElementById('modal-badge').textContent = '2H // UTC+7';
     document.getElementById('modal-title').textContent = `${sig.symbol} // ${sig.side} 2H`;
     document.getElementById('modal-title').style.color = sig.side === 'LONG' ? 'var(--long)' : 'var(--short)';
-    document.getElementById('modal-time').textContent = `Cross Time: ${formatWIB(sig.cross_time)} (Confirmed: ${sig.confirmed})`;
+    document.getElementById('modal-time').textContent = `Cross Time: ${formatWIB(sig.cross_time)} (Confirmed: ${sig.confirmed}) • Timezone: UTC+7 (WIB)`;
 
     document.getElementById('detail-entry').textContent = `$${formatPrice(sig.entry_price || sig.cross_price)}`;
     document.getElementById('detail-sl').textContent = `$${formatPrice(sig.stop_loss)}`;
@@ -666,7 +681,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function renderChart(sig) {
-    chartViewport.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--cyan);font-family:var(--font-display);font-size:0.85rem;"><span class="spinner" style="margin-right:10px;"></span> LOADING 2H CANDLESTICK TELEMETRY...</div>';
+    chartViewport.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--cyan);font-family:var(--font-display);font-size:0.85rem;"><span class="spinner" style="margin-right:10px;"></span> LOADING 2H CANDLESTICK TELEMETRY (UTC+7)...</div>';
 
     try {
       const res = await fetch(`/api/klines?symbol=${sig.symbol}&limit=80`);
@@ -695,6 +710,10 @@ document.addEventListener('DOMContentLoaded', () => {
           timeScale: {
             borderColor: 'rgba(255, 255, 255, 0.08)',
             timeVisible: true,
+            secondsVisible: false,
+          },
+          localization: {
+            dateFormat: 'yyyy-MM-dd',
           },
         });
 
@@ -706,7 +725,33 @@ document.addEventListener('DOMContentLoaded', () => {
           wickDownColor: '#fb7185',
         });
 
-        candleSeries.setData(payload.candles);
+        // Shift candle timestamps by +7 hours to render natively in UTC+7 (WIB)
+        const UTC7_OFFSET_SEC = 7 * 3600;
+        const candles = (payload.candles || []).map(c => ({
+          ...c,
+          time: c.time + UTC7_OFFSET_SEC,
+        }));
+
+        candleSeries.setData(candles);
+
+        if (sig.cross_time) {
+          const crossDate = new Date(sig.cross_time);
+          if (!isNaN(crossDate.getTime())) {
+            const crossTsSec = Math.floor(crossDate.getTime() / 1000) + UTC7_OFFSET_SEC;
+            const matchingCandle = candles.find(c => Math.abs(c.time - crossTsSec) < 3600);
+            if (matchingCandle) {
+              candleSeries.setMarkers([
+                {
+                  time: matchingCandle.time,
+                  position: sig.side === 'LONG' ? 'belowBar' : 'aboveBar',
+                  color: sig.side === 'LONG' ? '#10b981' : '#fb7185',
+                  shape: sig.side === 'LONG' ? 'arrowUp' : 'arrowDown',
+                  text: `${sig.side} SIGNAL`,
+                },
+              ]);
+            }
+          }
+        }
 
         if (sig.entry_price) {
           candleSeries.createPriceLine({

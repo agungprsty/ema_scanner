@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 WIB_TZ = timezone(timedelta(hours=7))
-EVEN_HOURS = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22]
+ODD_HOURS = [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23]
 
 
 def calculate_seconds_until_next_cron(safety_delay: int = 15) -> tuple[float, datetime]:
@@ -39,7 +39,7 @@ def calculate_seconds_until_next_cron(safety_delay: int = 15) -> tuple[float, da
     candidates = []
     for day_offset in (0, 1):
         base_date = (now_wib + timedelta(days=day_offset)).date()
-        for h in EVEN_HOURS:
+        for h in ODD_HOURS:
             dt = datetime(
                 base_date.year,
                 base_date.month,
@@ -82,7 +82,7 @@ class MacdCronScheduler:
         self._client_getter = client_getter
         self._is_active = True
         self._task = asyncio.create_task(self._cron_loop())
-        logger.info("2H MACD Cron Scheduler started: strictly at Even Hours (00, 02, 04, ... WIB)")
+        logger.info("2H MACD Cron Scheduler started: strictly at Odd Hours (01, 03, 05, ... WIB)")
 
     def stop(self) -> None:
         self._is_active = False
@@ -94,7 +94,7 @@ class MacdCronScheduler:
         return {
             "enabled": CRON_ENABLED,
             "is_active": self._is_active,
-            "schedule": "Every 2 Hours at Even Hours (00, 02, 04, 06, 08, 10, 12, 14, 16, 18, 20, 22 WIB)",
+            "schedule": "Every 2 Hours at Odd Hours (01, 03, 05, ... WIB)",
             "interval_hours": 2,
             "timezone": "WIB (UTC+7)",
             "timeframe": MACD_TIMEFRAME,

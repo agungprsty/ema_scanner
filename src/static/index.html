@@ -1174,7 +1174,9 @@
         <div>
           <div class="hud-title">Historical Winrate</div>
           <div class="hud-stat color-cyan" id="stat-winrate">0.0%</div>
-          <div class="hud-sub" id="stat-win-ratio">0 WINS / 0 LOSSES</div>
+          <div class="hud-sub" id="stat-win-ratio">
+            <span class="color-long" id="stat-wins">0 Win</span> / <span class="color-short" id="stat-losses">0 Loss</span>
+          </div>
         </div>
       </div>
 
@@ -1196,12 +1198,12 @@
         <div class="hud-sub">Risk:Reward 1:1.5 Strict</div>
       </div>
 
-      <!-- Active Watchlist Card -->
+      <!-- Total Net PnL Card -->
       <div class="cockpit-card">
-        <div class="card-kanji">監視</div>
-        <div class="hud-title">Active Watchlist</div>
-        <div class="hud-stat color-pink" id="stat-watchlist-count">10</div>
-        <div class="hud-sub">Binance USDT Futures</div>
+        <div class="card-kanji">損益</div>
+        <div class="hud-title">Total Net PnL</div>
+        <div class="hud-stat color-long" id="stat-total-pnl">+0.00%</div>
+        <div class="hud-sub" id="stat-pnl-sub">0 Closed Trades</div>
       </div>
     </div>
 
@@ -1298,28 +1300,6 @@
 
       <!-- Profit/Loss History View (Dedicated View for profitloss_history table) -->
       <div id="view-profitloss" style="display: none;">
-        <!-- PnL Mini Scoreboard -->
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 14px;">
-          <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 12px 14px;">
-            <div class="hud-title" style="font-size: 0.65rem;">Closed Trades</div>
-            <div id="pnl-total-trades" style="font-family: var(--font-display); font-size: 1.25rem; font-weight: 700; margin-top: 3px;">0</div>
-          </div>
-          <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 12px 14px;">
-            <div class="hud-title" style="font-size: 0.65rem;">Profit vs Loss</div>
-            <div style="font-family: var(--font-display); font-size: 1.25rem; font-weight: 700; margin-top: 3px;">
-              <span class="color-long" id="pnl-wins">0 W</span> / <span class="color-short" id="pnl-losses">0 L</span>
-            </div>
-          </div>
-          <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 12px 14px;">
-            <div class="hud-title" style="font-size: 0.65rem;">Winrate</div>
-            <div class="color-cyan" id="pnl-winrate" style="font-family: var(--font-display); font-size: 1.25rem; font-weight: 700; margin-top: 3px;">0.0%</div>
-          </div>
-          <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 12px 14px;">
-            <div class="hud-title" style="font-size: 0.65rem;">Total Net PnL</div>
-            <div class="color-long" id="pnl-cum-pnl" style="font-family: var(--font-mono); font-size: 1.25rem; font-weight: 700; margin-top: 3px;">+0.00%</div>
-          </div>
-        </div>
-
         <!-- Profit/Loss Mobile View -->
         <div id="pnl-mobile-container" class="mobile-cards-view">
           <!-- Rendered dynamically -->
