@@ -1,317 +1,272 @@
-# EMA20/EMA50 Cross Scanner — Quantitative Futures Trading Bot
+# Crypto MACD Scanner — Binance USDⓈ-M Futures
 
-A production-grade Python bot for Binance USDⓈ-M Futures that implements a quantitative **EMA20/EMA50 cross strategy** with a **4H macro trend filter**. The system features a modular architecture with Firebase-backed state management and real-time Telegram notifications.
+A production-grade, asynchronous automated scanner for **Binance USDⓈ-M Futures** that identifies **MACD Crossovers** (Bullish Golden Crosses & Bearish Death Crosses) with **PostgreSQL state persistence**, **Redis signal deduplication & caching**, and optional **real-time Telegram notifications**.
 
-## Key Capabilities
+The application is completely containerized with **Docker Compose**, providing a streamlined stack with FastAPI, PostgreSQL, and Redis.
 
-- **Two-Stage Screening Pipeline**: Macro-level trend filter (4H) narrows the watchlist before triggering entry signals on the 1H timeframe
-- **EMA20/EMA50 Cross Entry**: Detects EMA20/EMA50 crossovers (golden cross for LONG, death cross for SHORT) on the 1H chart
-- **4H Macro Trend Filter**: Restricts trading to symbols trading above a rising EMA50 on the 4H timeframe
-- **Volume-Confirmed Entries**: Requires volume to exceed the 20-period moving average before triggering
-- **ATR-Based Stop Loss**: Dynamic stop loss calculated from the lowest low of the lookback window minus 1.5× ATR(14)
-- **Partial Take-Profit (50%)**: Half the position exits at TP1 (EMA50 of the 4H macro timeframe), the remainder trails to breakeven
-- **Automated Breakeven Management**: Stop loss automatically moves to breakeven (entry + 0.05% fee buffer) after TP1 is hit
-- **Real-Time Telegram Alerts**: Trade signals, fills, and status updates delivered via Telegram Bot API
-- **Firestore State Management**: Crash-resistant state persistence using Firestore transactions and write batches
-- **BTC Macro Bias Filter**: Scans are gated by Bitcoin's EMA20/EMA50 directional bias (bullish/bearish) on the 4H timeframe with configurable strength thresholds
-- **Liquidity Filter**: Automatically excludes low-volume pairs below a configurable daily USDT threshold
-- **Auto-Cancel Stale Orders**: Monitors open limit orders and cancels those exceeding a configurable time-to-live
-- **Concurrent Symbol Scanning**: Processes up to 10 symbols in parallel, reducing scan time by approximately 4x
-- **Historical Backtesting Engine**: Full-featured simulator with performance metrics and visual chart output
+---
 
-## Technology Stack
+## 🚀 Key Features
+
+- **Focused Alpha Strategy**: Dedicated specifically to MACD (12, 26, 9) signal detection on any timeframe (15m, 1h, 4h, 1d).
+- **Sub-Second Precision & Interpolation**: Calculates exact cross prices using linear interpolation between candle closes.
+- **Forming vs. Confirmed Signals**: Supports both strictly closed candle confirmation or in-progress candle monitoring.
+- **Concurrent Async Screening**: Scans dozens of liquid symbols in parallel using `asyncio.Semaphore`.
+- **Top Liquidity Auto-Discovery**: Automatically queries Binance 24h ticker data to scan the highest-volume USDT futures pairs.
+- **PostgreSQL Persistence**: Stores detected crossover signals in a relational database with indexed query capabilities.
+- **Redis Deduplication & Caching**: Prevents duplicate alerts and re-processing for the same candle crossover.
+- **Telegram Alert Delivery**: Non-blocking asynchronous alerts formatted with status, prices, and MACD indicators.
+- **Modern Web Dashboard**: Glassmorphic, dark-themed UI to trigger scans, monitor system health, and view historical crosses.
+- **Containerized Deployment**: One-command launch via `docker compose` with built-in healthchecks for all services.
+
+---
+
+## 🛠️ Technology Stack
 
 | Layer | Technology |
 |---|---|
-| API Framework | [FastAPI](https://fastapi.tiangolo.com/) |
+| API Framework | [FastAPI](https://fastapi.tiangolo.com/) + [Uvicorn](https://www.uvicorn.org/) |
+| Language & Runtime | Python 3.12 / 3.13 (`asyncio`) |
 | Exchange Connectivity | [binance-futures-connector-python](https://github.com/binance/binance-futures-connector-python) (UM-Futures) |
-| Database | [Firebase Admin SDK](https://firebase.google.com/docs/admin/setup) — Firestore |
-| Data Processing | [Pandas](https://pandas.pydata.org/) + [pandas-ta](https://github.com/twopirllc/pandas-ta) |
-| Messaging | [httpx](https://www.python-httpx.org/) → Telegram Bot API |
-| Runtime | FastAPI + Uvicorn (ASGI) |
+| Relational Database | [PostgreSQL 16](https://www.postgresql.org/) via [SQLAlchemy 2.0](https://www.sqlalchemy.org/) + [asyncpg](https://github.com/MagicStack/asyncpg) |
+| Cache & Dedup | [Redis 7](https://redis.io/) via `redis.asyncio` |
+| Notifications | [httpx](https://www.python-httpx.org/) → Telegram Bot API |
+| Containerization | Docker & Docker Compose |
 
-## Project Structure
+---
+
+## 📁 Project Structure
 
 ```
-src/
-├── config/           # Credentials and trading parameters (settings.py)
-├── data_feed/        # OHLCV data ingestion, Binance client, BTC macro filter
-├── strategy/         # Technical indicators (EMA, ATR, RSI, ADX) and signal logic
-├── risk_manager/     # Position sizing, stop-loss, and take-profit calculator
-├── execution/        # Order routing, auto-cancellation, position monitoring
-├── services/         # Firebase Firestore and Telegram integration layer
-└── main.py           # FastAPI application entry point and orchestrator
+.
+├── Dockerfile                   # Optimized multi-layer container definition
+├── docker-compose.yml           # Compose spec (App, PostgreSQL, Redis)
+├── requirements.txt             # Python dependencies
+├── .env.example                 # Environment variables template
+├── README.md                    # Documentation
+├── src/
+│   ├── config/
+│   │   └── settings.py          # Centralized configuration via Pydantic/dotenv
+│   ├── data_feed/
+│   │   ├── binance_client.py    # Binance Futures client (HMAC, RSA, Proxy support)
+│   │   └── ohlcv.py             # OHLCV Kline ingestion
+│   ├── strategy/
+│   │   └── macd.py              # MACD computation and crossover detection logic
+│   ├── services/
+│   │   ├── db.py                # PostgreSQL schema, models, and query handlers
+│   │   ├── redis_client.py      # Redis async client and cross deduplication
+│   │   └── telegram.py          # Asynchronous Telegram alert dispatcher
+│   ├── static/
+│   │   ├── index.html           # Modern dark-mode web dashboard
+│   │   └── app.js               # Reactive frontend client
+│   └── main.py                  # FastAPI application entrypoint & API routes
+└── tests/
+    ├── test_macd.py             # MACD strategy unit tests
+    └── test_api.py              # API endpoint integration tests
 ```
 
-## Strategy Overview: EMA20/EMA50 Cross (1H / 4H)
+---
 
-### Stage 1 — Macro Trend Filter (4H Watchlist)
+## 🐳 Quick Start with Docker Compose
 
-The system first screens all liquid USDT pairs against a macro-level trend filter. A symbol enters the watchlist when both conditions are satisfied:
-
-| Condition | Formula |
-|---|---|
-| Price above EMA50 | `Close(4H) > EMA50(4H)` |
-| EMA50 sloping upward | `EMA50(4H)[current] >= EMA50(4H)[3 bars ago]` |
-
-### Stage 2 — Entry Trigger (1H Cross)
-
-Symbols that pass the macro filter are evaluated on the 1H timeframe for an entry trigger. Direction depends on the macro bias:
-
-| Condition | Formula |
-|---|---|
-| Golden Cross (LONG) | `EMA20(1H) crosses above EMA50(1H)` when macro is **BULLISH** |
-| Death Cross (SHORT) | `EMA20(1H) crosses below EMA50(1H)` when macro is **BEARISH** |
-| Volume confirmation | `Volume(1H) > SMA_Volume_20(1H)` |
-
-### Risk Management Framework
-
-| Parameter | Formula |
-|---|---|
-| Stop Loss | `Lowest Low (10 candles) - 1.5 × ATR(14)` |
-| TP1 (50% position) | `EMA50(4H)` at time of entry |
-| Post-TP1 behavior | Stop loss moves to breakeven `Entry × (1 + 0.05%)` |
-| Residual position | Trails until breakeven or manual exit |
-
-## Performance Optimizations
-
-The following optimizations were implemented to reduce average scan execution time from approximately 40 seconds to approximately 5–8 seconds:
-
-| Optimization | Impact |
-|---|---|
-| Concurrent symbol scanning (10-way parallelism) | Reduced from ~40s to ~5-8s |
-| Exchange info caching (300s TTL) | Eliminates redundant API calls |
-| 24h ticker caching (60s TTL) | Eliminates redundant API calls |
-| Singleton Binance client | Avoids repeated connection setup overhead |
-| Lazy indicator computation | Macro filter runs without full ATR/RSI/ADX computation |
-
-## Operating Modes
-
-The system operates in two modes controlled by the `DRY_RUN` environment variable:
-
-| Mode | `DRY_RUN` | Behavior |
-|---|---|---|
-| **Development** (default) | `true` | Full scanning and signal generation enabled; **no real orders** placed on Binance. Monitor loop is disabled. |
-| **Production** | `false` | Limit orders are submitted to Binance Futures. Monitor loop is active. |
-
-Configuration in `.env`:
-```env
-DRY_RUN=true   # safe mode for development and testing
-DRY_RUN=false  # live trading mode
-```
-
-The mode can also be overridden per request using the `?dry_run=false` parameter on the `/api/scan` endpoint.
-
-## Getting Started
-
-### Prerequisites
-
-- Python 3.12+
-- Binance Futures API credentials
-- Telegram Bot API credentials
-- Firebase service account (Firestore)
-
-### Installation
-
-1. **Clone the repository and set up the environment**
-   ```bash
-   git clone <repository-url>
-   cd ema_scanner
-   python -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
-   ```
-
-2. **Configure environment variables**
-   ```bash
-   cp .env.example .env
-   ```
-   Populate the `.env` file with the following:
-   - `BINANCE_API_KEY` / `BINANCE_API_SECRET` — Binance Futures API credentials
-   - `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` — Telegram bot credentials
-   - `FIREBASE_CRED_PATH` — Path to the Firebase Admin SDK service account JSON file
-
-3. **Set up Firebase credentials**
-   - Download the service account JSON from the Firebase Console
-   - Save it to the path specified in `FIREBASE_CRED_PATH`
-
-### Running the Application
+### 1. Clone & Configure Environment
 
 ```bash
-uvicorn src.main:app --reload
+git clone <repo-url>
+cd ema_scanner
+
+# Copy template to .env
+cp .env.example .env
 ```
 
-The server starts at `http://localhost:8000`.
+Edit `.env` to configure your Binance API credentials, Telegram tokens, or custom parameters.
 
-## API Reference
+### 2. Start the Stack
 
-### Endpoints
+```bash
+docker compose up --build -d
+```
 
-| Method | Path | Description |
-|---|---|---|
-| GET | `/` | Health check — returns bot status, version, and active strategy |
-| GET | `/api/scan` | Triggers a full market scan and optional trade execution |
+This launches three interconnected containers:
+1. `macd_scanner_postgres`: PostgreSQL 16 database with persistent storage.
+2. `macd_scanner_redis`: Redis 7 in-memory cache and deduplication store.
+3. `macd_scanner_app`: FastAPI application running on port `7860`.
 
-### `/api/scan` Parameters
+### 3. Verify Health
 
+Check container status:
+```bash
+docker compose ps
+```
+
+Check the health endpoint:
+```bash
+curl http://localhost:7860/api/health
+```
+
+Expected response:
+```json
+{
+  "status": "healthy",
+  "database": true,
+  "redis": true,
+  "version": "2.0.0"
+}
+```
+
+### 4. Access Web Dashboard
+
+Open your browser and navigate to:
+```
+http://localhost:7860
+```
+
+---
+
+## 💻 Local Development Setup (Without Docker)
+
+If you prefer running directly on your host machine:
+
+### 1. Prerequisites
+- Python 3.12 or 3.13
+- PostgreSQL & Redis running locally (e.g. via `docker compose up -d postgres redis`)
+
+### 2. Install Dependencies
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 3. Run FastAPI Application
+
+```bash
+uvicorn src.main:app --host 0.0.0.0 --port 7860 --reload
+```
+
+### 4. Run Automated Tests
+
+```bash
+PYTHONPATH=. pytest tests/ -v
+```
+
+---
+
+## 📡 API Reference
+
+### Scan Endpoints
+
+#### `GET /api/macd-scan` (or `/api/scan`)
+Executes an on-demand MACD crossover scan across specified symbols or top liquid Binance futures.
+
+**Query Parameters:**
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `timeframe` | string | `1h` | Entry timeframe for EMA20/EMA50 cross detection |
-| `htf` | string | `4h` | Macro timeframe for the trend filter |
-| `limit` | integer | `500` | Number of entry candles to fetch |
-| `macro_limit` | integer | `200` | Number of macro candles to fetch |
-| `volume_m` | integer | `50` | Minimum 24h volume threshold (in millions of USDT) |
-| `send_telegram` | boolean | `true` | Whether to send notifications via Telegram |
-| `dry_run` | boolean | — | Overrides the global DRY_RUN mode for this request |
+| `symbols` | `string` | *(Optional)* | Comma-separated pairs (e.g. `BTCUSDT,ETHUSDT`). If omitted, scans top liquid pairs. |
+| `timeframe` | `string` | `4h` | Candle timeframe (`15m`, `1h`, `4h`, `1d`). |
+| `limit` | `int` | `100` | Number of historical candles to fetch (35 - 1000). |
+| `lookback` | `int` | `5` | Search window in candles for crossover occurrence. |
+| `include_current` | `bool` | `false` | Whether to evaluate in-progress (unclosed) candle. |
+| `send_telegram` | `bool` | `true` | Send Telegram alert for newly detected signals. |
+| `save_db` | `bool` | `true` | Persist new signals to PostgreSQL. |
 
-### Sample Response
+**Example Request:**
+```bash
+curl "http://localhost:7860/api/macd-scan?timeframe=4h&lookback=3"
+```
 
+**Example Response:**
 ```json
 {
   "status": "success",
-  "mode": "DRY RUN",
-  "btc_bias": "BULLISH",
-  "btc_strength": 45.2,
-  "btc_vol_regime": "NORMAL",
-  "timeframe_entry": "1h",
-  "timeframe_macro": "4h",
-  "execution_time": "4.20s",
-  "total_scanned": 48,
+  "timeframe": "4h",
+  "limit": 100,
+  "lookback": 3,
+  "include_current": false,
+  "execution_time": "1.42s",
+  "total_scanned": 50,
+  "new_signals_count": 2,
   "signals": [
     {
-      "symbol": "SOLUSDT",
+      "symbol": "BTCUSDT",
       "side": "LONG",
-      "entry": 145.20,
-      "stop_loss": 141.80,
-      "take_profit": 152.50,
-      "quantity": 0.68,
-      "quantity_tp1": 0.34,
-      "reason": "golden_cross_1h",
-      "status": "DRY RUN"
+      "reason": "macd_golden_cross",
+      "cross_time": "2026-10-11T00:00:00Z",
+      "cross_price": 65120.45,
+      "close": 65350.0,
+      "macd": 12.45,
+      "signal": 10.12,
+      "histogram": 2.33,
+      "bars_ago": 1,
+      "confirmed": true,
+      "is_new": true
     }
   ]
 }
 ```
 
-## Backtesting
+---
 
-The backtesting engine simulates the EMA20/EMA50 cross strategy (4H macro filter + 1H entry) against historical Binance data. It supports golden cross, death cross, and early-entry signals (LONG/SHORT) with partial TP1/BEP/TP2 exit logic.
+### History & Analytics Endpoints
 
-### Running a Backtest
+#### `GET /api/signals`
+Queries persisted MACD crossover signals from PostgreSQL.
 
-```bash
-python backtester.py --symbol SOLUSDT --timeframe 1h --htf 4h --limit 5000 --balance 100
+**Query Parameters:**
+- `symbol` (optional): Filter by symbol name (e.g. `BTCUSDT`).
+- `side` (optional): Filter by `LONG` or `SHORT`.
+- `timeframe` (optional): Filter by timeframe (e.g. `4h`).
+- `limit` (default: `50`): Max records returned.
+- `offset` (default: `0`): Pagination offset.
+
+#### `GET /api/summary`
+Returns aggregate statistics of detected crossovers stored in PostgreSQL:
+```json
+{
+  "total_signals": 142,
+  "long_signals": 84,
+  "short_signals": 58,
+  "symbols_count": 26,
+  "latest_signal_time": "2026-10-11T08:00:00Z"
+}
 ```
 
-This produces a console report and an interactive HTML trade chart.
-
-### Parameters
-
-| Parameter | Default | Description |
-|---|---|---|
-| `--symbol` | `SOLUSDT` | Trading pair to backtest |
-| `--timeframe` | `1h` | Entry timeframe for the EMA20/EMA50 cross |
-| `--htf` | `4h` | Macro timeframe for the trend filter |
-| `--limit` | `2000` | Number of historical candles |
-| `--balance` | `100` | Simulated starting capital (USDT) |
-
-### Sample Output
-
-```
-====================================================================
-           BACKTEST SETUP — Market Order (EMA20/50 + RSI)
-====================================================================
-Symbol               : SOLUSDT
-TF Stack             : 1h / 4h
-Strategi             : Market Order @ Close + 1:2 R:R + TP1/BEP/TP2
-Volume Threshold      : SMA20 x 1.45 (min)
-Early Entry          : EMA gap narrowing + RSI > 55 (LONG) / < 45 (SHORT)
-Initial Capital      : $100.00
-Risk per Trade       : 2.0%
-Leverage             : 10x
-
-====================================================================
-         BALANCE COMPARISON (BEFORE vs AFTER)
-====================================================================
-[BEFORE] Initial Balance : $100.00
-[AFTER]  Final Balance   : $172.34
-────────────────────────────────────────────────────────────────────
-Net Profit/Loss ($)      : +$72.34
-Net PnL %                : +72.34%
-
-====================================================================
-           STRATEGY PERFORMANCE METRICS
-====================================================================
-Pending Signals          : 34
-Filled                   : 28
-Expired                  : 6
-
-Wins                     : 18
-Losses                   : 10
-Win Rate                 : 64.29%
-
-Profit Factor            : 2.14
-Max Drawdown             : -8.45%
-
-====================================================================
-           SIGNAL INFO
-====================================================================
-GC (Golden Cross)        : 22
-DC (Death Cross)         : 3
-EARLY_LONG (RSI > 55)    : 7
-EARLY_SHORT (RSI < 45)   : 2
-====================================================================
-```
-
-### Performance Metrics
-
-| Metric | Description |
-|---|---|
-| **Net PnL** | Absolute and percentage profit or loss over the test period |
-| **Win Rate** | Percentage of filled trades that closed with a positive PnL |
-| **Profit Factor** | Gross profit divided by gross loss (values > 1.0 indicate profitability) |
-| **Max Drawdown** | Largest peak-to-trough decline in portfolio value |
-| **Filled / Expired** | Number of signals that filled vs. expired before execution |
-| **TP1 Hit Rate** | Percentage of filled trades that reached partial take-profit |
-| **Signal Breakdown** | Count of golden cross, death cross, and early-entry signals |
-
-### Interactive Trade Chart
-
-Running a backtest generates an interactive **HTML chart** (Plotly) displaying:
-- Price candles with EMA20 and EMA50 overlays
-- Entry markers (green triangles for longs, red for shorts)
-- TP1, TP2, BEP, and Stop Loss levels per trade
-- Annotated trade timeline with PnL labels
-
-The chart is saved as `backtest_<SYMBOL>_<TF>_<HTF>.html` in the project root.
+#### `GET /api/health`
+Checks database and Redis connectivity.
 
 ---
 
-## Open to Contribute
+## ⚙️ Environment Variables Reference
 
-Contributions, bug reports, and feature requests are welcome. Whether you are a quantitative researcher, a Python developer, or a crypto trading enthusiast, there are many ways to get involved:
+| Variable | Default | Description |
+|---|---|---|
+| `HOST` | `0.0.0.0` | Server bind host |
+| `PORT` | `7860` | Server bind port |
+| `DRY_RUN` | `true` | Informational operating mode |
+| `POSTGRES_USER` | `postgres` | PostgreSQL username |
+| `POSTGRES_PASSWORD` | `postgres` | PostgreSQL password |
+| `POSTGRES_DB` | `macd_scanner` | PostgreSQL database name |
+| `POSTGRES_HOST` | `postgres` (or `localhost`) | PostgreSQL hostname |
+| `POSTGRES_PORT` | `5432` | PostgreSQL port |
+| `DATABASE_URL` | *(Built from above)* | Full SQLAlchemy `postgresql+asyncpg://` URI |
+| `REDIS_URL` | `redis://redis:6379/0` | Redis connection URL |
+| `BINANCE_API_KEY` | `""` | Binance API key |
+| `BINANCE_API_SECRET` | `""` | Binance API secret |
+| `BINANCE_PROXY` | `""` | HTTP/HTTPS Proxy (e.g. `http://user:pass@host:port`) |
+| `TELEGRAM_BOT_TOKEN` | `""` | Telegram Bot Token from @BotFather |
+| `TELEGRAM_CHAT_ID` | `""` | Target Telegram Chat / Channel ID |
+| `MACD_FAST` | `12` | MACD Fast EMA period |
+| `MACD_SLOW` | `26` | MACD Slow EMA period |
+| `MACD_SIGNAL` | `9` | MACD Signal EMA period |
+| `MACD_TIMEFRAME` | `4h` | Default scan timeframe |
+| `MACD_CROSS_LOOKBACK_CANDLES` | `5` | Maximum candles ago to detect crossover |
+| `MACD_MAX_SYMBOLS` | `50` | Maximum symbols to scan per request |
+| `VOLUME_THRESHOLD_USD` | `50000000` | Minimum 24h USD volume for auto-discovered pairs |
+| `SCAN_CONCURRENCY` | `10` | Parallel symbol scanner concurrency limit |
 
-### How to Contribute
+---
 
-1. **Fork** the repository
-2. **Create a feature branch** (`git checkout -b feature/my-improvement`)
-3. **Commit your changes** (`git commit -am 'Add my improvement'`)
-4. **Push to the branch** (`git push origin feature/my-improvement`)
-5. **Open a Pull Request**
+## 🛡️ License
 
-### Areas for Contribution
-
-- **Strategy Enhancement**: Add new entry/exit signals, improve filter logic, or implement multi-asset portfolio optimization
-- **Risk Management**: Integrate Kelly Criterion, VaR-based sizing, or dynamic leverage adjustment
-- **Data Pipeline**: Add support for additional exchanges or real-time WebSocket data feeds
-- **Backtesting**: Extend the backtester with Monte Carlo simulation, walk-forward optimization, or Sharpe ratio reporting
-- **Infrastructure**: Dockerize the application, add CI/CD pipelines, or implement Kubernetes deployment manifests
-- **Documentation**: Improve README, add inline code comments, or create a strategy development guide
-
-### Reporting Issues
-
-Found a bug or have a suggestion? Open an issue with a clear title and detailed description, including steps to reproduce if applicable.
-
-### Questions
-
-For questions about the strategy, architecture, or deployment, feel free to reach out via the repository's discussion board or issue tracker.
+MIT License. Designed for quantitative analysis and automated screening.

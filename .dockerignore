@@ -8,3 +8,9 @@ __pycache__/
 refactor-plan/
 .opencode/
 *.md
+venv/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.binance_api/
+tests/

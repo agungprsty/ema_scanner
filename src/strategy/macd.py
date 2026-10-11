@@ -1,5 +1,5 @@
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import pandas as pd
 import pandas_ta as ta
@@ -23,6 +23,9 @@ class MacdSignal:
     close: float
     bars_ago: int
     is_confirmed: bool = True
+
+    def to_dict(self) -> dict:
+        return asdict(self)
 
 
 def compute_macd(

@@ -2,60 +2,52 @@ import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
-from typing import Annotated, Literal
+from typing import Annotated
 
-import pandas as pd
-from fastapi import FastAPI, Query
+from fastapi import BackgroundTasks, FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from src.config.settings import (
-    TOTAL_SIGNALS,
-    RISK_PER_TRADE_PERCENT,
     DRY_RUN,
-    LONG_ENTRY_FEE_PCT,
-    SHORT_ENTRY_FEE_PCT,
-    CROSS_LOOKBACK_CANDLES,
     MACD_CROSS_LOOKBACK_CANDLES,
-    MACD_MAX_SYMBOLS,
+    MACD_FAST,
     MACD_INCLUDE_CURRENT,
+    MACD_MAX_SYMBOLS,
+    MACD_SIGNAL,
+    MACD_SLOW,
+    MACD_TIMEFRAME,
+    SCAN_CONCURRENCY,
+    VOLUME_THRESHOLD_USD,
 )
 from src.data_feed.binance_client import create_futures_client
 from src.data_feed.ohlcv import fetch_klines
-from src.data_feed.macro_filter import compute_btc_bias
-from src.strategy.indicators import compute_indicators
-from src.strategy.blueprint import macroscan_4h, check_entry, Signal
-from src.strategy.macd import compute_macd, detect_macd_cross
-from src.risk_manager.calculator import calculate_position
-from src.execution.order import place_limit_order
-from google.cloud.firestore_v1.base_query import FieldFilter
-from src.services.firebase import (
-    init_firebase,
-    create_trade,
-    update_trade_status,
-    get_db,
-    get_all_trades,
-    get_trade_summary,
+from src.services.db import (
+    close_db,
+    get_macd_signals,
+    get_macd_signals_summary,
+    init_db,
+    is_db_connected,
+    save_macd_signal,
 )
-from src.services.telegram import send_alert
 from src.services.redis_client import (
-    init_redis,
     close_redis,
+    init_redis,
     is_cross_detected,
+    is_redis_connected,
     mark_cross_detected,
 )
-from src.execution.monitor import monitor_loop
-from fastapi.middleware.cors import CORSMiddleware
+from src.services.telegram import send_alert
+from src.strategy.macd import compute_macd, detect_macd_cross
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
-_monitor_task = None
 _client = None
-CONCURRENCY = 10
 
 
 def _get_client():
@@ -65,45 +57,21 @@ def _get_client():
     return _client
 
 
-_ERROR_KEYWORDS = {
-    "index": "System is initializing. Please try again later.",
-    "permission": "Access denied.",
-    "unauthenticated": "Authentication failed.",
-    "not found": "Resource not found.",
-    "timeout": "Service is busy. Please try again.",
-    "unavailable": "Service temporarily unavailable.",
-    "deadline exceeded": "Service is busy. Please try again.",
-    "connection": "Connection error. Please try again.",
-}
-
-
-def _sanitize_error(e: Exception) -> str:
-    msg = str(e).lower().replace('_', ' ')
-    for keyword, friendly in _ERROR_KEYWORDS.items():
-        if keyword in msg:
-            return friendly
-    return "Something went wrong. Please try again."
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_firebase()
+    await init_db()
     await init_redis()
-    global _monitor_task
-    client = _get_client()
-    if not DRY_RUN:
-        _monitor_task = asyncio.create_task(monitor_loop(client))
-    else:
-        logger.info("DRY RUN mode — monitor loop disabled")
     yield
     await close_redis()
-    if _monitor_task:
-        _monitor_task.cancel()
+    await close_db()
 
-class UpdateTradeRequest(BaseModel):
-    status: Literal["CLOSED_TP", "CLOSED_BEP", "CLOSED_SL", "EXPIRED"]
 
-app = FastAPI(title="Crypto Blueprint Bot", lifespan=lifespan)
+app = FastAPI(
+    title="Crypto MACD Scanner",
+    description="Automated Binance Futures MACD crossover scanner with PostgreSQL and Redis",
+    version="2.0.0",
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -116,470 +84,265 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory="src/static"), name="static")
 
 
+class SignalItem(BaseModel):
+    symbol: str
+    side: str
+    reason: str
+    cross_time: str
+    cross_price: float
+    close: float
+    macd: float
+    signal: float
+    histogram: float
+    bars_ago: int
+    confirmed: bool
+    is_new: bool = True
+
+
+class ScanResponse(BaseModel):
+    status: str
+    timeframe: str
+    limit: int
+    lookback: int
+    include_current: bool
+    execution_time: str
+    total_scanned: int
+    new_signals_count: int
+    signals: list[SignalItem]
+
+
+class SignalsHistoryResponse(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    signals: list[dict]
+
+
+class SummaryResponse(BaseModel):
+    total_signals: int
+    long_signals: int
+    short_signals: int
+    symbols_count: int
+    latest_signal_time: str | None = None
+
+
+class HealthResponse(BaseModel):
+    status: str
+    database: bool
+    redis: bool
+    version: str = "2.0.0"
+
+
 @app.get("/")
-def root():
-    mode = "DRY_RUN" if DRY_RUN else "PRODUCTION"
-    return {
-        "status": "running",
-        "version": "v8.0.0",
-        "mode": mode,
-        "strategy": "EMA20/EMA50 Cross LONG/SHORT (1h/4h)",
-    }
-
-
-@app.get("/api/scan")
-async def scan(
-    timeframe: Annotated[
-        str, Query(description="Entry timeframe (cross detection)")
-    ] = "1h",
-    htf: Annotated[str, Query(description="Macro timeframe (filter)")] = "4h",
-    limit: Annotated[int, Query(description="Candles to fetch for LTF")] = 500,
-    macro_limit: Annotated[int, Query(description="Candles to fetch for HTF")] = 200,
-    volume_m: Annotated[int, Query(description="Volume threshold (M)")] = 100,
-    send_telegram: Annotated[bool, Query(description="Send to Telegram")] = True,
-    dry_run: Annotated[bool | None, Query(description="Override dry-run mode")] = None,
-):
-    start = time.perf_counter()
-    client = _get_client()
-    is_dry_run = DRY_RUN if dry_run is None else dry_run
-    mode_label = "DRY RUN" if is_dry_run else "PRODUCTION"
-
-    try:
-        btc_df = await asyncio.to_thread(fetch_klines, client, "BTCUSDT", htf, limit)
-        if btc_df is None:
-            return {"status": "error", "message": "Failed to fetch BTC data"}
-        btc_bias = compute_btc_bias(btc_df)
-
-        exchange_info = await asyncio.to_thread(client.exchange_info)
-        symbols_meta = {}
-        for s in exchange_info.get("symbols", []):
-            if s.get("quoteAsset") == "USDT" and s.get("status") == "TRADING":
-                symbols_meta[s["symbol"]] = s
-
-        vol_threshold = volume_m * 1_000_000
-        stats_24h = await asyncio.to_thread(client.ticker_24hr_price_change)
-        liquid_symbols = [
-            s["symbol"]
-            for s in stats_24h
-            if float(s.get("quoteVolume", 0)) > vol_threshold
-            and s["symbol"] in symbols_meta
-        ]
-
-        logger.info(
-            "Scanning %d tokens (%s timeframe / %s macro, BTC bias: %s %.1f%%): %s",
-            len(liquid_symbols),
-            timeframe,
-            htf,
-            btc_bias.side,
-            btc_bias.strength,
-            ", ".join(sorted(liquid_symbols)),
-        )
-
-        sem = asyncio.Semaphore(CONCURRENCY)
-
-        async def _detect(sym: str) -> Signal | None:
-            async with sem:
-                df_macro = await asyncio.to_thread(
-                    fetch_klines, client, sym, htf, macro_limit
-                )
-                if df_macro is None:
-                    return None
-                df_macro = compute_indicators(df_macro)
-                if df_macro is None:
-                    return None
-
-                macro_bias = macroscan_4h(df_macro)
-                if macro_bias == "NEUTRAL":
-                    logger.debug("Skipped %s — macro NEUTRAL", sym)
-                    return None
-
-                df_entry = await asyncio.to_thread(
-                    fetch_klines, client, sym, timeframe, limit
-                )
-                if df_entry is None:
-                    return None
-                df_entry = compute_indicators(df_entry)
-                if df_entry is None:
-                    return None
-
-                macro_cols = (
-                    df_macro[["timestamp", "close", "EMA50"]]
-                    .dropna()
-                    .rename(columns={"close": "close_4h", "EMA50": "EMA50_4h"})
-                )
-                df_entry = pd.merge_asof(
-                    df_entry, macro_cols, on="timestamp", direction="backward"
-                )
-                df_entry = df_entry.dropna(subset=["EMA50_4h"])
-
-                if len(df_entry) < 50:
-                    return None
-
-                sig = check_entry(
-                    df_1h=df_entry,
-                    btc_bias=btc_bias.side,
-                    symbol=sym,
-                    macro_bias=macro_bias,
-                    lookback_candles=CROSS_LOOKBACK_CANDLES,
-                )
-
-                if sig:
-                    logger.info("Signal detected: %s %s (%s)", sig.side, sym, sig.reason)
-                    if await is_cross_detected(sig.side, sym, sig.cross_candle_ms):
-                        logger.debug(
-                            "Dedup skip: %s %s at %s",
-                            sig.side,
-                            sym,
-                            sig.cross_candle_ms,
-                        )
-                        return None
-                    await mark_cross_detected(sig.side, sym, sig.cross_candle_ms)
-
-                return sig
-
-        tasks = [_detect(sym) for sym in liquid_symbols]
-        results = await asyncio.gather(*tasks)
-        signals: list[Signal] = [r for r in results if r is not None][:TOTAL_SIGNALS]
-
-        logger.info(
-            "Scan complete: %d/%d tokens produced signals (%.2fs)",
-            len(signals),
-            len(liquid_symbols),
-            time.perf_counter() - start,
-        )
-
-        results_json = []
-        telegram_parts = []
-        for sig in signals:
-            existing_active = list(
-                get_db()
-                .collection("active_trades")
-                .where(filter=FieldFilter("symbol", "==", sig.symbol))
-                .where(
-                    filter=FieldFilter(
-                        "status", "in", ["PENDING", "LIMIT_PLACED", "FILLED"]
-                    )
-                )
-                .stream()
-            )
-            if existing_active:
-                logger.info(
-                    "%s has %d active trade(s) — creating additional entry (trend following)",
-                    sig.symbol,
-                    len(existing_active),
-                )
-
-            meta = symbols_meta.get(sig.symbol, {})
-            filters = {f["filterType"]: f for f in meta.get("filters", [])}
-            price_filter = filters.get("PRICE_FILTER", {})
-            lot_filter = filters.get("LOT_SIZE", {})
-
-            tick_size = float(price_filter.get("tickSize", 0.01))
-            step_size = float(lot_filter.get("stepSize", 0.001))
-
-            if not is_dry_run:
-                account = await asyncio.to_thread(client.account)
-                balance = 0.0
-                for asset in account.get("assets", []):
-                    if asset["asset"] == "USDT":
-                        balance = float(asset["walletBalance"])
-                        break
-            else:
-                balance = 10_000.0
-
-            spec = calculate_position(
-                symbol=sig.symbol,
-                side=sig.side,
-                entry_price=float(sig.entry_price),
-                sl_price=float(sig.sl_price),
-                tp_price=0.0,
-                balance=balance,
-                risk_pct=RISK_PER_TRADE_PERCENT,
-                tick_size=tick_size,
-                step_size=step_size,
-                tp1_explicit=float(sig.tp1_price) if sig.tp1_price > 0 else None,
-            )
-
-            if sig.side == "LONG":
-                bep = float(spec.entry) * (1 + LONG_ENTRY_FEE_PCT / 100)
-            else:
-                bep = float(spec.entry) * (1 - SHORT_ENTRY_FEE_PCT / 100)
-
-            trade_id = create_trade(
-                symbol=spec.symbol,
-                side=spec.side,
-                tf=f"{timeframe}/{htf}",
-                entry=float(spec.entry),
-                sl=float(spec.stop_loss),
-                tp=float(spec.take_profit),
-                qty=float(spec.quantity),
-                atr=sig.atr_1h,
-                bep=bep,
-            )
-
-            if is_dry_run:
-                status_msg = "DRY RUN"
-            else:
-                resp = await asyncio.to_thread(place_limit_order, client, spec)
-                if resp and resp.get("orderId"):
-                    order_id = resp["orderId"]
-                    update_trade_status(
-                        trade_id, "LIMIT_PLACED", binance_order_id=order_id
-                    )
-                    status_msg = "ORDER PLACED"
-                else:
-                    update_trade_status(trade_id, "PENDING")
-                    status_msg = "SETUP CALL"
-
-            pct_sl = (
-                abs(float(spec.entry) - float(spec.stop_loss)) / float(spec.entry) * 100
-            )
-            pct_tp = (
-                abs(float(spec.take_profit) - float(spec.entry))
-                / float(spec.entry)
-                * 100
-            )
-            logger.info(
-                "%s | %s\n%s %s\nEntry: %s\nSL: %s (%.2f%%)\nTP1 (50%%): %s (%.2f%%)\nBEP after TP1: %.4f\nQty: %s | TP1 Qty: %s",
-                mode_label,
-                status_msg,
-                spec.side,
-                spec.symbol,
-                spec.entry,
-                spec.stop_loss,
-                pct_sl,
-                spec.take_profit,
-                pct_tp,
-                bep,
-                spec.quantity,
-                spec.quantity_tp1,
-            )
-            emoji = "🟢" if spec.side == "LONG" else "🔴"
-            telegram_parts.append(
-                f"{emoji} {spec.side} ${spec.symbol}\n"
-                f"📍 Entry: {spec.entry}\n"
-                f"⛔ SL: {spec.stop_loss} ({pct_sl:.2f}%)\n"
-                f"💰 TP1 (50%): {spec.take_profit} ({pct_tp:.2f}%)\n"
-                f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈"
-            )
-
-            results_json.append(
-                {
-                    "symbol": spec.symbol,
-                    "side": spec.side,
-                    "entry": float(spec.entry),
-                    "stop_loss": float(spec.stop_loss),
-                    "take_profit": float(spec.take_profit),
-                    "quantity": float(spec.quantity),
-                    "quantity_tp1": float(spec.quantity_tp1),
-                    "reason": sig.reason,
-                    "status": status_msg,
-                }
-            )
-
-        if send_telegram and telegram_parts:
-            header = "🔔 EMA CROSSOVER\nAsymmetric Bets (RR 1:1.5)\n━━━━━━━━━━━━━━━\n"
-            await send_alert(header + "\n".join(telegram_parts))
-
-        return {
-            "status": "success",
-            "mode": mode_label,
-            "btc_bias": btc_bias.side,
-            "btc_strength": btc_bias.strength,
-            "btc_vol_regime": btc_bias.vol_regime,
-            "timeframe_entry": timeframe,
-            "timeframe_macro": htf,
-            "execution_time": f"{time.perf_counter() - start:.2f}s",
-            "total_scanned": len(liquid_symbols),
-            "signals": results_json,
-        }
-
-    except Exception as e:
-        logger.error("Scan error: %s", e, exc_info=True)
-        return {"status": "error", "message": _sanitize_error(e)}
-
-
-@app.get("/api/macd-scan")
-async def macd_scan(
-    symbols: Annotated[
-        str, Query(description="Comma-separated whitelist symbols (e.g. SOLUSDT,BTCUSDT)")
-    ],
-    timeframe: Annotated[str, Query(description="MACD timeframe")] = "4h",
-    limit: Annotated[int, Query(ge=50, le=1000, description="Candles to fetch")] = 100,
-    lookback: Annotated[
-        int, Query(ge=1, le=20, description="Candles to scan for the most recent cross")
-    ] = MACD_CROSS_LOOKBACK_CANDLES,
-    include_current: Annotated[
-        bool, Query(description="Include in-progress candle for faster detection")
-    ] = MACD_INCLUDE_CURRENT,
-    send_telegram: Annotated[bool, Query(description="Send to Telegram")] = False,
-):
-    start = time.perf_counter()
-    client = _get_client()
-
-    try:
-        symbol_list = list(dict.fromkeys(s.upper().strip() for s in symbols.split(",") if s.strip()))
-        if not symbol_list:
-            return {"status": "error", "message": "symbols parameter is required"}
-        if len(symbol_list) > MACD_MAX_SYMBOLS:
-            return {
-                "status": "error",
-                "message": f"Too many symbols (max {MACD_MAX_SYMBOLS})",
-            }
-
-        logger.info(
-            "MACD scanning %d symbols (%s / limit=%d / lookback=%d / include_current=%s)",
-            len(symbol_list),
-            timeframe,
-            limit,
-            lookback,
-            include_current,
-        )
-
-        sem = asyncio.Semaphore(CONCURRENCY)
-
-        async def _detect(sym: str):
-            async with sem:
-                df = await asyncio.to_thread(fetch_klines, client, sym, timeframe, limit)
-                if df is None:
-                    return None
-                if not include_current:
-                    df = df.iloc[:-1].copy()
-                df = compute_macd(df)
-                if df is None:
-                    return None
-                return detect_macd_cross(df, sym, lookback_candles=lookback, include_current=include_current)
-
-        tasks = [_detect(sym) for sym in symbol_list]
-        results = await asyncio.gather(*tasks)
-        signals = [r for r in results if r is not None]
-
-        logger.info(
-            "MACD scan complete: %d/%d symbols produced crosses (%.2fs)",
-            len(signals),
-            len(symbol_list),
-            time.perf_counter() - start,
-        )
-
-        signals_json = []
-        telegram_parts = []
-        for sig in signals:
-            dedup_side = f"macd:{sig.side}"
-            if await is_cross_detected(dedup_side, sig.symbol, sig.cross_candle_ms):
-                logger.debug(
-                    "MACD dedup skip: %s %s at %s",
-                    sig.side,
-                    sig.symbol,
-                    sig.cross_candle_ms,
-                )
-                continue
-            await mark_cross_detected(dedup_side, sig.symbol, sig.cross_candle_ms)
-
-            signals_json.append(
-                {
-                    "symbol": sig.symbol,
-                    "side": sig.side,
-                    "reason": sig.reason,
-                    "cross_time": sig.cross_time,
-                    "cross_price": round(sig.cross_price, 6),
-                    "close": round(sig.close, 6),
-                    "macd": round(sig.macd, 6),
-                    "signal": round(sig.signal, 6),
-                    "histogram": round(sig.histogram, 6),
-                    "bars_ago": sig.bars_ago,
-                    "confirmed": sig.is_confirmed,
-                }
-            )
-            emoji = "🟢" if sig.side == "LONG" else "🔴"
-            status = "✅" if sig.is_confirmed else "⏳"
-            telegram_parts.append(
-                f"{emoji} {sig.side} ${sig.symbol} {status}\n"
-                f"📍 Cross: {sig.cross_price} (now {sig.close})\n"
-                f"📊 MACD: {sig.macd:.4f} | Signal: {sig.signal:.4f} | Hist: {sig.histogram:.4f}"
-            )
-
-        if send_telegram and telegram_parts:
-            header = "🔔 MACD OVERCROSS\n━━━━━━━━━━━━━━━\n"
-            await send_alert(header + "\n\n".join(telegram_parts))
-
-        return {
-            "status": "success",
-            "timeframe": timeframe,
-            "limit": limit,
-            "lookback": lookback,
-            "include_current": include_current,
-            "execution_time": f"{time.perf_counter() - start:.2f}s",
-            "total_scanned": len(symbol_list),
-            "signals": signals_json,
-        }
-
-    except Exception as e:
-        logger.error("MACD scan error: %s", e, exc_info=True)
-        return {"status": "error", "message": _sanitize_error(e)}
+@app.head("/")
+async def root():
+    return FileResponse("src/static/index.html")
 
 
 @app.get("/history")
-def history_page():
-    return FileResponse("src/static/history.html")
+async def history():
+    return FileResponse("src/static/index.html")
 
 
-@app.get("/api/trades")
-async def get_trades(
-    symbol: Annotated[str | None, Query(description="Filter by symbol")] = None,
-    status: Annotated[str | None, Query(description="Filter by status")] = None,
-    limit: Annotated[int, Query(ge=1, le=100)] = 20,
-    cursor: Annotated[
-        str | None, Query(description="Cursor for next page (created_at of last item)")
+@app.get("/api/info")
+async def get_info():
+    return {
+        "status": "running",
+        "app": "Crypto MACD Scanner",
+        "version": "2.0.0",
+        "mode": "DRY_RUN" if DRY_RUN else "PRODUCTION",
+        "strategy": f"MACD ({MACD_FAST}, {MACD_SLOW}, {MACD_SIGNAL}) Overcross",
+        "default_timeframe": MACD_TIMEFRAME,
+        "default_lookback": MACD_CROSS_LOOKBACK_CANDLES,
+        "max_symbols": MACD_MAX_SYMBOLS,
+    }
+
+
+@app.get("/api/health", response_model=HealthResponse)
+async def health():
+    db_ok = await is_db_connected()
+    redis_ok = await is_redis_connected()
+    status_str = "healthy" if (db_ok and redis_ok) else "degraded"
+    return HealthResponse(status=status_str, database=db_ok, redis=redis_ok)
+
+
+@app.get("/api/macd-scan", response_model=ScanResponse)
+@app.get("/api/scan", response_model=ScanResponse)
+async def run_macd_scan(
+    background_tasks: BackgroundTasks,
+    symbols: Annotated[
+        str | None,
+        Query(
+            description="Comma-separated whitelist symbols (e.g. BTCUSDT,ETHUSDT). Omit to scan top liquid pairs."
+        ),
     ] = None,
-    sort_by: Annotated[str, Query] = "created_at",
-    sort_order: Annotated[str, Query] = "desc",
-    date_from: Annotated[str | None, Query(description="Start date (ISO format)")] = None,
-    date_to: Annotated[str | None, Query(description="End date (ISO format)")] = None,
+    timeframe: Annotated[
+        str, Query(description="MACD timeframe (e.g. 15m, 1h, 4h, 1d)")
+    ] = MACD_TIMEFRAME,
+    limit: Annotated[
+        int, Query(ge=35, le=1000, description="Number of candles to fetch")
+    ] = 100,
+    lookback: Annotated[
+        int, Query(ge=1, le=20, description="Candles lookback for crossover")
+    ] = MACD_CROSS_LOOKBACK_CANDLES,
+    include_current: Annotated[
+        bool, Query(description="Include forming candle")
+    ] = MACD_INCLUDE_CURRENT,
+    volume_min: Annotated[
+        float | None, Query(description="Minimum 24h USD volume")
+    ] = None,
+    send_telegram: Annotated[
+        bool, Query(description="Send Telegram alerts for new signals")
+    ] = True,
+    save_db: Annotated[
+        bool, Query(description="Persist detected signals to PostgreSQL")
+    ] = True,
 ):
-    try:
-        return await asyncio.to_thread(
-            get_all_trades,
-            symbol=symbol,
-            status=status,
+    start = time.perf_counter()
+    client = _get_client()
+
+    if symbols:
+        symbol_list = list(
+            dict.fromkeys(
+                s.upper().strip() for s in symbols.split(",") if s.strip()
+            )
+        )[:MACD_MAX_SYMBOLS]
+    else:
+        threshold = volume_min if volume_min is not None else VOLUME_THRESHOLD_USD
+        stats_24h = await asyncio.to_thread(client.ticker_24hr_price_change)
+        if isinstance(stats_24h, dict) and "data" in stats_24h:
+            stats_24h = stats_24h["data"]
+        pairs = [
+            s
+            for s in stats_24h
+            if s.get("symbol", "").endswith("USDT")
+            and float(s.get("quoteVolume", 0)) >= threshold
+        ]
+        pairs.sort(key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)
+        symbol_list = [p["symbol"] for p in pairs[:MACD_MAX_SYMBOLS]]
+
+    if not symbol_list:
+        return ScanResponse(
+            status="error",
+            timeframe=timeframe,
             limit=limit,
-            cursor=cursor,
-            sort_by=sort_by,
-            sort_order=sort_order,
-            date_from=date_from,
-            date_to=date_to,
+            lookback=lookback,
+            include_current=include_current,
+            execution_time=f"{time.perf_counter() - start:.2f}s",
+            total_scanned=0,
+            new_signals_count=0,
+            signals=[],
         )
-    except Exception as e:
-        logger.error("GET /api/trades error: %s", e, exc_info=True)
-        return {"trades": [], "next_cursor": None, "has_more": False, "error": _sanitize_error(e)}
+
+    sem = asyncio.Semaphore(SCAN_CONCURRENCY)
+
+    async def _detect(sym: str):
+        async with sem:
+            df = await asyncio.to_thread(fetch_klines, client, sym, timeframe, limit)
+            if df is None:
+                return None
+            if not include_current:
+                df = df.iloc[:-1].copy()
+            df = compute_macd(df, fast=MACD_FAST, slow=MACD_SLOW, signal=MACD_SIGNAL)
+            if df is None:
+                return None
+            return detect_macd_cross(
+                df, sym, lookback_candles=lookback, include_current=include_current
+            )
+
+    tasks = [_detect(sym) for sym in symbol_list]
+    results = await asyncio.gather(*tasks)
+    detected = [r for r in results if r is not None]
+
+    signals_output: list[SignalItem] = []
+    telegram_parts = []
+    new_signals_count = 0
+
+    for sig in detected:
+        is_dup = await is_cross_detected(
+            sig.side, sig.symbol, sig.cross_candle_ms, timeframe=timeframe
+        )
+        is_new = not is_dup
+
+        if is_new:
+            new_signals_count += 1
+            await mark_cross_detected(
+                sig.side, sig.symbol, sig.cross_candle_ms, timeframe=timeframe
+            )
+            if save_db:
+                await save_macd_signal(sig, timeframe=timeframe)
+
+            emoji = "🟢" if sig.side == "LONG" else "🔴"
+            status_tag = "✅ Confirmed" if sig.is_confirmed else "⏳ In Progress"
+            telegram_parts.append(
+                f"{emoji} <b>{sig.side}</b> #${sig.symbol} ({timeframe})\n"
+                f"Status: {status_tag} | Reason: {sig.reason}\n"
+                f"Cross Price: {sig.cross_price:.6f} (Now: {sig.close:.6f})\n"
+                f"MACD: {sig.macd:.4f} | Signal: {sig.signal:.4f} | Hist: {sig.histogram:.4f}\n"
+                f"Bars Ago: {sig.bars_ago} candle(s)\n"
+                f"Time: {sig.cross_time}"
+            )
+
+        signals_output.append(
+            SignalItem(
+                symbol=sig.symbol,
+                side=sig.side,
+                reason=sig.reason,
+                cross_time=sig.cross_time,
+                cross_price=round(sig.cross_price, 6),
+                close=round(sig.close, 6),
+                macd=round(sig.macd, 6),
+                signal=round(sig.signal, 6),
+                histogram=round(sig.histogram, 6),
+                bars_ago=sig.bars_ago,
+                confirmed=sig.is_confirmed,
+                is_new=is_new,
+            )
+        )
+
+    if send_telegram and telegram_parts:
+        header = f"🔔 <b>MACD OVERCROSS SIGNALS ({timeframe})</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        alert_body = header + "\n\n".join(telegram_parts)
+        background_tasks.add_task(send_alert, alert_body)
+
+    elapsed = f"{time.perf_counter() - start:.2f}s"
+    return ScanResponse(
+        status="success",
+        timeframe=timeframe,
+        limit=limit,
+        lookback=lookback,
+        include_current=include_current,
+        execution_time=elapsed,
+        total_scanned=len(symbol_list),
+        new_signals_count=new_signals_count,
+        signals=signals_output,
+    )
 
 
-@app.get("/api/summary")
-async def get_summary(
+@app.get("/api/signals", response_model=SignalsHistoryResponse)
+async def list_signals(
     symbol: Annotated[str | None, Query(description="Filter by symbol")] = None,
+    side: Annotated[str | None, Query(description="Filter by side (LONG/SHORT)")] = None,
+    timeframe: Annotated[str | None, Query(description="Filter by timeframe")] = None,
+    limit: Annotated[int, Query(ge=1, le=100, description="Items per page")] = 50,
+    offset: Annotated[int, Query(ge=0, description="Page offset")] = 0,
 ):
-    try:
-        return await asyncio.to_thread(get_trade_summary, symbol=symbol)
-    except Exception as e:
-        logger.error("GET /api/summary error: %s", e, exc_info=True)
-        return {"error": _sanitize_error(e)}
+    records, total = await get_macd_signals(
+        symbol=symbol,
+        side=side,
+        timeframe=timeframe,
+        limit=limit,
+        offset=offset,
+    )
+    return SignalsHistoryResponse(
+        total=total,
+        limit=limit,
+        offset=offset,
+        signals=records,
+    )
 
 
-@app.patch("/api/trades/{trade_id}/status")
-async def update_trade(trade_id: str, body: UpdateTradeRequest):
-    try:
-        db = get_db()
-        ref = db.collection("active_trades").document(trade_id)
-        doc = await asyncio.to_thread(ref.get)
-        if not doc.exists:
-            return {"success": False, "error": "Trade not found"}
-
-        current_status = doc.to_dict().get("status", "")
-        terminal = {"CLOSED_TP", "CLOSED_SL", "CLOSED_BEP", "EXPIRED"}
-        if current_status in terminal:
-            return {"success": False, "error": f"Trade already in terminal status: {current_status}"}
-
-        await asyncio.to_thread(update_trade_status, trade_id, body.status)
-        return {"success": True}
-    except Exception as e:
-        logger.error("PATCH /api/trades/%s/status error: %s", trade_id, e, exc_info=True)
-        return {"success": False, "error": _sanitize_error(e)}
+@app.get("/api/summary", response_model=SummaryResponse)
+async def signals_summary():
+    data = await get_macd_signals_summary()
+    return SummaryResponse(**data)

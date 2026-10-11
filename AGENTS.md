@@ -1,61 +1,28 @@
-# AGENTS.md — Panduan AI Agent untuk Refactoring Crypto Trading Bot
+# AGENTS.md — Panduan AI Agent untuk Crypto MACD Scanner
 
 ## Tujuan Proyek
-Refactoring sistem auto-trading cryptocurrency dari arsitektur monolitik (`app/`) menuju modular blueprint (`src/`). Sistem mengimplementasikan strategi kuantitatif, menyimpan state di Firebase, notifikasi Telegram, dan auto-cancel order.
+Sistem automated scanner sinyal cryptocurrency kuantitatif berbasis **MACD Overcross (Golden Cross & Death Cross)** untuk Binance USDⓈ-M Futures. Sistem terintegrasi dengan PostgreSQL untuk histori sinyal, Redis untuk deduplikasi dan caching sinyal, notifikasi Telegram, web dashboard, dan full containerized via Docker Compose.
 
 ## Tech Stack
 - **Exchange:** `binance-futures-connector-python` (UM-Futures)
-- **Database:** `firebase-admin` (Firestore)
+- **Database:** `asyncpg` + `SQLAlchemy 2.0` (PostgreSQL)
+- **Cache & Dedup:** `redis.asyncio` (Redis 7)
 - **Notifikasi:** `httpx` → Telegram Bot API
 - **Data:** `pandas`, `pandas-ta`
-- **Runtime:** `asyncio`, FastAPI, APScheduler
+- **Runtime:** `asyncio`, FastAPI, Uvicorn
+- **Containerization:** Docker, Docker Compose
 
 ---
 
-## Struktur Target (`src/`)
+## Struktur Proyek (`src/`)
 ```
 src/
-├── config/             # Kredensial & parameter
-├── data_feed/          # Fetch OHLCV Binance
-├── strategy/           # Indikator & Blueprint logic
-├── risk_manager/       # Position sizing, SL, TP
-├── execution/          # Order routing, auto-cancel
-├── services/           # Firebase & Telegram integration
-└── main.py             # Orchestrator
-```
-
----
-
-## Dokumen Refactoring Plan
-
-| File | Isi |
-|---|---|
-| `refactor-plan/01_Architecture_and_Workflow.md` | Arsitektur, struktur direktori, pipeline E2E |
-| `refactor-plan/02_Data_and_Alpha_Strategy.md` | Data feed, macro filter BTC, alpha logic |
-| `refactor-plan/03_Risk_and_Position_Sizing.md` | ATR-based risk, entry/SL/TP, position sizing |
-| `refactor-plan/04_Execution_and_Monitoring.md` | Order LIMIT, notifikasi, auto-cancel |
-| `refactor-plan/05_Database_Schema_Firebase.md` | Firestore schema, state management |
-| `refactor-plan/06_Backtesting_Strategy_and_Metrics.md` | Backtester, performa metrik |
-
----
-
-## Skills (.opencode/skills)
-
-Setiap skill berisi instruksi detail untuk AI Agent. **Load skill sebelum mengerjakan modul terkait.**
-
-| Skill | Modul | Gunakan Saat |
-|---|---|---|
-| `skill-architecture-workflow` | Semua modul | Memahami struktur & pipeline proyek |
-| `skill-data-alpha` | `src/data_feed/`, `src/strategy/` | Fetch OHLCV, macro filter, sinyal alpha |
-| `skill-risk-manager` | `src/risk_manager/` | Kalkulasi position sizing, SL, TP |
-| `skill-execution-monitor` | `src/execution/` | Order placement, auto-cancel, monitoring |
-| `skill-firebase-db` | `src/services/` | Schema Firestore, state management |
-| `skill-backtester` | `backtester.py` | Simulasi historis, metrik performa |
-| `skill-best-practices` | Semua modul | FastAPI, Firebase, Telegram, Binance patterns |
-
-### Cara Load Skill
-```
-Load skill: skill-<nama-skill>
+├── config/             # Kredensial & parameter (settings.py)
+├── data_feed/          # Fetch OHLCV Binance (binance_client.py, ohlcv.py)
+├── strategy/           # Indikator MACD & deteksi crossover (macd.py)
+├── services/           # Integrasi PostgreSQL, Redis, dan Telegram
+├── static/             # Web dashboard UI (index.html, app.js)
+└── main.py             # FastAPI entrypoint & scanner endpoints
 ```
 
 ---
@@ -69,20 +36,23 @@ Load skill: skill-<nama-skill>
 - Jangan tambahkan komentar explicatif pada kode
 
 ### Verifikasi
-- Jalankan `npm run lint` / `ruff` setelah perubahan
-- Jalankan `npm run typecheck` / `mypy` jika tersedia
+- Jalankan `ruff check src` setelah perubahan
+- Jalankan `PYTHONPATH=. pytest tests/` untuk validasi unit dan integrasi
 - Pastikan tidak ada error sintaks sebelum pull request
 
-### Firebase
-- `firebase_admin.initialize_app()` hanya sekali (singleton)
-- Update status wajib pakai **Transaction**
-- Gunakan **WriteBatch** untuk update massal
+### Database (PostgreSQL)
+- Gunakan `AsyncSession` dan `create_async_engine`
+- Schema migration / `Base.metadata.create_all` otomatis saat startup di lifespan
+- Query pagination dengan `limit` dan `offset`
+
+### Redis
+- Gunakan `redis.asyncio` (non-blocking)
+- Format deduplikasi key: `macd:<timeframe>:<side>:<symbol>:<candle_ms>`
 
 ### Binance
 - Aktifkan `enable_server_time=True` saat init client
-- Gunakan `decimal.Decimal` untuk presisi harga/kuantitas
-- Ambil `exchange_info()` untuk tickSize & stepSize
+- Support `BINANCE_PROXY` untuk koneksi via proxy jika diatur
+- Gunakan `decimal.Decimal` jika diperlukan presisi tingkat tinggi
 
 ### Telegram
 - Kirim pesan via `asyncio.create_task()` / `BackgroundTasks` (non-blocking)
-- Escape karakter spesial jika pakai MarkdownV2
