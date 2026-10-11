@@ -1,8 +1,8 @@
 import asyncio
 import logging
 import time
-from datetime import datetime, timedelta, timezone
-from typing import Callable
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta, timezone
 
 from src.config.settings import (
     CRON_ENABLED,
@@ -129,7 +129,7 @@ class MacdCronScheduler:
                 break
             except Exception as e:
                 self._last_error = str(e)
-                logger.error("Error in cron scheduler loop: %s", e, exc_info=True)
+                logger.exception("Error in cron scheduler loop: %s", e)
                 await asyncio.sleep(60)
 
     async def _execute_job(self, is_manual: bool = False) -> dict:
@@ -147,7 +147,7 @@ class MacdCronScheduler:
                     return {"status": "error", "message": "Client not initialized"}
 
                 start_time = time.perf_counter()
-                exec_iso = datetime.now(timezone.utc).isoformat()
+                exec_iso = datetime.now(UTC).isoformat()
                 self._last_run = exec_iso
                 self._total_runs += 1
 

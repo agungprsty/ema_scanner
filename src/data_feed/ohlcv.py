@@ -51,7 +51,7 @@ def fetch_klines(
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
         return df
     except Exception as e:
-        logger.error("fetch_klines %s %s: %s", symbol, timeframe, e, exc_info=True)
+        logger.exception("fetch_klines %s %s: %s", symbol, timeframe, e)
         return None
 
 

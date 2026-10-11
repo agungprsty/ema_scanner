@@ -1,5 +1,6 @@
 import pandas as pd
-from src.strategy.macd import compute_macd, detect_macd_cross, MacdSignal
+
+from src.strategy.macd import MacdSignal, compute_macd, detect_macd_cross
 
 
 def _generate_synthetic_df(trend: str = "bullish") -> pd.DataFrame:

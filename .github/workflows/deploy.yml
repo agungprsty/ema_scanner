@@ -5,9 +5,11 @@ on:
     branches: [ "master", "main" ]
     paths:
       - 'src/**'
+      - 'tests/**'
       - 'Dockerfile'
       - 'docker-compose.prod.yml'
       - 'requirements.txt'
+      - 'pyproject.toml'
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
 

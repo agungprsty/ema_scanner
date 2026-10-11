@@ -42,8 +42,8 @@ async def close_redis() -> None:
     if _redis:
         try:
             await _redis.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Error closing Redis connection: %s", e)
         _redis = None
         logger.info("Redis connection closed")
 

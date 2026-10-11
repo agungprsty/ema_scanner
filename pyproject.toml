@@ -1,0 +1,24 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "W",
+    "F",
+    "I",
+    "UP",
+    "G",
+    "RUF",
+]
+ignore = [
+    "BLE001",  # Blind exception: intentional for resilience in network/IO loops
+    "RUF006",  # Fire-and-forget asyncio.create_task
+    "E501",    # Line length handled gracefully
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "S101",
+]

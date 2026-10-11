@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import (
     BigInteger,
@@ -304,7 +304,7 @@ async def get_watchlist(active_only: bool = False) -> list[dict]:
         async with _session_maker() as session:
             stmt = select(WatchlistModel)
             if active_only:
-                stmt = stmt.where(WatchlistModel.is_active == True)  # noqa: E712
+                stmt = stmt.where(WatchlistModel.is_active.is_(True))
             stmt = stmt.order_by(WatchlistModel.symbol.asc())
             res = await session.execute(stmt)
             return [row.to_dict() for row in res.scalars().all()]
@@ -423,7 +423,7 @@ async def save_macd_signal(signal: MacdSignal, timeframe: str = "2h") -> dict | 
             await session.refresh(record)
             return record.to_dict()
     except Exception as e:
-        logger.error("Failed to save MACD signal to database: %s", e, exc_info=True)
+        logger.exception("Failed to save MACD signal to database: %s", e)
         return None
 
 
@@ -505,7 +505,7 @@ async def get_macd_signals(
             records = res.scalars().all()
             return [r.to_dict() for r in records], total
     except Exception as e:
-        logger.error("Failed to query MACD signals: %s", e, exc_info=True)
+        logger.exception("Failed to query MACD signals: %s", e)
         return [], 0
 
 
@@ -560,7 +560,7 @@ async def evaluate_pending_signals(client) -> dict:
                         high = float(candle[2])
                         low = float(candle[3])
                         candle_ms = int(candle[0])
-                        c_dt = datetime.fromtimestamp(candle_ms / 1000, tz=timezone.utc)
+                        c_dt = datetime.fromtimestamp(candle_ms / 1000, tz=UTC)
                         c_time = c_dt.strftime("%Y-%m-%d %H:%M:%S")
 
                         if rec.side == "LONG":
@@ -785,7 +785,7 @@ async def get_profitloss_history(
 
             return items, total, summary
     except Exception as e:
-        logger.error("Failed to query profitloss history: %s", e, exc_info=True)
+        logger.exception("Failed to query profitloss history: %s", e)
         return [], 0, {"total_trades": 0, "profit_count": 0, "loss_count": 0, "winrate": 0.0, "total_pnl_percent": 0.0}
 
 
@@ -840,7 +840,7 @@ async def get_macd_signals_summary() -> dict:
 
             wl_count = (
                 await session.execute(
-                    select(func.count(WatchlistModel.id)).where(WatchlistModel.is_active == True)  # noqa: E712
+                    select(func.count(WatchlistModel.id)).where(WatchlistModel.is_active.is_(True))
                 )
             ).scalar_one() or 0
 
@@ -866,7 +866,7 @@ async def get_macd_signals_summary() -> dict:
                 "closed_trades": closed_trades,
             }
     except Exception as e:
-        logger.error("Failed to calculate signals summary: %s", e, exc_info=True)
+        logger.exception("Failed to calculate signals summary: %s", e)
         return {
             "total_signals": 0,
             "long_signals": 0,
