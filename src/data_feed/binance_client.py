@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 
 from binance.um_futures import UMFutures
 
@@ -30,6 +31,7 @@ def create_futures_client() -> UMFutures:
 
     kwargs = {
         "key": BINANCE_API_KEY or None,
+        "timeout": 15,
     }
     if proxies:
         kwargs["proxies"] = proxies
@@ -38,8 +40,23 @@ def create_futures_client() -> UMFutures:
         logger.info("Using RSA authentication for Binance Futures")
         kwargs["private_key"] = private_key
         kwargs["private_key_passphrase"] = BINANCE_PRIVATE_KEY_PASSPHRASE or None
-        return UMFutures(**kwargs)
+        client = UMFutures(**kwargs)
+    else:
+        logger.info("Using HMAC authentication for Binance Futures")
+        kwargs["secret"] = BINANCE_API_SECRET or None
+        client = UMFutures(**kwargs)
 
-    logger.info("Using HMAC authentication for Binance Futures")
-    kwargs["secret"] = BINANCE_API_SECRET or None
-    return UMFutures(**kwargs)
+    try:
+        t_data = client.time()
+        server_time = t_data.get("serverTime")
+        if server_time:
+            local_time = int(time.time() * 1000)
+            diff = abs(server_time - local_time)
+            if diff > 1000:
+                logger.warning("Clock drift detected with Binance server: %d ms", diff)
+            else:
+                logger.info("Binance Futures client connected (time skew: %d ms)", diff)
+    except Exception as e:
+        logger.warning("Binance server time check warning: %s", e)
+
+    return client

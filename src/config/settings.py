@@ -3,10 +3,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Server
+# Server & Security
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "7860"))
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() in ("true", "1", "yes")
+API_SECRET_KEY = os.getenv("API_SECRET_KEY", "").strip()
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
 
 # Database (PostgreSQL)
 POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")

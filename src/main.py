@@ -4,13 +4,15 @@ import time
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from src.config.settings import (
+    API_SECRET_KEY,
+    CORS_ORIGINS,
     DRY_RUN,
     MACD_CROSS_LOOKBACK_CANDLES,
     MACD_FAST,
@@ -84,13 +86,36 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+_is_wildcard = CORS_ORIGINS == ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=not _is_wildcard,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+async def verify_api_key(
+    x_api_key: Annotated[str | None, Header(alias="X-API-KEY")] = None,
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+) -> bool:
+    if not API_SECRET_KEY:
+        return True
+
+    token = None
+    if x_api_key:
+        token = x_api_key
+    elif authorization and authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+
+    if token != API_SECRET_KEY:
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized: Invalid or missing API Key",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return True
 
 app.mount("/static", StaticFiles(directory="src/static"), name="static")
 
@@ -241,7 +266,7 @@ async def list_watchlist(active_only: bool = False):
     return {"watchlist": items, "count": len(items)}
 
 
-@app.post("/api/watchlist")
+@app.post("/api/watchlist", dependencies=[Depends(verify_api_key)])
 async def add_symbol_to_watchlist(body: WatchlistAddRequest):
     item = await add_watchlist_symbol(symbol=body.symbol, notes=body.notes)
     if not item:
@@ -249,7 +274,7 @@ async def add_symbol_to_watchlist(body: WatchlistAddRequest):
     return {"status": "success", "item": item}
 
 
-@app.delete("/api/watchlist/{symbol}")
+@app.delete("/api/watchlist/{symbol}", dependencies=[Depends(verify_api_key)])
 async def remove_symbol_from_watchlist(symbol: str):
     ok = await delete_watchlist_symbol(symbol=symbol)
     if not ok:
@@ -257,7 +282,7 @@ async def remove_symbol_from_watchlist(symbol: str):
     return {"status": "success", "deleted": symbol}
 
 
-@app.patch("/api/watchlist/{symbol}/toggle")
+@app.patch("/api/watchlist/{symbol}/toggle", dependencies=[Depends(verify_api_key)])
 async def toggle_symbol_status(symbol: str, body: WatchlistToggleRequest):
     ok = await toggle_watchlist_symbol(symbol=symbol, is_active=body.is_active)
     if not ok:
@@ -299,7 +324,7 @@ async def get_cron_scheduler_status():
     return cron_scheduler.get_status()
 
 
-@app.post("/api/cron/trigger")
+@app.post("/api/cron/trigger", dependencies=[Depends(verify_api_key)])
 async def trigger_cron_execution():
     res = await cron_scheduler.trigger_now()
     summary = await get_macd_signals_summary()
@@ -307,8 +332,8 @@ async def trigger_cron_execution():
 
 
 # Evaluate Outcome Endpoints
-@app.post("/api/evaluate")
-@app.post("/api/profitloss-history/evaluate")
+@app.post("/api/evaluate", dependencies=[Depends(verify_api_key)])
+@app.post("/api/profitloss-history/evaluate", dependencies=[Depends(verify_api_key)])
 async def evaluate_trades():
     client = _get_client()
     eval_res = await evaluate_pending_signals(client)
@@ -351,7 +376,7 @@ async def list_profit_loss_history(
     )
 
 
-@app.post("/api/profitloss-history")
+@app.post("/api/profitloss-history", dependencies=[Depends(verify_api_key)])
 async def add_profit_loss_record(body: ProfitLossRecordRequest):
     item = await record_profit_loss(
         symbol=body.symbol,
@@ -374,8 +399,8 @@ async def add_profit_loss_record(body: ProfitLossRecordRequest):
 
 
 # Scanner Endpoints (Strict 2h timeframe)
-@app.get("/api/macd-scan", response_model=ScanResponse)
-@app.get("/api/scan", response_model=ScanResponse)
+@app.get("/api/macd-scan", response_model=ScanResponse, dependencies=[Depends(verify_api_key)])
+@app.get("/api/scan", response_model=ScanResponse, dependencies=[Depends(verify_api_key)])
 async def run_macd_scan(
     background_tasks: BackgroundTasks,
     symbols: Annotated[

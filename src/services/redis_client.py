@@ -22,7 +22,12 @@ async def init_redis() -> bool:
         return False
 
     try:
-        _redis = aioredis.from_url(REDIS_URL, decode_responses=True)
+        _redis = aioredis.from_url(
+            REDIS_URL,
+            decode_responses=True,
+            socket_timeout=5.0,
+            socket_connect_timeout=5.0,
+        )
         await _redis.ping()
         logger.info("Redis connected successfully")
         return True
@@ -52,12 +57,12 @@ async def is_redis_connected() -> bool:
         return False
 
 
-def _dedup_key(side: str, symbol: str, candle_ms: int, timeframe: str = "4h") -> str:
+def _dedup_key(side: str, symbol: str, candle_ms: int, timeframe: str = "2h") -> str:
     return f"macd:{timeframe}:{side.lower()}:{symbol.upper()}:{candle_ms}"
 
 
 async def is_cross_detected(
-    side: str, symbol: str, candle_ms: int, timeframe: str = "4h"
+    side: str, symbol: str, candle_ms: int, timeframe: str = "2h"
 ) -> bool:
     if _redis is None:
         return False
@@ -72,7 +77,7 @@ async def mark_cross_detected(
     side: str,
     symbol: str,
     candle_ms: int,
-    timeframe: str = "4h",
+    timeframe: str = "2h",
     ttl: int = CROSS_TTL,
 ) -> None:
     if _redis is None:

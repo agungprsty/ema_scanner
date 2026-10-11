@@ -97,6 +97,36 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  function getApiKey() {
+    return localStorage.getItem('tokyo_api_key') || '';
+  }
+
+  async function authFetch(url, options = {}) {
+    const key = getApiKey();
+    options.headers = options.headers || {};
+    if (key) {
+      if (options.headers instanceof Headers) {
+        options.headers.set('X-API-KEY', key);
+      } else {
+        options.headers['X-API-KEY'] = key;
+      }
+    }
+    const res = await fetch(url, options);
+    if (res.status === 401) {
+      const entered = prompt('🔐 Protected Endpoint: Masukkan API_SECRET_KEY server:');
+      if (entered) {
+        localStorage.setItem('tokyo_api_key', entered.trim());
+        if (options.headers instanceof Headers) {
+          options.headers.set('X-API-KEY', entered.trim());
+        } else {
+          options.headers['X-API-KEY'] = entered.trim();
+        }
+        return await fetch(url, options);
+      }
+    }
+    return res;
+  }
+
   // Health & Cron Status Check
   async function checkHealth() {
     try {
@@ -464,7 +494,7 @@ document.addEventListener('DOMContentLoaded', () => {
       input.addEventListener('change', async (e) => {
         const sym = e.target.getAttribute('data-symbol');
         const active = e.target.checked;
-        await fetch(`/api/watchlist/${sym}/toggle`, {
+        await authFetch(`/api/watchlist/${sym}/toggle`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ is_active: active }),
@@ -477,7 +507,7 @@ document.addEventListener('DOMContentLoaded', () => {
       btn.addEventListener('click', async (e) => {
         const sym = e.target.getAttribute('data-symbol');
         if (confirm(`Remove ${sym} from Watchlist?`)) {
-          await fetch(`/api/watchlist/${sym}`, { method: 'DELETE' });
+          await authFetch(`/api/watchlist/${sym}`, { method: 'DELETE' });
           await loadWatchlist();
           await loadSummary();
         }
@@ -490,7 +520,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const sym = inputNewSymbol.value.trim();
     if (!sym) return;
     try {
-      const res = await fetch('/api/watchlist', {
+      const res = await authFetch('/api/watchlist', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ symbol: sym, notes: 'User Added' }),
@@ -521,7 +551,7 @@ document.addEventListener('DOMContentLoaded', () => {
         include_current: includeCurrent,
       });
 
-      const res = await fetch(`/api/macd-scan?${params.toString()}`);
+      const res = await authFetch(`/api/macd-scan?${params.toString()}`);
       const data = await res.json();
       liveSignals = data.signals || [];
       activeTab = 'scan';
@@ -566,7 +596,7 @@ document.addEventListener('DOMContentLoaded', () => {
     btnEval.disabled = true;
     btnEval.textContent = 'Evaluating...';
     try {
-      await fetch('/api/evaluate', { method: 'POST' });
+      await authFetch('/api/evaluate', { method: 'POST' });
       await loadSummary();
       if (activeTab === 'history') {
         await loadHistory();
