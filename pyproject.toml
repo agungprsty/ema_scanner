@@ -22,3 +22,10 @@ ignore = [
 "tests/*" = [
     "S101",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "unit: Pure unit tests (isolated logic without external services)",
+    "integration: Integration tests (requires PostgreSQL/Redis services)",
+]

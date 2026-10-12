@@ -1,6 +1,9 @@
 import pandas as pd
+import pytest
 
 from src.strategy.macd import MacdSignal, compute_macd, detect_macd_cross
+
+pytestmark = pytest.mark.unit
 
 
 def _generate_synthetic_df(trend: str = "bullish") -> pd.DataFrame:
