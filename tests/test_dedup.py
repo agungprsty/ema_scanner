@@ -185,6 +185,57 @@ async def test_scan_claims_and_persists_new_signal(scan_env, fake_redis):
 
 
 @pytest.mark.asyncio
+async def test_scan_shows_forming_cross_without_recording_it(scan_env, fake_redis, monkeypatch):
+    forming = _make_signal("BTCUSDT")
+    forming.is_confirmed = False
+    monkeypatch.setattr(main, "detect_macd_cross", lambda df, sym, **kwargs: forming)
+
+    resp, alerts = await _run_scan("BTCUSDT")
+
+    assert resp.new_signals_count == 0
+    assert resp.signals[0].confirmed is False
+    assert resp.signals[0].is_new is False
+    assert scan_env["saved"] == []
+    assert fake_redis.store == {}
+    assert alerts == []
+
+
+@pytest.mark.asyncio
+async def test_scan_reports_symbols_whose_candles_failed(scan_env, fake_redis, monkeypatch):
+    monkeypatch.setattr(
+        main, "fetch_klines", lambda client, sym, tf, limit: None if sym == "ETHUSDT" else _Frame([sym, sym])
+    )
+
+    resp, _ = await _run_scan("BTCUSDT,ETHUSDT")
+
+    assert resp.failed_symbols == ["ETHUSDT"]
+    assert [s.symbol for s in resp.signals] == ["BTCUSDT"]
+
+
+@pytest.mark.asyncio
+async def test_scan_evaluates_and_notifies_in_background(scan_env, fake_redis, monkeypatch):
+    sent = []
+
+    async def fake_evaluate(client):
+        return {"evaluated_count": 1, "closed": [{"symbol": "BTCUSDT"}]}
+
+    async def fake_notify(closed):
+        sent.append(closed)
+
+    monkeypatch.setattr(main, "evaluate_pending_signals", fake_evaluate)
+    monkeypatch.setattr(main, "notify_closed_trades", fake_notify)
+    background = BackgroundTasks()
+    await main.run_macd_scan(
+        background, symbols="BTCUSDT", limit=100, lookback=3, include_current=False,
+        volume_min=None, send_telegram=False, save_db=True,
+    )
+    for task in background.tasks:
+        await task.func(*task.args, **task.kwargs)
+
+    assert sent == [[{"symbol": "BTCUSDT"}]]
+
+
+@pytest.mark.asyncio
 async def test_scan_releases_claim_when_save_fails(scan_env, fake_redis):
     scan_env["save_result"] = lambda sig: None if sig.symbol == "BTCUSDT" else {"id": 7, "inserted": True}
 

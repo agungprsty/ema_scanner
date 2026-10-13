@@ -94,7 +94,7 @@ def mock_db_services(monkeypatch):
                 "is_confirmed": True,
             }
         ]
-        return signals, len(signals)
+        return signals, len(signals), {"open_count": 0, "closed_count": len(signals), "total_r": 1.5}
 
     async def mock_record_profit_loss(**kwargs):
         item = {
@@ -210,6 +210,7 @@ async def test_signals_list_and_filters():
         assert "total" in data
         assert "signals" in data
         assert isinstance(data["signals"], list)
+        assert data["summary"]["total_r"] == 1.5
 
 
 @pytest.mark.asyncio

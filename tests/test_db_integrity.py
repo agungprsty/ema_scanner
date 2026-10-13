@@ -258,7 +258,7 @@ async def test_evaluate_pending_signals_without_db_skips_lock(monkeypatch):
 
     result = await asyncio.wait_for(db.evaluate_pending_signals(object()), timeout=1)
 
-    assert result == {"evaluated_count": 0, "profit_count": 0, "loss_count": 0}
+    assert result == {"evaluated_count": 0, "profit_count": 0, "loss_count": 0, "expired_count": 0, "closed": []}
     lock.release()
 
 
@@ -277,7 +277,7 @@ async def test_evaluate_pending_signals_inserts_profitloss_with_on_conflict(monk
         risk_reward_ratio=1.5,
         cross_time="2026-10-11 00:00:00",
     )
-    session = FakeSession([FakeResult(rows=[rec])])
+    session = FakeSession([FakeResult(rows=[rec]), FakeResult(value=1)])
     client = SimpleNamespace(
         klines=lambda **kwargs: [
             [1_700_000_000_000, "100", "101", "99", "100"],
@@ -289,9 +289,52 @@ async def test_evaluate_pending_signals_inserts_profitloss_with_on_conflict(monk
 
     result = await db.evaluate_pending_signals(client)
 
-    assert result == {"evaluated_count": 1, "profit_count": 1, "loss_count": 0}
+    closed = result.pop("closed")
+    assert result == {"evaluated_count": 1, "profit_count": 1, "loss_count": 0, "expired_count": 0}
     assert rec.win_status == "TP1_HIT"
+    assert [t["signal_id"] for t in closed] == [21]
+    assert closed[0]["exit_time"] == "2023-11-15T00:13:20Z"
+    assert closed[0]["r_multiple"] == pytest.approx((7.5 - db.ROUND_TRIP_FEE_PERCENT) / 5.0)
     insert_sql = _compile(session.statements[1])
     assert "INSERT INTO profitloss_history" in insert_sql
     assert "ON CONFLICT (signal_id) DO NOTHING" in insert_sql
     assert session.commits == 1
+
+
+async def test_evaluate_reports_only_newly_inserted_trades(monkeypatch):
+    rec = SimpleNamespace(
+        id=22,
+        symbol="ETHUSDT",
+        side="SHORT",
+        timeframe="2h",
+        win_status="PENDING",
+        cross_candle_ms=1_700_000_000_000,
+        entry_price=100.0,
+        cross_price=100.0,
+        stop_loss=105.0,
+        tp1=92.5,
+        risk_reward_ratio=1.5,
+        cross_time="2026-10-11 00:00:00",
+    )
+    # The P/L row already exists (another worker closed it), so the insert returns no id
+    session = FakeSession([FakeResult(rows=[rec]), FakeResult(value=None)])
+    client = SimpleNamespace(
+        klines=lambda **kwargs: [
+            [1_700_000_000_000, "100", "101", "99", "100"],
+            [1_700_007_200_000, "100", "106", "99", "105"],
+        ]
+    )
+    monkeypatch.setattr(db, "_session_maker", lambda: session)
+    monkeypatch.setattr(db, "_evaluation_lock", asyncio.Lock())
+
+    result = await db.evaluate_pending_signals(client)
+
+    assert result["loss_count"] == 1
+    assert result["closed"] == []
+    assert rec.win_status == "SL_HIT"
+
+
+def test_max_drawdown_measures_peak_to_trough():
+    assert db._max_drawdown([]) == 0.0
+    assert db._max_drawdown([1.5, -1.0, -1.0, 1.5, -1.0]) == pytest.approx(2.0)
+    assert db._max_drawdown([-1.0, -1.0]) == pytest.approx(2.0)

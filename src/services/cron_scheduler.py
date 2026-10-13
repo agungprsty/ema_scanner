@@ -6,7 +6,9 @@ from datetime import UTC, datetime, timedelta, timezone
 
 from src.config.settings import (
     CRON_ENABLED,
+    CRON_LOOKBACK_CANDLES,
     CRON_SAFETY_DELAY_SECONDS,
+    MACD_CANDLES,
     MACD_FAST,
     MACD_MAX_SYMBOLS,
     MACD_SIGNAL,
@@ -17,6 +19,7 @@ from src.config.settings import (
     TELEGRAM_CHAT_ID,
 )
 from src.data_feed.ohlcv import fetch_klines
+from src.services.alerts import format_signal_alert, notify_closed_trades
 from src.services.db import (
     evaluate_pending_signals,
     get_watchlist,
@@ -165,6 +168,7 @@ class MacdCronScheduler:
 
             # Step 1: Evaluate existing pending signals in database
             eval_res = await evaluate_pending_signals(client)
+            await notify_closed_trades(eval_res.pop("closed", None))
             self._last_evaluated_count = eval_res.get("evaluated_count", 0)
             logger.info(
                 "[CRON] Evaluated pending trades: %d (Wins/Profit: %d, Loss: %d)",
@@ -184,16 +188,15 @@ class MacdCronScheduler:
 
                 async def _detect_symbol(sym: str):
                     async with sem:
-                        df = await asyncio.to_thread(fetch_klines, client, sym, MACD_TIMEFRAME, 100)
+                        df = await asyncio.to_thread(fetch_klines, client, sym, MACD_TIMEFRAME, MACD_CANDLES)
                         if df is None:
                             return None
-                        # Strictly confirmed candle only
-                        df = df.iloc[:-1].copy()
                         df = compute_macd(df, fast=MACD_FAST, slow=MACD_SLOW, signal=MACD_SIGNAL)
                         if df is None:
                             return None
+                        # Closed candles only; re-checking a few catches crosses missed while down
                         return detect_macd_cross(
-                            df, sym, lookback_candles=1, include_current=False
+                            df, sym, lookback_candles=CRON_LOOKBACK_CANDLES, include_current=False
                         )
 
                 tasks = [_detect_symbol(s) for s in symbols]
@@ -230,20 +233,13 @@ class MacdCronScheduler:
                             continue
 
                         new_signals_found += 1
-                        emoji = "🟢" if sig.side == "LONG" else "🔴"
-                        telegram_parts.append(
-                            f"{emoji} <b>[CRON 2H] {sig.side}</b> #${sig.symbol}\n"
-                            f"📍 Entry: {sig.entry_price:.4f}\n"
-                            f"⛔ Stop Loss: {sig.stop_loss:.4f}\n"
-                            f"🎯 TP1: {sig.tp1:.4f} (R:R 1:{sig.risk_reward_ratio:.1f})\n"
-                            f"Time: {sig.cross_time} (Confirmed)"
-                        )
+                        telegram_parts.append(format_signal_alert(sig))
 
             self._last_signals_count = new_signals_found
             logger.info("[CRON] 2H Confirmed Scan finished: %d new signals detected", new_signals_found)
 
             if telegram_parts:
-                header = "🏎️💨 <b>TOKYO DRIFT // 2H CRON NOTIFICATION</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
+                header = "<b>Crossline: scheduled 2H scan</b>\n\n"
                 alert_body = header + "\n\n".join(telegram_parts)
                 asyncio.create_task(send_alert(alert_body))
 

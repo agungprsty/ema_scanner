@@ -10,7 +10,6 @@ from src.config.settings import (
     BINANCE_PRIVATE_KEY,
     BINANCE_PRIVATE_KEY_PASSPHRASE,
     BINANCE_PRIVATE_KEY_PATH,
-    BINANCE_PROXY,
 )
 
 logger = logging.getLogger(__name__)
@@ -27,14 +26,11 @@ def _load_private_key() -> str | None:
 
 def create_futures_client() -> UMFutures:
     private_key = _load_private_key()
-    proxies = {"http": BINANCE_PROXY, "https": BINANCE_PROXY} if BINANCE_PROXY else None
 
     kwargs = {
         "key": BINANCE_API_KEY or None,
         "timeout": 15,
     }
-    if proxies:
-        kwargs["proxies"] = proxies
 
     if private_key:
         logger.info("Using RSA authentication for Binance Futures")

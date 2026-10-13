@@ -1,137 +1,108 @@
-# 🏎️💨 Tokyo Drift // Crypto MACD 2H Quant Scanner
+# Crossline
 
-A production-grade, asynchronous quantitative scanner for **Binance USDⓈ-M Futures** that identifies **MACD Crossovers** strictly on the **2H Timeframe**, featuring **PostgreSQL state persistence**, **Redis signal deduplication**, dynamic **Watchlist Management**, **Win Rate & Trade Outcome Tracking**, and a high-octane **Tokyo Drift** cyberpunk aesthetic dashboard with interactive candlestick charts.
+Crossline scans Binance USDⓈ-M futures for MACD crossovers on the 2-hour chart. For each crossover it records an entry, a stop loss and a first target, follows the trade until one of those levels is hit, and keeps a running win rate and PnL.
 
----
+It runs as a FastAPI service backed by PostgreSQL and Redis, with a small dashboard for running scans, reviewing signals and managing the watchlist.
 
-## ⚡ Highlights & Enhancements
+## What it does
 
-- **Strict 2H Timeframe**: Strategy execution, candle ingestion, and signal tracking are strictly locked to `2h` bars.
-- **Database Watchlist Management**: Watchlist symbols are stored in PostgreSQL with dynamic controls (Add pair, Remove pair, Toggle active state). The scanner defaults to scanning active watchlist symbols.
-- **Tokyo Drift Aesthetics**: Neon Sakura Magenta (`#ff007f`) & Electric Cyan (`#00f0ff`) theme with circular RPM/Winrate Speedometer gauges, street racer telemetry cards, and Japanese cyberpunk styling (`東京ドリフト`).
-- **Signal Detail & Interactive Candlestick Charts**: Clicking on any detected signal opens a telemetry modal with full TradingView candlestick charts, MACD indicators, and price level markers.
-- **Strategy Parameters (Entry, Stop Loss, TP1)**:
-  - **Entry Price**: Exact crossover price calculated via linear interpolation.
-  - **Stop Loss**: Dynamic swing low/high of recent candles with buffer.
-  - **TP1 (Take Profit 1)**: Asymmetric reward target calibrated to a strict 1:1.5 Risk-to-Reward ratio.
-- **Automated 2H Cronjob (Jam 00, 02, 04, ...)**: Runs background scan and profit/loss verification precisely at the turn of every even hour, ensuring only confirmed 2H candles are evaluated and stored.
-- **Dedicated Profit/Loss History Ledger (`profitloss_history`)**: Records resolved trades with exact Entry price, Exit price, outcome (`PROFIT` / `LOSS`), PnL percentage, and timestamps.
-- **Multi-Parameter Filtering**: Full querying by Date (`YYYY-MM-DD` or range), Timeframe, Direction (`LONG` / `SHORT`), and Result (`PROFIT`, `LOSS`, `PENDING`) across both signals and profit/loss history.
-- **Automated Trade Outcome & Win Rate Evaluation**: Evaluates whether in-progress signals reached TP1 first (Win) or Stop Loss first (Loss), dynamically calculating historical win rates.
-- **Full Dockerized Stack**: Seamless deployment via Docker Compose with FastAPI app, PostgreSQL 16, and Redis 7.
+- **2H only.** Candle ingestion, signal detection and outcome tracking all use closed 2-hour candles. Forming candles can be included in a manual scan, but the scheduled scan only uses closed ones.
+- **Trade levels per signal.**
+  - Entry: the open of the candle after the cross, the first price you can trade once the cross is confirmed. The interpolated cross price is kept for reference.
+  - Stop loss: 0.2% beyond the recent swing low (long) or swing high (short).
+  - Target (TP1): 1.5 times the risk distance from entry.
+- **Outcome tracking.** Open signals are checked against later candles. A trade closes at its target, at its stop, or as expired when neither is hit within `SIGNAL_EXPIRY_CANDLES` (default 48 candles, 4 days). A candle that touches both levels counts as a stop. Closed trades go into `profitloss_history` with exit price, PnL after fees and the result in R (multiples of the planned risk).
+- **Performance in R.** The dashboard reports win rate, net result in R and percent after fees, and the largest drawdown in R.
+- **Trade journal.** For any recorded signal you can note whether you took it, at which fills, and why. The journal compares your own results with the tracked results of the signals you took and skipped.
+- **Scheduled scans.** A background job runs every 2 hours, just after each 2H candle closes. It evaluates open trades, then scans the active watchlist, re-checking the last few closed candles so crosses missed during a restart are caught up. New signals and closed trades can be sent to Telegram.
+- **Forming candles.** A manual scan can include the candle that is still forming. Crosses on it are shown but not recorded or alerted, because they can disappear before the close.
+- **Deduplication.** Redis makes sure a crossover is stored and alerted only once, even when manual and scheduled scans overlap.
+- **Watchlist in the database.** Symbols can be added, removed, or paused without a redeploy.
 
----
-
-## 🛠️ Technology Stack
+## Stack
 
 | Layer | Technology |
 |---|---|
-| API Framework | [FastAPI](https://fastapi.tiangolo.com/) + [Uvicorn](https://www.uvicorn.org/) |
-| Language & Runtime | Python 3.12 / 3.13 (`asyncio`) |
-| Exchange Connectivity | [binance-futures-connector-python](https://github.com/binance/binance-futures-connector-python) (UM-Futures) |
-| Relational Database | [PostgreSQL 16](https://www.postgresql.org/) via [SQLAlchemy 2.0](https://www.sqlalchemy.org/) + [asyncpg](https://github.com/MagicStack/asyncpg) |
-| Cache & Dedup | [Redis 7](https://redis.io/) via `redis.asyncio` |
-| Notifications | [httpx](https://www.python-httpx.org/) → Telegram Bot API |
-| Charting & Frontend | TradingView Lightweight Charts (v4.2.1), Vanilla CSS, HTML5 |
-| Containerization | Docker & Docker Compose |
+| API | FastAPI, Uvicorn |
+| Runtime | Python 3.12+ (`asyncio`) |
+| Exchange | binance-futures-connector (UM futures) |
+| Database | PostgreSQL 16 via SQLAlchemy 2.0 and asyncpg |
+| Cache and dedup | Redis 7 (`redis.asyncio`) |
+| Alerts | Telegram Bot API via httpx |
+| Dashboard | Plain HTML, CSS and JavaScript; TradingView Lightweight Charts 4.2 |
+| Deployment | Docker Compose |
 
----
-
-## 📁 Project Structure
+## Project layout
 
 ```
-.
-├── Dockerfile                   # Multi-layer container definition
-├── docker-compose.yml           # Compose spec (App, PostgreSQL, Redis)
-├── requirements.txt             # Python dependencies
-├── .env.example                 # Environment variables template
-├── README.md                    # Documentation
-├── src/
-│   ├── config/
-│   │   └── settings.py          # Strict 2h timeframe, MACD, and risk parameters
-│   ├── data_feed/
-│   │   ├── binance_client.py    # Binance Futures client (RSA/HMAC, Proxy support)
-│   │   └── ohlcv.py             # 2H Kline ingestion and chart payload builder
-│   ├── strategy/
-│   │   └── macd.py              # MACD crossover detection with swing SL & TP1 calculation
-│   ├── services/
-│   │   ├── db.py                # PostgreSQL schema (Signals & Watchlist), outcome evaluator
-│   │   ├── redis_client.py      # Redis async client and 2h cross deduplication
-│   │   └── telegram.py          # Asynchronous Telegram alert dispatcher
-│   ├── static/
-│   │   ├── index.html           # Tokyo Drift theme dashboard with Speedometer gauge
-│   │   └── app.js               # Reactive client with interactive candlestick charting
-│   └── main.py                  # FastAPI routes (Scanner, Watchlist, Signals, Klines)
-└── tests/
-    ├── test_macd.py             # MACD strategy and trade level unit tests
-    └── test_api.py              # Watchlist lifecycle and API integration tests
+src/
+  config/settings.py         MACD, risk and timeframe settings
+  data_feed/binance_client.py  Binance futures client (HMAC/RSA)
+  data_feed/ohlcv.py         2H kline ingestion and chart payloads
+  strategy/macd.py           Crossover detection, stop loss and target calculation
+  services/db.py             Schema, signal storage, outcome evaluation
+  services/redis_client.py   Redis client and crossover deduplication
+  services/cron_scheduler.py Scheduled 2H scan and evaluation
+  services/telegram.py       Telegram alerts
+  static/                    Dashboard (index.html, app.js)
+  main.py                    API routes
+tests/                       Unit and integration tests
 ```
 
----
-
-## 🐳 Running with Docker Compose
-
-### 1. Launch Services
+## Running locally
 
 ```bash
+cp .env.example .env        # fill in Binance and Telegram credentials
 docker compose up --build -d
-```
-
-### 2. Verify Stack Status
-
-```bash
 docker compose ps
 ```
 
-### 3. Open Tokyo Drift Dashboard
+Then open <http://localhost:7860>.
 
-Navigate to [http://localhost:7860](http://localhost:7860) in your browser.
+Write endpoints (scan, evaluate, watchlist changes) require the `X-API-KEY` header to match `API_SECRET_KEY`. The dashboard asks for the key the first time it is needed and remembers it in the browser.
 
----
+## API
 
-## 📡 API Endpoints
+### Scanning and charts
 
-### 1. Scanner & Charts
-- `GET /api/macd-scan`: Trigger a 2H MACD scan across active watchlist symbols.
-  - Query params: `lookback` (default: 5), `include_current` (default: false), `send_telegram` (default: true).
-- `GET /api/klines?symbol=BTCUSDT`: Returns 2H candlestick data and computed MACD series for charting.
-- `GET /api/signals/{signal_id}`: Fetch detailed trade telemetry for a specific signal.
-- `POST /api/evaluate`: Evaluates all pending signals against subsequent price action to determine `TP1_HIT` or `SL_HIT`.
+- `GET /api/macd-scan` runs a scan over the active watchlist. Query: `lookback` (default 5), `include_current` (default false), `send_telegram` (default true).
+- `GET /api/klines?symbol=BTCUSDT` returns 2H candles and the MACD series for charting.
+- `GET /api/signals/{signal_id}` returns one stored signal with its journal entry.
+- `GET /api/signals/{signal_id}/candles` returns the candles around one signal's trade: from 30 candles before the cross to now while it is open, or to 6 candles after the exit once it has closed. Closed windows are cached for 7 days.
+- `POST /api/evaluate` checks open signals against later price action and marks them `TP1_HIT`, `SL_HIT` or `EXPIRED`.
 
-### 2. Watchlist Management
-- `GET /api/watchlist`: List all watchlist symbols with active status and notes.
-- `POST /api/watchlist`: Add a new pair to the database watchlist.
-  ```json
-  { "symbol": "SUIUSDT", "notes": "Momentum L1" }
-  ```
-- `PATCH /api/watchlist/{symbol}/toggle`: Toggle symbol active state (`true` / `false`).
-- `DELETE /api/watchlist/{symbol}`: Remove symbol from watchlist.
+### Watchlist
 
-### 3. Performance & History
-- `GET /api/summary`: Returns aggregate performance metrics (Win Rate %, Wins, Losses, In-Progress, Active Watchlist Count, LONG/SHORT distribution).
-- `GET /api/signals`: Paginated historical signal records from PostgreSQL with filtering support:
-  - Query params: `symbol`, `direction` / `side` (`LONG`/`SHORT`), `timeframe` (default `2h`), `result` / `win_status` (`PROFIT`, `LOSS`, `PENDING`), `date` (`YYYY-MM-DD`), `start_date`, `end_date`, `limit`, `offset`.
-- `GET /api/profitloss-history`: Dedicated history of all resolved trades from `profitloss_history` table:
-  - Query params: `symbol`, `direction`, `timeframe`, `result` (`PROFIT`/`LOSS`), `date`, `start_date`, `end_date`, `limit`, `offset`.
-  - Returns paginated trade records plus performance summary (`total_trades`, `profit_count`, `loss_count`, `winrate`, `total_pnl_percent`).
-- `POST /api/profitloss-history/evaluate`: Evaluates pending signals against Binance candle price action, writes outcomes (`PROFIT` or `LOSS`) to `profitloss_history`, and updates database records.
-- `GET /api/cron/status`: Get the current execution status and next scheduled run for the 2H automated cronjob.
-- `POST /api/cron/trigger`: Manually trigger the 2H cronjob (runs trade outcome evaluation then confirmed candle scan).
-- `GET /api/health`: Healthcheck verifying PostgreSQL, Redis, Cron Scheduler, and 2H engine status.
+- `GET /api/watchlist` lists symbols with their active state and notes.
+- `POST /api/watchlist` adds a symbol: `{ "symbol": "SUIUSDT", "notes": "optional" }`.
+- `PATCH /api/watchlist/{symbol}/toggle` sets `is_active`.
+- `DELETE /api/watchlist/{symbol}` removes a symbol.
 
----
+### History and performance
 
-## 🏁 Strategy Mechanics (2H Frame)
+- `GET /api/summary` returns win rate, target/stop/expired counts, open trades, long/short counts, net PnL, total and average R, and max drawdown in R.
+- `GET /api/signals` lists stored signals. Filters: `symbol`, `direction` or `side`, `timeframe` (default `2h`), `result` or `win_status` (`PROFIT`, `LOSS`, `PENDING`), `date`, `start_date`, `end_date`, `limit`, `offset`.
+- `GET /api/profitloss-history` lists closed trades with a summary (`total_trades`, `profit_count`, `loss_count`, `expired_count`, `winrate`, `total_pnl_percent`, `total_r`, `avg_r`). Same filters, with `result` one of `PROFIT`, `LOSS` or `EXPIRED`.
+- `POST /api/profitloss-history/evaluate` evaluates open signals and writes the results to `profitloss_history`.
 
-1. **Indicator Setup**:
-   - Fast EMA = 12, Slow EMA = 26, Signal EMA = 9.
-   - Applied strictly to **2-Hour** candles.
-2. **Crossover Trigger**:
-   - **Bullish Golden Cross (LONG)**: MACD line crosses above Signal line.
-   - **Bearish Death Cross (SHORT)**: MACD line crosses below Signal line.
-3. **Dynamic Swing Risk Management**:
-   - **Entry Level**: Interpolated cross price.
-   - **Stop Loss**: Placed 0.2% beyond the swing low (LONG) or swing high (SHORT) of the lookback window.
-   - **Take Profit 1 (TP1)**: Target set at **1.5× Risk** ($RR = 1:1.5$).
-4. **Outcome Validation**:
-   - Signals are tracked until the 2H candle highs/lows reach either the TP1 target or the Stop Loss level.
+### Journal
+
+- `GET /api/journal` lists journal entries with their signals. Filters: `status` (`TAKEN`, `SKIPPED`), `symbol`, `limit`, `offset`.
+- `PUT /api/signals/{signal_id}/journal` saves an entry: `{ "status": "TAKEN", "entry_fill": 1.399, "exit_fill": 1.361, "notes": "optional" }`.
+- `DELETE /api/signals/{signal_id}/journal` removes it.
+
+### Operations
+
+- `GET /api/cron/status` shows the scheduler state and next run.
+- `POST /api/cron/trigger` runs the scheduled job now.
+- `GET /api/health` checks PostgreSQL, Redis and the scheduler.
+
+## Strategy
+
+1. MACD with fast EMA 12, slow EMA 26 and signal EMA 9, computed on 2H candles.
+2. A long signal fires when the MACD line crosses above the signal line; a short signal when it crosses below.
+3. Entry, stop loss and target are set as described above. The risk/reward ratio is configurable through `RISK_REWARD_RATIO`.
+4. A signal stays open until a later 2H candle's high or low reaches the target or the stop, or until it expires.
+5. PnL subtracts `ROUND_TRIP_FEE_PERCENT` (default 0.1%, taker fees for opening and closing).
+
+MACD is computed from the last `MACD_CANDLES` candles (default 500) so its values match charting platforms closely.

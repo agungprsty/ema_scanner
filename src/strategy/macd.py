@@ -113,12 +113,22 @@ def detect_macd_cross(
     lookback_candles: int = 5,
     include_current: bool = False,
 ) -> MacdSignal | None:
-    if df is None or len(df) < 2:
+    """Find the most recent MACD cross in the last `lookback_candles` closed candles.
+
+    `df` must end with the candle that is still forming, as Binance klines do. A cross on a
+    closed candle enters at the open of the next candle, the first price available once the
+    cross is confirmed. With `include_current`, a cross on the forming candle is reported too,
+    priced at its latest close and marked unconfirmed because it can still disappear.
+    """
+    if df is None or len(df) < 3:
         return None
 
-    last_idx = len(df) - 1
-    n = min(lookback_candles, len(df) - 1)
-    for i in range(len(df) - 1, len(df) - n - 1, -1):
+    forming_idx = len(df) - 1
+    last_closed = forming_idx - 1
+    newest = forming_idx if include_current else last_closed
+    oldest = max(1, last_closed - lookback_candles + 1)
+
+    for i in range(newest, oldest - 1, -1):
         curr = df.iloc[i]
         prev = df.iloc[i - 1]
 
@@ -137,9 +147,9 @@ def detect_macd_cross(
         else:
             continue
 
-        is_confirmed = not (include_current and i == last_idx)
+        is_confirmed = i != forming_idx
         cross_price = round(_calc_cross_price(df, i), 6)
-        entry_price = cross_price
+        entry_price = float(df.iloc[i + 1]["open"]) if is_confirmed else float(curr["close"])
 
         stop_loss, tp1 = calculate_trade_levels(
             df=df,
@@ -157,7 +167,7 @@ def detect_macd_cross(
             cross_candle_ms=int(curr["timestamp"].timestamp() * 1000),
             cross_time=curr["timestamp"].strftime("%Y-%m-%dT%H:%M:%SZ"),
             cross_price=cross_price,
-            entry_price=entry_price,
+            entry_price=round(entry_price, 6),
             stop_loss=stop_loss,
             tp1=tp1,
             risk_reward_ratio=RISK_REWARD_RATIO,
@@ -165,7 +175,7 @@ def detect_macd_cross(
             signal=float(sig_curr),
             histogram=float(macd_curr - sig_curr),
             close=float(curr["close"]),
-            bars_ago=last_idx - i,
+            bars_ago=last_closed - i if is_confirmed else 0,
             is_confirmed=is_confirmed,
             win_status="PENDING",
         )

@@ -3,18 +3,20 @@ import logging
 import secrets
 import time
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import AfterValidator, BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field, model_validator
 
 from src.config.settings import (
     API_SECRET_KEY,
     CORS_ORIGINS,
     DRY_RUN,
+    MACD_CANDLES,
     MACD_CROSS_LOOKBACK_CANDLES,
     MACD_FAST,
     MACD_INCLUDE_CURRENT,
@@ -22,19 +24,25 @@ from src.config.settings import (
     MACD_SIGNAL,
     MACD_SLOW,
     MACD_TIMEFRAME,
+    RISK_REWARD_RATIO,
+    ROUND_TRIP_FEE_PERCENT,
     SCAN_CONCURRENCY,
+    SIGNAL_EXPIRY_CANDLES,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
     VOLUME_THRESHOLD_USD,
 )
 from src.data_feed.binance_client import create_futures_client
-from src.data_feed.ohlcv import fetch_candles_payload, fetch_klines
+from src.data_feed.ohlcv import fetch_candles_payload, fetch_candles_range, fetch_klines
+from src.services.alerts import format_signal_alert, notify_closed_trades
 from src.services.cron_scheduler import cron_scheduler
 from src.services.db import (
     add_watchlist_symbol,
     close_db,
+    delete_journal_entry,
     delete_watchlist_symbol,
     evaluate_pending_signals,
+    get_journal,
     get_macd_signals,
     get_macd_signals_summary,
     get_profitloss_history,
@@ -46,6 +54,7 @@ from src.services.db import (
     record_profit_loss,
     save_macd_signal,
     toggle_watchlist_symbol,
+    upsert_journal_entry,
 )
 from src.services.redis_client import (
     claim_cross,
@@ -59,6 +68,7 @@ from src.services.redis_client import (
 )
 from src.services.telegram import send_alert
 from src.strategy.macd import compute_macd, detect_macd_cross
+from src.strategy.outcome import CANDLE_INTERVAL_MS
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -104,7 +114,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Tokyo Drift // Crypto MACD 2H Scanner",
+    title="Crossline",
     description="Automated Binance Futures 2H MACD crossover scanner with PostgreSQL, Redis, Cron Scheduler, and Profit/Loss History",
     version="2.2.0",
     lifespan=lifespan,
@@ -153,6 +163,19 @@ class WatchlistToggleRequest(BaseModel):
     is_active: bool
 
 
+class JournalRequest(BaseModel):
+    status: Literal["TAKEN", "SKIPPED"]
+    entry_fill: float | None = Field(default=None, gt=0)
+    exit_fill: float | None = Field(default=None, gt=0)
+    notes: str = Field(default="", max_length=500)
+
+    @model_validator(mode="after")
+    def exit_needs_entry(self):
+        if self.exit_fill is not None and self.entry_fill is None:
+            raise ValueError("exit_fill requires entry_fill")
+        return self
+
+
 class ProfitLossRecordRequest(BaseModel):
     symbol: str
     direction: str
@@ -199,6 +222,7 @@ class ScanResponse(BaseModel):
     execution_time: str
     total_scanned: int
     new_signals_count: int
+    failed_symbols: list[str] = []
     signals: list[SignalItem]
 
 
@@ -206,6 +230,7 @@ class SignalsHistoryResponse(BaseModel):
     total: int
     limit: int
     offset: int
+    summary: dict = {}
     signals: list[dict]
 
 
@@ -225,12 +250,16 @@ class SummaryResponse(BaseModel):
     tp1_hit_count: int
     sl_hit_count: int
     pending_count: int
+    expired_count: int = 0
     winrate: float
     avg_rr: float
     watchlist_count: int
     latest_signal_time: str | None = None
     total_net_pnl: float = 0.0
     closed_trades: int = 0
+    total_r: float = 0.0
+    avg_r: float = 0.0
+    max_drawdown_r: float = 0.0
 
 
 class HealthResponse(BaseModel):
@@ -257,12 +286,15 @@ async def history():
 async def get_info():
     return {
         "status": "running",
-        "app": "Tokyo Drift // Crypto MACD 2H Scanner",
+        "app": "Crossline",
         "version": "2.2.0",
         "mode": "DRY_RUN" if DRY_RUN else "PRODUCTION",
         "strategy": f"MACD ({MACD_FAST}, {MACD_SLOW}, {MACD_SIGNAL}) Overcross with Dynamic Swing SL/TP1",
         "enforced_timeframe": "2h",
         "default_lookback": MACD_CROSS_LOOKBACK_CANDLES,
+        "risk_reward_ratio": RISK_REWARD_RATIO,
+        "signal_expiry_candles": SIGNAL_EXPIRY_CANDLES,
+        "round_trip_fee_percent": ROUND_TRIP_FEE_PERCENT,
         "max_symbols": MACD_MAX_SYMBOLS,
         "cron": cron_scheduler.get_status(),
     }
@@ -438,6 +470,7 @@ async def _load_klines(sym: str, interval: str) -> dict:
 
 @app.get("/api/klines")
 async def get_klines_chart(
+    response: Response,
     symbol: Annotated[
         str, Query(max_length=64, description="Symbol name e.g. BTCUSDT"), AfterValidator(_normalize_symbol)
     ],
@@ -450,6 +483,8 @@ async def get_klines_chart(
             raise HTTPException(status_code=404, detail="Unknown symbol")
         symbol = valid[symbol]
     payload = await _single_flight(("klines", interval, symbol), lambda: _load_klines(symbol, interval))
+    # Let the browser reuse candles for as long as the server cache does, so reopening a chart is free
+    response.headers["Cache-Control"] = f"public, max-age={KLINES_CACHE_TTL}"
     return _slice_klines(payload, limit)
 
 
@@ -460,6 +495,123 @@ async def get_single_signal(signal_id: int):
     if not sig:
         raise HTTPException(status_code=404, detail="Signal not found")
     return sig
+
+
+# Trade Journal Endpoints
+@app.get("/api/journal")
+async def list_journal(
+    status: Annotated[Literal["TAKEN", "SKIPPED"] | None, Query(description="TAKEN or SKIPPED")] = None,
+    symbol: Annotated[str | None, Query(max_length=30, description="Filter by symbol")] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+):
+    items, total, summary = await get_journal(status=status, symbol=symbol, limit=limit, offset=offset)
+    return {"total": total, "limit": limit, "offset": offset, "summary": summary, "entries": items}
+
+
+@app.put("/api/signals/{signal_id}/journal", dependencies=[Depends(verify_api_key)])
+async def save_journal_entry(signal_id: int, body: JournalRequest):
+    try:
+        item = await upsert_journal_entry(
+            signal_id,
+            status=body.status,
+            entry_fill=body.entry_fill,
+            exit_fill=body.exit_fill,
+            notes=body.notes.strip(),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Failed to save journal entry") from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="Signal not found")
+    return item
+
+
+@app.delete("/api/signals/{signal_id}/journal", dependencies=[Depends(verify_api_key)])
+async def remove_journal_entry(signal_id: int):
+    if not await delete_journal_entry(signal_id):
+        raise HTTPException(status_code=404, detail="No journal entry for this signal")
+    return {"status": "success"}
+
+
+# Candles framing one signal's trade, for its chart
+SIGNAL_CANDLES_BEFORE = 30
+SIGNAL_CANDLES_AFTER = 6
+# A closed trade's window never changes once all its candles have closed
+SIGNAL_CANDLES_FINAL_TTL = 7 * 24 * 3600
+
+
+def _parse_utc_ms(value: str | None) -> int | None:
+    """Parse stored UTC times, with or without a zone ("2026-10-11T06:00:00Z", "2026-10-11 14:00:00")."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return int(dt.timestamp() * 1000)
+
+
+def _signal_candle_window(sig: dict, now_ms: int) -> tuple[int, int, bool]:
+    """(start_ms, end_ms, final) of the candles to chart for a signal.
+
+    Open signals run from before the cross to now. Closed ones stop a few candles after the exit,
+    and are final once every candle in that range has closed.
+    """
+    interval_ms = CANDLE_INTERVAL_MS.get(sig.get("timeframe") or "2h", CANDLE_INTERVAL_MS["2h"])
+    cross_ms = int(sig["cross_candle_ms"])
+    start_ms = cross_ms - SIGNAL_CANDLES_BEFORE * interval_ms
+    if sig.get("win_status", "PENDING") == "PENDING":
+        return start_ms, now_ms, False
+    exit_ms = _parse_utc_ms(sig.get("exit_time")) or cross_ms + (SIGNAL_EXPIRY_CANDLES + 1) * interval_ms
+    last_open_ms = exit_ms - exit_ms % interval_ms + SIGNAL_CANDLES_AFTER * interval_ms
+    final = last_open_ms + interval_ms <= now_ms
+    return start_ms, min(last_open_ms, now_ms), final
+
+
+async def _load_signal_candles(sig: dict, start_ms: int, end_ms: int, cache_key: str, ttl: int) -> dict:
+    miss_key = f"{cache_key}:miss"
+    cached = await get_cached_json(cache_key)
+    if cached:
+        return cached
+    if await get_cached_json(miss_key):
+        raise HTTPException(status_code=502, detail="Failed to load candle data from upstream")
+    if not _consume_klines_budget():
+        raise HTTPException(status_code=503, detail="Chart data temporarily unavailable, retry later")
+
+    timeframe = sig.get("timeframe") or "2h"
+    try:
+        candles = await asyncio.to_thread(
+            fetch_candles_range, _get_client(), sig["symbol"], timeframe, start_ms, end_ms
+        )
+    except Exception:
+        logger.exception("Signal candles fetch failed for signal %s", sig.get("id"))
+        candles = None
+    if not candles:
+        await set_cached_json(miss_key, {"miss": True}, ttl=KLINES_MISS_TTL)
+        raise HTTPException(status_code=502, detail="Failed to load candle data from upstream")
+
+    payload = {"symbol": sig["symbol"], "timeframe": timeframe, "candles": candles}
+    await set_cached_json(cache_key, payload, ttl=ttl)
+    return payload
+
+
+@app.get("/api/signals/{signal_id}/candles")
+async def get_signal_candles(signal_id: int, response: Response):
+    sig = await get_signal_by_id(signal_id)
+    if not sig:
+        raise HTTPException(status_code=404, detail="Signal not found")
+
+    start_ms, end_ms, final = _signal_candle_window(sig, int(time.time() * 1000))
+    ttl = SIGNAL_CANDLES_FINAL_TTL if final else KLINES_CACHE_TTL
+    cache_key = f"klines:signal:{signal_id}:{'final' if final else 'live'}"
+    payload = await _single_flight(
+        ("signal-candles", signal_id, final),
+        lambda: _load_signal_candles(sig, start_ms, end_ms, cache_key, ttl),
+    )
+    response.headers["Cache-Control"] = f"public, max-age={ttl}"
+    return {**payload, "final": final}
 
 
 # Cron Scheduler Management Endpoints
@@ -477,12 +629,18 @@ async def trigger_cron_execution():
     return {"status": "success", "result": res, "summary": summary}
 
 
+async def _evaluate_and_notify(client) -> dict:
+    res = await evaluate_pending_signals(client)
+    closed = res.pop("closed", None) if isinstance(res, dict) else None
+    await notify_closed_trades(closed)
+    return res
+
+
 # Evaluate Outcome Endpoints
 @app.post("/api/evaluate", dependencies=[Depends(verify_api_key)])
 @app.post("/api/profitloss-history/evaluate", dependencies=[Depends(verify_api_key)])
 async def evaluate_trades():
-    client = _get_client()
-    eval_res = await evaluate_pending_signals(client)
+    eval_res = await _evaluate_and_notify(_get_client())
     summary = await get_macd_signals_summary()
     return {"status": "success", "evaluated": eval_res, "summary": summary}
 
@@ -554,8 +712,8 @@ async def run_macd_scan(
         Query(description="Comma-separated whitelist. If omitted, uses Database Watchlist."),
     ] = None,
     limit: Annotated[
-        int, Query(ge=35, le=1000, description="Candles to fetch")
-    ] = 100,
+        int, Query(ge=35, le=1500, description="Candles to fetch")
+    ] = MACD_CANDLES,
     lookback: Annotated[
         int, Query(ge=1, le=20, description="Candles lookback for crossover")
     ] = MACD_CROSS_LOOKBACK_CANDLES,
@@ -613,13 +771,14 @@ async def run_macd_scan(
 
     sem = asyncio.Semaphore(SCAN_CONCURRENCY)
 
+    failed_symbols: list[str] = []
+
     async def _detect(sym: str):
         async with sem:
             df = await asyncio.to_thread(fetch_klines, client, sym, timeframe, limit)
             if df is None:
+                failed_symbols.append(sym)
                 return None
-            if not include_current:
-                df = df.iloc[:-1].copy()
             df = compute_macd(df, fast=MACD_FAST, slow=MACD_SLOW, signal=MACD_SIGNAL)
             if df is None:
                 return None
@@ -639,7 +798,11 @@ async def run_macd_scan(
     alert_enabled = send_telegram and bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 
     for sig in detected:
-        if preview:
+        if not sig.is_confirmed:
+            # A cross on the forming candle can still disappear before the close, so it is shown
+            # but never claimed, stored or alerted; the confirmed cross is picked up after the close
+            is_new = False
+        elif preview:
             is_new = not await is_cross_detected(
                 sig.side, sig.symbol, sig.cross_candle_ms, timeframe=timeframe
             )
@@ -676,17 +839,7 @@ async def run_macd_scan(
 
         if is_new:
             new_signals_count += 1
-            emoji = "🟢" if sig.side == "LONG" else "🔴"
-            status_tag = "✅ Confirmed" if sig.is_confirmed else "⏳ In Progress"
-            telegram_parts.append(
-                f"{emoji} <b>{sig.side}</b> #${sig.symbol} (2h)\n"
-                f"Status: {status_tag} | Reason: {sig.reason}\n"
-                f"📍 Entry: {sig.entry_price:.4f}\n"
-                f"⛔ Stop Loss: {sig.stop_loss:.4f}\n"
-                f"🎯 TP1: {sig.tp1:.4f} (R:R 1:{sig.risk_reward_ratio:.1f})\n"
-                f"📊 MACD: {sig.macd:.4f} | Signal: {sig.signal:.4f} | Hist: {sig.histogram:.4f}\n"
-                f"Time: {sig.cross_time}"
-            )
+            telegram_parts.append(format_signal_alert(sig))
 
         signals_output.append(
             SignalItem(
@@ -729,10 +882,10 @@ async def run_macd_scan(
             item.confirmed = record["is_confirmed"]
 
     # Trigger outcome evaluation asynchronously
-    background_tasks.add_task(evaluate_pending_signals, client)
+    background_tasks.add_task(_evaluate_and_notify, client)
 
     if send_telegram and telegram_parts:
-        header = "🏎️💨 <b>TOKYO DRIFT // MACD 2H SIGNALS</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        header = "<b>Crossline: MACD 2H signals</b>\n\n"
         alert_body = header + "\n\n".join(telegram_parts)
         background_tasks.add_task(send_alert, alert_body)
 
@@ -746,6 +899,7 @@ async def run_macd_scan(
         execution_time=elapsed,
         total_scanned=len(symbol_list),
         new_signals_count=new_signals_count,
+        failed_symbols=sorted(failed_symbols),
         signals=signals_output,
     )
 
@@ -765,7 +919,7 @@ async def list_signals(
     offset: Annotated[int, Query(ge=0, description="Page offset")] = 0,
 ):
     target_side = direction or side
-    records, total = await get_macd_signals(
+    records, total, summary = await get_macd_signals(
         symbol=symbol,
         side=target_side,
         timeframe=timeframe,
@@ -781,6 +935,7 @@ async def list_signals(
         total=total,
         limit=limit,
         offset=offset,
+        summary=summary,
         signals=records,
     )
 

@@ -135,6 +135,19 @@ async def test_klines_cache_miss_fetches_canonical_and_caches(client, klines_env
     assert ttl == main.KLINES_CACHE_TTL
 
 
+async def test_klines_success_is_cacheable_by_the_browser(client, klines_env):
+    resp = await client.get("/api/klines", params={"symbol": "BTCUSDT", "limit": 80})
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == f"public, max-age={main.KLINES_CACHE_TTL}"
+
+
+async def test_klines_errors_are_not_cacheable(client, klines_env):
+    klines_env["fetch_result"] = None
+    resp = await client.get("/api/klines", params={"symbol": "BTCUSDT"})
+    assert resp.status_code == 502
+    assert "cache-control" not in resp.headers
+
+
 async def test_klines_cache_hit_skips_fetcher(client, klines_env):
     klines_env["cache"]["klines:2h:ETHUSDT"] = SAMPLE_PAYLOAD
     resp = await client.get("/api/klines", params={"symbol": "ethusdt"})
