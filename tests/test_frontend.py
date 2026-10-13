@@ -102,3 +102,9 @@ def test_dashboard_has_no_separate_closed_trades_tab():
     html = (APP_JS.parent / "index.html").read_text()
     assert 'data-tab="profitloss"' not in html
     assert "loadProfitLossHistory" not in APP_JS.read_text()
+
+
+def test_chart_library_loads_on_demand():
+    html = (APP_JS.parent / "index.html").read_text()
+    assert "lightweight-charts" not in html.split("<body>")[0].replace('href="https://unpkg.com"', "")
+    assert "function loadChartLibrary(" in APP_JS.read_text()

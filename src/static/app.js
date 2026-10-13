@@ -4,6 +4,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const LEGACY_API_KEY_STORAGE = 'tokyo_api_key';
   const CANDLE_MS = 2 * 60 * 60 * 1000;
   const PAGE_SIZE = 20;
+  const CHART_LIB_URL = 'https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js';
 
   // Defaults until /api/info answers
   const config = { signal_expiry_candles: 48, round_trip_fee_percent: 0.1 };
@@ -968,6 +969,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function openSignal(sig) {
+    loadChartLibrary().catch(() => {});
     currentSignal = sig;
     destroyChart();
     showChartMessage('<span class="spinner on"></span> Loading candles…');
@@ -1101,6 +1103,39 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Chart
+  let chartLibPromise = null;
+
+  // The chart library is only needed in the signal dialog, so it is fetched the first time it is wanted
+  function loadChartLibrary() {
+    if (window.LightweightCharts) return Promise.resolve(window.LightweightCharts);
+    if (!chartLibPromise) {
+      chartLibPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = CHART_LIB_URL;
+        script.async = true;
+        script.onload = () => (window.LightweightCharts
+          ? resolve(window.LightweightCharts)
+          : reject(new Error('chart library did not initialise')));
+        script.onerror = () => {
+          script.remove();
+          reject(new Error('chart library failed to load'));
+        };
+        document.head.appendChild(script);
+      }).catch((err) => {
+        chartLibPromise = null; // allow a retry on the next dialog
+        throw err;
+      });
+    }
+    return chartLibPromise;
+  }
+
+  // Start the download as soon as the pointer or focus reaches a row that opens a chart
+  [tbody, signalCards, journalTbody, journalCards].forEach(el => {
+    ['pointerover', 'focusin'].forEach(type => el.addEventListener(type, () => {
+      loadChartLibrary().catch(() => {});
+    }, { once: true }));
+  });
+
   function destroyChart() {
     chartRequest += 1;
     if (chart) {
@@ -1131,10 +1166,13 @@ document.addEventListener('DOMContentLoaded', () => {
         showChartMessage('No candle data for this symbol.');
         return;
       }
-      if (!window.LightweightCharts) {
-        showChartMessage('The charting library failed to load.', true);
+      try {
+        await loadChartLibrary();
+      } catch {
+        if (request === chartRequest) showChartMessage('The chart library could not be loaded. Check your connection and reopen the signal.', true);
         return;
       }
+      if (request !== chartRequest) return;
       chartViewport.innerHTML = '';
 
       const css = getComputedStyle(document.documentElement);

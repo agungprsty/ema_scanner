@@ -5,7 +5,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -468,6 +468,7 @@ async def _load_klines(sym: str, interval: str) -> dict:
 
 @app.get("/api/klines")
 async def get_klines_chart(
+    response: Response,
     symbol: Annotated[
         str, Query(max_length=64, description="Symbol name e.g. BTCUSDT"), AfterValidator(_normalize_symbol)
     ],
@@ -480,6 +481,8 @@ async def get_klines_chart(
             raise HTTPException(status_code=404, detail="Unknown symbol")
         symbol = valid[symbol]
     payload = await _single_flight(("klines", interval, symbol), lambda: _load_klines(symbol, interval))
+    # Let the browser reuse candles for as long as the server cache does, so reopening a chart is free
+    response.headers["Cache-Control"] = f"public, max-age={KLINES_CACHE_TTL}"
     return _slice_klines(payload, limit)
 
 
