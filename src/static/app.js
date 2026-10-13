@@ -1,6 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
   let activeTab = 'scan';
   let liveSignals = null;
+  let liveGeneration = 0;
   let dbSignals = [];
   let pnlHistory = [];
   let watchlist = [];
@@ -397,6 +398,43 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  async function refreshLiveStatuses() {
+    if (!liveSignals) return false;
+    const generation = liveGeneration;
+    const tracked = liveSignals.filter(s => s.id);
+    if (!tracked.length) return false;
+    const updates = await Promise.all(tracked.map(async (s) => {
+      try {
+        const res = await fetch(`/api/signals/${encodeURIComponent(s.id)}`);
+        return res.ok ? await res.json() : null;
+      } catch (e) {
+        return null;
+      }
+    }));
+    if (generation !== liveGeneration) return false;
+    updates.forEach((row, idx) => {
+      if (row && row.win_status) tracked[idx].win_status = row.win_status;
+    });
+    return true;
+  }
+
+  async function refreshLiveView() {
+    const applied = await refreshLiveStatuses();
+    if (applied && activeTab === 'scan') renderScanView();
+    return applied;
+  }
+
+  function scheduleLiveRefresh() {
+    const generation = liveGeneration;
+    if (!(liveSignals || []).some(s => s.id && s.win_status === 'PENDING')) return;
+    [5000, 15000].forEach((delay) => {
+      setTimeout(async () => {
+        if (generation !== liveGeneration) return;
+        if (await refreshLiveView()) await loadSummary();
+      }, delay);
+    });
+  }
+
   function renderScanView() {
     if (liveSignals === null) {
       const idleHtml = `
@@ -627,6 +665,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const lookback = document.getElementById('select-lookback').value;
     const includeCurrent = document.getElementById('select-forming').value;
 
+    liveGeneration += 1;
     btnScan.disabled = true;
     scanIcon.innerHTML = `<span class="spinner"></span>`;
     scanLabel.textContent = 'DRIFTING 2H...';
@@ -646,6 +685,7 @@ document.addEventListener('DOMContentLoaded', () => {
       switchView('signals');
       updateNavButtons();
       renderSignals(liveSignals);
+      scheduleLiveRefresh();
       await loadSummary();
     } catch (e) {
       activeTab = 'scan';
@@ -696,7 +736,7 @@ document.addEventListener('DOMContentLoaded', () => {
       } else if (activeTab === 'profitloss') {
         await loadProfitLossHistory();
       } else {
-        renderScanView();
+        await refreshLiveView();
       }
     } catch (e) {
       showNotice(evalNotice, `Evaluate failed: ${e.message}`);
@@ -733,11 +773,12 @@ document.addEventListener('DOMContentLoaded', () => {
     tabWatchlist.className = activeTab === 'watchlist' ? 'nav-btn active' : 'nav-btn';
   }
 
-  tabScan.addEventListener('click', () => {
+  tabScan.addEventListener('click', async () => {
     activeTab = 'scan';
     switchView('signals');
     updateNavButtons();
     renderScanView();
+    await refreshLiveView();
   });
 
   tabHistory.addEventListener('click', () => {
