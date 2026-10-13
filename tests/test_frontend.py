@@ -81,3 +81,10 @@ def test_app_js_defines_escape_helper():
         "symbol=${sig.symbol}",
     ):
         assert needle not in source
+
+
+def test_app_js_does_not_scan_on_page_load():
+    source = APP_JS.read_text()
+    calls = [line.strip() for line in source.splitlines() if "runScan" in line]
+    assert calls == ["async function runScan() {", "btnScan.addEventListener('click', runScan);"]
+    assert "renderScanView();\n});" in source

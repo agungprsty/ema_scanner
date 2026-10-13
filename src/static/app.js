@@ -1,6 +1,6 @@
 document.addEventListener('DOMContentLoaded', () => {
   let activeTab = 'scan';
-  let liveSignals = [];
+  let liveSignals = null;
   let dbSignals = [];
   let pnlHistory = [];
   let watchlist = [];
@@ -349,6 +349,19 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  function renderScanView() {
+    if (liveSignals === null) {
+      const idleHtml = `
+        <div style="text-align:center; padding:36px; color:var(--text-muted); font-family:var(--font-mono); font-size:0.85rem;">
+          Click "Launch 2H Scan" to run a MACD scan.
+        </div>`;
+      tbody.innerHTML = `<tr><td colspan="10">${idleHtml}</td></tr>`;
+      mobileContainer.innerHTML = idleHtml;
+      return;
+    }
+    renderSignals(liveSignals);
+  }
+
   // Load Profit/Loss History (profitloss_history table)
   async function loadProfitLossHistory() {
     const search = filterSymbol.value.toUpperCase().trim();
@@ -563,6 +576,7 @@ document.addEventListener('DOMContentLoaded', () => {
       });
 
       const res = await authFetch(`/api/macd-scan?${params.toString()}`);
+      if (!res.ok) throw new Error(`Scan failed with status ${res.status}`);
       const data = await res.json();
       liveSignals = data.signals || [];
       activeTab = 'scan';
@@ -614,7 +628,7 @@ document.addEventListener('DOMContentLoaded', () => {
       } else if (activeTab === 'profitloss') {
         await loadProfitLossHistory();
       } else {
-        renderSignals(liveSignals);
+        renderScanView();
       }
     } catch (e) {
       console.error('Eval error:', e);
@@ -655,7 +669,7 @@ document.addEventListener('DOMContentLoaded', () => {
     activeTab = 'scan';
     switchView('signals');
     updateNavButtons();
-    renderSignals(liveSignals);
+    renderScanView();
   });
 
   tabHistory.addEventListener('click', () => {
@@ -682,7 +696,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Dynamic Filtering on inputs
   function onFilterChanged() {
     if (activeTab === 'scan') {
-      renderSignals(liveSignals);
+      renderScanView();
     } else if (activeTab === 'history') {
       loadHistory();
     } else if (activeTab === 'profitloss') {
@@ -849,5 +863,5 @@ document.addEventListener('DOMContentLoaded', () => {
   checkHealth();
   loadSummary();
   loadWatchlist();
-  runScan();
+  renderScanView();
 });
