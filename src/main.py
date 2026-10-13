@@ -104,7 +104,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Tokyo Drift // Crypto MACD 2H Scanner",
+    title="Crossline",
     description="Automated Binance Futures 2H MACD crossover scanner with PostgreSQL, Redis, Cron Scheduler, and Profit/Loss History",
     version="2.2.0",
     lifespan=lifespan,
@@ -257,7 +257,7 @@ async def history():
 async def get_info():
     return {
         "status": "running",
-        "app": "Tokyo Drift // Crypto MACD 2H Scanner",
+        "app": "Crossline",
         "version": "2.2.0",
         "mode": "DRY_RUN" if DRY_RUN else "PRODUCTION",
         "strategy": f"MACD ({MACD_FAST}, {MACD_SLOW}, {MACD_SIGNAL}) Overcross with Dynamic Swing SL/TP1",
@@ -676,15 +676,14 @@ async def run_macd_scan(
 
         if is_new:
             new_signals_count += 1
-            emoji = "🟢" if sig.side == "LONG" else "🔴"
-            status_tag = "✅ Confirmed" if sig.is_confirmed else "⏳ In Progress"
+            status_tag = "closed candle" if sig.is_confirmed else "candle still forming"
             telegram_parts.append(
-                f"{emoji} <b>{sig.side}</b> #${sig.symbol} (2h)\n"
+                f"<b>{sig.side}</b> #${sig.symbol} (2h)\n"
                 f"Status: {status_tag} | Reason: {sig.reason}\n"
-                f"📍 Entry: {sig.entry_price:.4f}\n"
-                f"⛔ Stop Loss: {sig.stop_loss:.4f}\n"
-                f"🎯 TP1: {sig.tp1:.4f} (R:R 1:{sig.risk_reward_ratio:.1f})\n"
-                f"📊 MACD: {sig.macd:.4f} | Signal: {sig.signal:.4f} | Hist: {sig.histogram:.4f}\n"
+                f"Entry: {sig.entry_price:.4f}\n"
+                f"Stop loss: {sig.stop_loss:.4f}\n"
+                f"TP1: {sig.tp1:.4f} (R:R 1:{sig.risk_reward_ratio:.1f})\n"
+                f"MACD: {sig.macd:.4f} | Signal: {sig.signal:.4f} | Hist: {sig.histogram:.4f}\n"
                 f"Time: {sig.cross_time}"
             )
 
@@ -732,7 +731,7 @@ async def run_macd_scan(
     background_tasks.add_task(evaluate_pending_signals, client)
 
     if send_telegram and telegram_parts:
-        header = "🏎️💨 <b>TOKYO DRIFT // MACD 2H SIGNALS</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        header = "<b>Crossline: MACD 2H signals</b>\n\n"
         alert_body = header + "\n\n".join(telegram_parts)
         background_tasks.add_task(send_alert, alert_body)
 

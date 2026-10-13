@@ -1,5 +1,5 @@
 # ==============================================================================
-# NGINX REVERSE PROXY CONFIGURATION FOR TOKYO DRIFT MACD SCANNER
+# NGINX REVERSE PROXY CONFIGURATION FOR CROSSLINE
 # Place in: /etc/nginx/sites-available/macd_scanner
 # Symlink to: /etc/nginx/sites-enabled/
 # ==============================================================================

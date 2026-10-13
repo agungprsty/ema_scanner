@@ -230,12 +230,11 @@ class MacdCronScheduler:
                             continue
 
                         new_signals_found += 1
-                        emoji = "🟢" if sig.side == "LONG" else "🔴"
                         telegram_parts.append(
-                            f"{emoji} <b>[CRON 2H] {sig.side}</b> #${sig.symbol}\n"
-                            f"📍 Entry: {sig.entry_price:.4f}\n"
-                            f"⛔ Stop Loss: {sig.stop_loss:.4f}\n"
-                            f"🎯 TP1: {sig.tp1:.4f} (R:R 1:{sig.risk_reward_ratio:.1f})\n"
+                            f"<b>{sig.side}</b> #${sig.symbol} (2h)\n"
+                            f"Entry: {sig.entry_price:.4f}\n"
+                            f"Stop loss: {sig.stop_loss:.4f}\n"
+                            f"TP1: {sig.tp1:.4f} (R:R 1:{sig.risk_reward_ratio:.1f})\n"
                             f"Time: {sig.cross_time} (Confirmed)"
                         )
 
@@ -243,7 +242,7 @@ class MacdCronScheduler:
             logger.info("[CRON] 2H Confirmed Scan finished: %d new signals detected", new_signals_found)
 
             if telegram_parts:
-                header = "🏎️💨 <b>TOKYO DRIFT // 2H CRON NOTIFICATION</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
+                header = "<b>Crossline: scheduled 2H scan</b>\n\n"
                 alert_body = header + "\n\n".join(telegram_parts)
                 asyncio.create_task(send_alert(alert_body))
 
