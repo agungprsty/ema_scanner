@@ -7,13 +7,16 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Float,
+    Index,
     Integer,
     String,
     desc,
+    exists,
     func,
     select,
     text,
 )
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -64,6 +67,16 @@ class WatchlistModel(Base):
 
 class MacdSignalModel(Base):
     __tablename__ = "macd_signals"
+    __table_args__ = (
+        Index(
+            "uq_macd_signals_symbol_side_tf_candle",
+            "symbol",
+            "side",
+            "timeframe",
+            "cross_candle_ms",
+            unique=True,
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
@@ -117,9 +130,12 @@ class MacdSignalModel(Base):
 
 class ProfitLossHistoryModel(Base):
     __tablename__ = "profitloss_history"
+    __table_args__ = (
+        Index("uq_profitloss_history_signal_id", "signal_id", unique=True),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    signal_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
+    signal_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     symbol: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
     timeframe: Mapped[str] = mapped_column(String(10), default="2h", index=True, nullable=False)
     direction: Mapped[str] = mapped_column(String(10), index=True, nullable=False)
@@ -158,6 +174,98 @@ class ProfitLossHistoryModel(Base):
         }
 
 
+SIGNAL_UNIQUE_COLUMNS = ("symbol", "side", "timeframe", "cross_candle_ms")
+
+SIGNAL_SURVIVOR_RANK = """
+    SELECT id,
+           ROW_NUMBER() OVER w AS rn,
+           FIRST_VALUE(id) OVER w AS keep_id
+    FROM macd_signals
+    WINDOW w AS (
+        PARTITION BY symbol, side, timeframe, cross_candle_ms
+        ORDER BY (COALESCE(win_status, 'PENDING') <> 'PENDING') DESC, id ASC
+    )
+"""
+
+UNIQUE_INDEX_MIGRATIONS = (
+    f"""
+    UPDATE profitloss_history AS p
+    SET signal_id = r.keep_id
+    FROM ({SIGNAL_SURVIVOR_RANK}) AS r
+    WHERE p.signal_id = r.id
+      AND r.rn > 1;
+    """,
+    f"""
+    DELETE FROM macd_signals AS m
+    USING ({SIGNAL_SURVIVOR_RANK}) AS r
+    WHERE m.id = r.id
+      AND r.rn > 1;
+    """,
+    """
+    DELETE FROM profitloss_history AS p
+    USING (
+        SELECT pl.id, ROW_NUMBER() OVER (
+            PARTITION BY pl.signal_id
+            ORDER BY (
+                (s.win_status = 'TP1_HIT' AND pl.result = 'PROFIT')
+                OR (s.win_status = 'SL_HIT' AND pl.result = 'LOSS')
+            ) IS TRUE DESC, pl.id ASC
+        ) AS rn
+        FROM profitloss_history pl
+        LEFT JOIN macd_signals s ON s.id = pl.signal_id
+        WHERE pl.signal_id IS NOT NULL
+    ) AS r
+    WHERE p.id = r.id
+      AND r.rn > 1;
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_macd_signals_symbol_side_tf_candle
+    ON macd_signals (symbol, side, timeframe, cross_candle_ms);
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_profitloss_history_signal_id
+    ON profitloss_history (signal_id);
+    """,
+    "DROP INDEX IF EXISTS ix_profitloss_history_signal_id;",
+)
+
+
+def build_signal_insert(signal: MacdSignal, timeframe: str):
+    return (
+        pg_insert(MacdSignalModel)
+        .values(
+            symbol=signal.symbol,
+            side=signal.side,
+            timeframe=timeframe,
+            reason=signal.reason,
+            cross_candle_ms=signal.cross_candle_ms,
+            cross_time=signal.cross_time,
+            cross_price=signal.cross_price,
+            close_price=signal.close,
+            entry_price=signal.entry_price,
+            stop_loss=signal.stop_loss,
+            tp1=signal.tp1,
+            risk_reward_ratio=signal.risk_reward_ratio,
+            win_status=signal.win_status,
+            macd=signal.macd,
+            signal=signal.signal,
+            histogram=signal.histogram,
+            bars_ago=signal.bars_ago,
+            is_confirmed=signal.is_confirmed,
+        )
+        .on_conflict_do_nothing(index_elements=list(SIGNAL_UNIQUE_COLUMNS))
+        .returning(MacdSignalModel.id)
+    )
+
+
+def build_profitloss_insert(**values):
+    return (
+        pg_insert(ProfitLossHistoryModel)
+        .values(**values)
+        .on_conflict_do_nothing(index_elements=["signal_id"])
+    )
+
+
 async def seed_default_watchlist(session: AsyncSession) -> None:
     res = await session.execute(select(func.count(WatchlistModel.id)))
     count = res.scalar_one() or 0
@@ -170,22 +278,22 @@ async def seed_default_watchlist(session: AsyncSession) -> None:
 
 async def backfill_resolved_signals_to_profitloss_history(session: AsyncSession) -> None:
     try:
-        stmt = select(MacdSignalModel).where(MacdSignalModel.win_status.in_(["TP1_HIT", "SL_HIT"]))
+        stmt = select(MacdSignalModel).where(
+            MacdSignalModel.win_status.in_(["TP1_HIT", "SL_HIT"]),
+            ~exists().where(ProfitLossHistoryModel.signal_id == MacdSignalModel.id),
+        )
         resolved = (await session.execute(stmt)).scalars().all()
         for rec in resolved:
-            pl_check = await session.execute(
-                select(ProfitLossHistoryModel).where(ProfitLossHistoryModel.signal_id == rec.id)
-            )
-            if not pl_check.scalar_one_or_none():
-                is_win = rec.win_status == "TP1_HIT"
-                exit_price = rec.tp1 if is_win else rec.stop_loss
-                entry_val = rec.entry_price or rec.cross_price or exit_price
-                if rec.side == "LONG":
-                    pnl = ((exit_price - entry_val) / entry_val) * 100 if entry_val > 0 else 0.0
-                else:
-                    pnl = ((entry_val - exit_price) / entry_val) * 100 if entry_val > 0 else 0.0
+            is_win = rec.win_status == "TP1_HIT"
+            exit_price = rec.tp1 if is_win else rec.stop_loss
+            entry_val = rec.entry_price or rec.cross_price or exit_price
+            if rec.side == "LONG":
+                pnl = ((exit_price - entry_val) / entry_val) * 100 if entry_val > 0 else 0.0
+            else:
+                pnl = ((entry_val - exit_price) / entry_val) * 100 if entry_val > 0 else 0.0
 
-                pl_entry = ProfitLossHistoryModel(
+            await session.execute(
+                build_profitloss_insert(
                     signal_id=rec.id,
                     symbol=rec.symbol,
                     timeframe=rec.timeframe,
@@ -200,7 +308,7 @@ async def backfill_resolved_signals_to_profitloss_history(session: AsyncSession)
                     cross_time=rec.cross_time,
                     exit_time=rec.cross_time,
                 )
-                session.add(pl_entry)
+            )
         await session.commit()
     except Exception as e:
         logger.debug("Backfill profitloss_history error: %s", e)
@@ -255,6 +363,8 @@ async def init_db(max_retries: int = 5, retry_interval: float = 2.0) -> bool:
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                     );
                 """))
+                for migration in UNIQUE_INDEX_MIGRATIONS:
+                    await conn.execute(text(migration))
 
             async with _session_maker() as session:
                 await seed_default_watchlist(session)
@@ -387,41 +497,22 @@ async def save_macd_signal(signal: MacdSignal, timeframe: str = "2h") -> dict | 
 
     try:
         async with _session_maker() as session:
-            stmt = select(MacdSignalModel).where(
-                MacdSignalModel.symbol == signal.symbol,
-                MacdSignalModel.side == signal.side,
-                MacdSignalModel.timeframe == timeframe,
-                MacdSignalModel.cross_candle_ms == signal.cross_candle_ms,
-            )
-            result = await session.execute(stmt)
-            existing = result.scalar_one_or_none()
-            if existing:
-                return existing.to_dict()
-
-            record = MacdSignalModel(
-                symbol=signal.symbol,
-                side=signal.side,
-                timeframe=timeframe,
-                reason=signal.reason,
-                cross_candle_ms=signal.cross_candle_ms,
-                cross_time=signal.cross_time,
-                cross_price=signal.cross_price,
-                close_price=signal.close,
-                entry_price=signal.entry_price,
-                stop_loss=signal.stop_loss,
-                tp1=signal.tp1,
-                risk_reward_ratio=signal.risk_reward_ratio,
-                win_status=signal.win_status,
-                macd=signal.macd,
-                signal=signal.signal,
-                histogram=signal.histogram,
-                bars_ago=signal.bars_ago,
-                is_confirmed=signal.is_confirmed,
-            )
-            session.add(record)
+            inserted_id = (await session.execute(build_signal_insert(signal, timeframe))).scalar_one_or_none()
             await session.commit()
-            await session.refresh(record)
-            return record.to_dict()
+
+            if inserted_id is not None:
+                stmt = select(MacdSignalModel).where(MacdSignalModel.id == inserted_id)
+            else:
+                stmt = select(MacdSignalModel).where(
+                    MacdSignalModel.symbol == signal.symbol,
+                    MacdSignalModel.side == signal.side,
+                    MacdSignalModel.timeframe == timeframe,
+                    MacdSignalModel.cross_candle_ms == signal.cross_candle_ms,
+                )
+            record = (await session.execute(stmt)).scalars().first()
+            if record is None:
+                return None
+            return {**record.to_dict(), "inserted": inserted_id is not None}
     except Exception as e:
         logger.exception("Failed to save MACD signal to database: %s", e)
         return None
@@ -597,11 +688,8 @@ async def evaluate_pending_signals(client) -> dict:
                         else:
                             pnl = ((entry_val - exit_price) / entry_val) * 100 if entry_val > 0 else 0.0
 
-                        pl_check = await session.execute(
-                            select(ProfitLossHistoryModel).where(ProfitLossHistoryModel.signal_id == rec.id)
-                        )
-                        if not pl_check.scalar_one_or_none():
-                            pl_entry = ProfitLossHistoryModel(
+                        await session.execute(
+                            build_profitloss_insert(
                                 signal_id=rec.id,
                                 symbol=rec.symbol,
                                 timeframe=rec.timeframe,
@@ -616,7 +704,7 @@ async def evaluate_pending_signals(client) -> dict:
                                 cross_time=rec.cross_time,
                                 exit_time=exit_time_str,
                             )
-                            session.add(pl_entry)
+                        )
 
                         evaluated_count += 1
                         if resolved_result == "PROFIT":
