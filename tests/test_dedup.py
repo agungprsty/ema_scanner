@@ -5,7 +5,7 @@ from fastapi import BackgroundTasks
 
 from src import main
 from src.services import cron_scheduler as cron_module
-from src.services import redis_client
+from src.services import db, redis_client
 from src.strategy.macd import MacdSignal
 
 pytestmark = pytest.mark.unit
@@ -377,3 +377,51 @@ async def test_cron_treats_db_duplicate_as_not_new(cron_env, fake_redis):
     assert res["new_signals_count"] == 0
     assert cron_env["alerts"] == []
     assert "macd:2h:long:BTCUSDT:1700000000000" in fake_redis.store
+
+
+@pytest.mark.asyncio
+async def test_scan_reports_stored_outcome_for_known_signal(scan_env, fake_redis, monkeypatch):
+    lookups = []
+
+    async def fake_lookup(keys, timeframe="2h"):
+        lookups.append((sorted(keys), timeframe))
+        return {
+            ("BTCUSDT", "LONG", 1700000000000): {
+                "id": 42,
+                "win_status": "TP1_HIT",
+                "cross_time": "2023-11-14T22:00:00Z",
+                "cross_price": 99.5,
+                "close_price": 100.5,
+                "entry_price": 99.5,
+                "stop_loss": 97.0,
+                "tp1": 103.25,
+                "risk_reward_ratio": 1.5,
+                "is_confirmed": False,
+            },
+        }
+
+    monkeypatch.setattr(main, "get_signals_by_keys", fake_lookup)
+
+    await _run_scan("BTCUSDT")
+    resp, _ = await _run_scan("BTCUSDT,ETHUSDT")
+
+    by_symbol = {s.symbol: s for s in resp.signals}
+    assert by_symbol["BTCUSDT"].is_new is False
+    assert by_symbol["BTCUSDT"].id == 42
+    assert by_symbol["BTCUSDT"].win_status == "TP1_HIT"
+    assert by_symbol["BTCUSDT"].entry_price == 99.5
+    assert by_symbol["BTCUSDT"].stop_loss == 97.0
+    assert by_symbol["BTCUSDT"].tp1 == 103.25
+    assert by_symbol["BTCUSDT"].close == 100.5
+    assert by_symbol["BTCUSDT"].confirmed is False
+    assert by_symbol["ETHUSDT"].win_status == "PENDING"
+    assert lookups[-1] == (
+        [("BTCUSDT", "LONG", 1700000000000), ("ETHUSDT", "SHORT", 1700000000000)],
+        "2h",
+    )
+
+
+@pytest.mark.asyncio
+async def test_signals_by_keys_without_database_returns_empty(monkeypatch):
+    monkeypatch.setattr(db, "_session_maker", None)
+    assert await db.get_signals_by_keys([("BTCUSDT", "LONG", 1)]) == {}

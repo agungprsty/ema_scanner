@@ -15,6 +15,7 @@ from sqlalchemy import (
     func,
     select,
     text,
+    tuple_,
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import (
@@ -599,6 +600,29 @@ async def get_macd_signals(
     except Exception as e:
         logger.exception("Failed to query MACD signals: %s", e)
         return [], 0
+
+
+async def get_signals_by_keys(
+    keys: list[tuple[str, str, int]], timeframe: str = "2h"
+) -> dict[tuple[str, str, int], dict]:
+    if _session_maker is None or not keys:
+        return {}
+
+    try:
+        async with _session_maker() as session:
+            stmt = select(MacdSignalModel).where(
+                MacdSignalModel.timeframe == timeframe,
+                tuple_(
+                    MacdSignalModel.symbol,
+                    MacdSignalModel.side,
+                    MacdSignalModel.cross_candle_ms,
+                ).in_(list(set(keys))),
+            )
+            records = (await session.execute(stmt)).scalars().all()
+            return {(r.symbol, r.side, r.cross_candle_ms): r.to_dict() for r in records}
+    except Exception as e:
+        logger.error("Failed to look up signals by key: %s", e)
+        return {}
 
 
 async def get_signal_by_id(signal_id: int) -> dict | None:

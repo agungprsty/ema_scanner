@@ -39,6 +39,7 @@ from src.services.db import (
     get_macd_signals_summary,
     get_profitloss_history,
     get_signal_by_id,
+    get_signals_by_keys,
     get_watchlist,
     init_db,
     is_db_connected,
@@ -709,6 +710,23 @@ async def run_macd_scan(
                 is_new=is_new,
             )
         )
+
+    stored = await get_signals_by_keys(
+        [(sig.symbol, sig.side, sig.cross_candle_ms) for sig in detected], timeframe=timeframe
+    )
+    for sig, item in zip(detected, signals_output, strict=True):
+        record = stored.get((sig.symbol, sig.side, sig.cross_candle_ms))
+        if record:
+            item.id = record["id"]
+            item.win_status = record["win_status"]
+            item.cross_time = record["cross_time"]
+            item.cross_price = record["cross_price"]
+            item.close = record["close_price"]
+            item.entry_price = record["entry_price"]
+            item.stop_loss = record["stop_loss"]
+            item.tp1 = record["tp1"]
+            item.risk_reward_ratio = record["risk_reward_ratio"]
+            item.confirmed = record["is_confirmed"]
 
     # Trigger outcome evaluation asynchronously
     background_tasks.add_task(evaluate_pending_signals, client)
