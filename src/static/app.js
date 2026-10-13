@@ -97,6 +97,17 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  function escapeHtml(value) {
+    if (value == null) return '';
+    return String(value).replace(/[&<>"']/g, ch => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    }[ch]));
+  }
+
   function getApiKey() {
     return localStorage.getItem('tokyo_api_key') || '';
   }
@@ -179,7 +190,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const pending = data.pending_count || 0;
       const winRatioEl = document.getElementById('stat-win-ratio');
       if (winRatioEl) {
-        winRatioEl.innerHTML = `<span class="color-long">${wins} Win</span> / <span class="color-short">${losses} Loss</span>`;
+        winRatioEl.innerHTML = `<span class="color-long">${escapeHtml(wins)} Win</span> / <span class="color-short">${escapeHtml(losses)} Loss</span>`;
       }
       const pendingEl = document.getElementById('stat-active-pending');
       if (pendingEl) {
@@ -259,18 +270,18 @@ document.addEventListener('DOMContentLoaded', () => {
       const timeStr = formatWIB(s.cross_time);
 
       return `
-        <tr class="clickable-row" data-symbol="${s.symbol}">
-          <td class="tag-symbol">${s.symbol}</td>
-          <td><span class="badge-drift ${badgeCls}">${arrow} ${s.side}</span></td>
+        <tr class="clickable-row" data-symbol="${escapeHtml(s.symbol)}">
+          <td class="tag-symbol">${escapeHtml(s.symbol)}</td>
+          <td><span class="badge-drift ${badgeCls}">${arrow} ${escapeHtml(s.side)}</span></td>
           <td style="color:var(--pink); font-weight:700;">2H</td>
           <td style="color:var(--cyan); font-weight:700;">$${formatPrice(s.entry_price || s.cross_price)}</td>
           <td style="color:var(--short); font-weight:600;">$${formatPrice(s.stop_loss)}</td>
           <td style="color:var(--long); font-weight:600;">$${formatPrice(s.tp1)}</td>
-          <td style="font-weight:700; color:var(--pink);">1:${s.risk_reward_ratio || 1.5}</td>
+          <td style="font-weight:700; color:var(--pink);">1:${escapeHtml(s.risk_reward_ratio || 1.5)}</td>
           <td>${outcomeBadge}</td>
-          <td style="color:var(--text-muted); font-size:0.75rem;">${timeStr}</td>
+          <td style="color:var(--text-muted); font-size:0.75rem;">${escapeHtml(timeStr)}</td>
           <td>
-            <button class="btn-outline btn-view-chart" style="padding:4px 10px; font-size:0.7rem;" data-symbol="${s.symbol}">
+            <button class="btn-outline btn-view-chart" style="padding:4px 10px; font-size:0.7rem;" data-symbol="${escapeHtml(s.symbol)}">
               VIEW CHART >
             </button>
           </td>
@@ -294,11 +305,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const timeStr = formatWIB(s.cross_time);
 
       return `
-        <div class="sig-card clickable-row" data-symbol="${s.symbol}">
+        <div class="sig-card clickable-row" data-symbol="${escapeHtml(s.symbol)}">
           <div class="sig-card-header">
             <div class="sig-card-title">
-              <span class="tag-symbol">${s.symbol}</span>
-              <span class="badge-drift ${badgeCls}">${arrow} ${s.side}, 2H</span>
+              <span class="tag-symbol">${escapeHtml(s.symbol)}</span>
+              <span class="badge-drift ${badgeCls}">${arrow} ${escapeHtml(s.side)}, 2H</span>
             </div>
             <div>${outcomeBadge}</div>
           </div>
@@ -319,7 +330,7 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
 
           <div class="sig-card-footer">
-            <span style="font-family:var(--font-mono); font-size:0.7rem; color:var(--text-muted);">${timeStr}</span>
+            <span style="font-family:var(--font-mono); font-size:0.7rem; color:var(--text-muted);">${escapeHtml(timeStr)}</span>
             <button class="btn-outline" style="padding:5px 12px; font-size:0.72rem; color:var(--cyan); border-color:var(--border-cyan);">
               VIEW CHART >
             </button>
@@ -396,16 +407,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
       return `
         <tr>
-          <td class="tag-symbol">${item.symbol}</td>
-          <td><span class="badge-drift ${item.direction === 'LONG' ? 'badge-drift-long' : 'badge-drift-short'}">${item.direction}</span></td>
-          <td style="color:var(--pink); font-weight:700;">${item.timeframe || '2h'}</td>
+          <td class="tag-symbol">${escapeHtml(item.symbol)}</td>
+          <td><span class="badge-drift ${item.direction === 'LONG' ? 'badge-drift-long' : 'badge-drift-short'}">${escapeHtml(item.direction)}</span></td>
+          <td style="color:var(--pink); font-weight:700;">${escapeHtml(item.timeframe || '2h')}</td>
           <td style="color:var(--cyan); font-weight:700;">$${formatPrice(item.entry_price)}</td>
           <td style="font-weight:700;">$${formatPrice(item.exit_price)}</td>
           <td>${badgeHtml}</td>
           <td style="color:${pnlColor}; font-weight:800;">${pnlSign}${item.pnl_percent.toFixed(2)}%</td>
-          <td style="color:var(--pink); font-weight:700;">1:${item.risk_reward_ratio || 1.5}</td>
-          <td style="color:var(--text-muted); font-size:0.75rem;">${formatWIB(item.cross_time)}</td>
-          <td style="color:var(--text-secondary); font-size:0.75rem;">${formatWIB(item.exit_time)}</td>
+          <td style="color:var(--pink); font-weight:700;">1:${escapeHtml(item.risk_reward_ratio || 1.5)}</td>
+          <td style="color:var(--text-muted); font-size:0.75rem;">${escapeHtml(formatWIB(item.cross_time))}</td>
+          <td style="color:var(--text-secondary); font-size:0.75rem;">${escapeHtml(formatWIB(item.exit_time))}</td>
         </tr>
       `;
     }).join('');
@@ -423,8 +434,8 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="sig-card">
           <div class="sig-card-header">
             <div class="sig-card-title">
-              <span class="tag-symbol">${item.symbol}</span>
-              <span class="badge-drift ${item.direction === 'LONG' ? 'badge-drift-long' : 'badge-drift-short'}">${item.direction}, ${item.timeframe}</span>
+              <span class="tag-symbol">${escapeHtml(item.symbol)}</span>
+              <span class="badge-drift ${item.direction === 'LONG' ? 'badge-drift-long' : 'badge-drift-short'}">${escapeHtml(item.direction)}, ${escapeHtml(item.timeframe)}</span>
             </div>
             <div>${badgeHtml}</div>
           </div>
@@ -446,10 +457,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
           <div class="sig-card-footer">
             <span style="font-family:var(--font-mono); font-size:0.68rem; color:var(--text-muted);">
-              Signal: ${formatWIB(item.cross_time)}
+              Signal: ${escapeHtml(formatWIB(item.cross_time))}
             </span>
             <span style="font-family:var(--font-mono); font-size:0.68rem; color:var(--text-secondary);">
-              Exit: ${formatWIB(item.exit_time)}
+              Exit: ${escapeHtml(formatWIB(item.exit_time))}
             </span>
           </div>
         </div>
@@ -474,18 +485,18 @@ document.addEventListener('DOMContentLoaded', () => {
       <div class="wl-chip">
         <div>
           <div style="font-family:var(--font-display); font-weight:800; font-size:0.92rem; color:#ffffff;">
-            ${item.symbol}
+            ${escapeHtml(item.symbol)}
           </div>
           <div style="font-family:var(--font-mono); font-size:0.68rem; color:var(--text-muted);">
-            ${item.notes || 'USDT-M Futures'}
+            ${escapeHtml(item.notes || 'USDT-M Futures')}
           </div>
         </div>
         <div style="display:flex; align-items:center; gap:12px;">
           <label class="switch">
-            <input type="checkbox" class="wl-toggle" data-symbol="${item.symbol}" ${item.is_active ? 'checked' : ''}>
+            <input type="checkbox" class="wl-toggle" data-symbol="${escapeHtml(item.symbol)}" ${item.is_active ? 'checked' : ''}>
             <span class="slider"></span>
           </label>
-          <button class="btn-del wl-delete" data-symbol="${item.symbol}">&times;</button>
+          <button class="btn-del wl-delete" data-symbol="${escapeHtml(item.symbol)}">&times;</button>
         </div>
       </div>
     `).join('');
@@ -494,7 +505,7 @@ document.addEventListener('DOMContentLoaded', () => {
       input.addEventListener('change', async (e) => {
         const sym = e.target.getAttribute('data-symbol');
         const active = e.target.checked;
-        await authFetch(`/api/watchlist/${sym}/toggle`, {
+        await authFetch(`/api/watchlist/${encodeURIComponent(sym)}/toggle`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ is_active: active }),
@@ -507,7 +518,7 @@ document.addEventListener('DOMContentLoaded', () => {
       btn.addEventListener('click', async (e) => {
         const sym = e.target.getAttribute('data-symbol');
         if (confirm(`Remove ${sym} from Watchlist?`)) {
-          await authFetch(`/api/watchlist/${sym}`, { method: 'DELETE' });
+          await authFetch(`/api/watchlist/${encodeURIComponent(sym)}`, { method: 'DELETE' });
           await loadWatchlist();
           await loadSummary();
         }
@@ -714,7 +725,7 @@ document.addEventListener('DOMContentLoaded', () => {
     chartViewport.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--cyan);font-family:var(--font-display);font-size:0.85rem;"><span class="spinner" style="margin-right:10px;"></span> LOADING 2H CANDLESTICK TELEMETRY (UTC+7)...</div>';
 
     try {
-      const res = await fetch(`/api/klines?symbol=${sig.symbol}&limit=80`);
+      const res = await fetch(`/api/klines?symbol=${encodeURIComponent(sig.symbol)}&limit=80`);
       const payload = await res.json();
       chartViewport.innerHTML = '';
 

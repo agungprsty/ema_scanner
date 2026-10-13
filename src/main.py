@@ -139,7 +139,7 @@ app.mount("/static", StaticFiles(directory="src/static"), name="static")
 
 
 class WatchlistAddRequest(BaseModel):
-    symbol: str = Field(min_length=2, max_length=20)
+    symbol: str = Field(pattern=r"^[A-Za-z0-9]{2,20}$")
     notes: str = Field(default="", max_length=100)
 
 
