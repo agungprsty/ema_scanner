@@ -5,6 +5,15 @@ from src.main import app
 
 pytestmark = pytest.mark.unit
 
+TEST_API_KEY = "test_api_secret_key"
+AUTH_HEADERS = {"X-API-KEY": TEST_API_KEY}
+
+
+@pytest.fixture(autouse=True)
+def api_secret_key(monkeypatch):
+    monkeypatch.setattr("src.main.API_SECRET_KEY", TEST_API_KEY)
+    return TEST_API_KEY
+
 
 @pytest.fixture(autouse=True)
 def mock_db_services(monkeypatch):
@@ -155,7 +164,7 @@ async def test_info_endpoint():
 @pytest.mark.asyncio
 async def test_watchlist_lifecycle():
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test", headers=AUTH_HEADERS) as client:
         # 1. List
         resp = await client.get("/api/watchlist")
         assert resp.status_code == 200
@@ -206,7 +215,7 @@ async def test_signals_list_and_filters():
 @pytest.mark.asyncio
 async def test_profitloss_history_lifecycle():
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test", headers=AUTH_HEADERS) as client:
         # 1. Add record
         record_payload = {
             "symbol": "ETHUSDT",
@@ -252,36 +261,71 @@ async def test_cron_endpoints():
 
 
 @pytest.mark.asyncio
-async def test_api_key_protection(monkeypatch):
-    from src import main
-
+async def test_api_key_protection():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # Without key set, should succeed
-        resp = await client.post("/api/watchlist", json={"symbol": "KEYTESTUSDT"})
-        assert resp.status_code == 200
-
-        # Enable API_SECRET_KEY
-        monkeypatch.setattr(main, "API_SECRET_KEY", "super_secret_vps_key")
-
-        # Request without key should fail with 401
-        fail_resp = await client.post("/api/watchlist", json={"symbol": "KEYTEST2USDT"})
+        fail_resp = await client.post("/api/watchlist", json={"symbol": "KEYTESTUSDT"})
         assert fail_resp.status_code == 401
 
-        # Request with correct X-API-KEY should succeed
         ok_resp = await client.post(
             "/api/watchlist",
-            json={"symbol": "KEYTEST2USDT"},
-            headers={"X-API-KEY": "super_secret_vps_key"},
+            json={"symbol": "KEYTESTUSDT"},
+            headers=AUTH_HEADERS,
         )
         assert ok_resp.status_code == 200
 
-        # Cleanup
-        await client.delete(
-            "/api/watchlist/KEYTESTUSDT",
-            headers={"X-API-KEY": "super_secret_vps_key"},
+        bearer_resp = await client.post(
+            "/api/watchlist",
+            json={"symbol": "KEYTEST2USDT"},
+            headers={"Authorization": f"Bearer {TEST_API_KEY}"},
         )
-        await client.delete(
-            "/api/watchlist/KEYTEST2USDT",
-            headers={"X-API-KEY": "super_secret_vps_key"},
+        assert bearer_resp.status_code == 200
+
+        await client.delete("/api/watchlist/KEYTESTUSDT", headers=AUTH_HEADERS)
+        await client.delete("/api/watchlist/KEYTEST2USDT", headers=AUTH_HEADERS)
+
+
+@pytest.mark.asyncio
+async def test_api_key_unset_returns_503(monkeypatch):
+    monkeypatch.setattr("src.main.API_SECRET_KEY", "")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/watchlist", json={"symbol": "KEYTESTUSDT"}, headers=AUTH_HEADERS)
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "API key not configured on server"
+
+        no_header_resp = await client.post("/api/cron/trigger")
+        assert no_header_resp.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_api_key_placeholder_returns_503(monkeypatch):
+    placeholder = "your_secret_api_key_here"
+    monkeypatch.setattr("src.main.API_SECRET_KEY", placeholder)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/watchlist", json={"symbol": "KEYTESTUSDT"}, headers={"X-API-KEY": placeholder}
         )
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "API key not configured on server"
+
+
+@pytest.mark.asyncio
+async def test_api_key_wrong_returns_401():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/watchlist",
+            json={"symbol": "KEYTESTUSDT"},
+            headers={"X-API-KEY": "wrong_key"},
+        )
+        assert resp.status_code == 401
+        assert resp.headers["www-authenticate"] == "Bearer"
+
+        bearer_resp = await client.post(
+            "/api/watchlist",
+            json={"symbol": "KEYTESTUSDT"},
+            headers={"Authorization": "Bearer wrong_key"},
+        )
+        assert bearer_resp.status_code == 401

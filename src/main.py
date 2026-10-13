@@ -1,14 +1,15 @@
 import asyncio
 import logging
+import secrets
 import time
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
 
 from src.config.settings import (
     API_SECRET_KEY,
@@ -22,6 +23,8 @@ from src.config.settings import (
     MACD_SLOW,
     MACD_TIMEFRAME,
     SCAN_CONCURRENCY,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID,
     VOLUME_THRESHOLD_USD,
 )
 from src.data_feed.binance_client import create_futures_client
@@ -36,6 +39,7 @@ from src.services.db import (
     get_macd_signals_summary,
     get_profitloss_history,
     get_signal_by_id,
+    get_signals_by_keys,
     get_watchlist,
     init_db,
     is_db_connected,
@@ -44,11 +48,14 @@ from src.services.db import (
     toggle_watchlist_symbol,
 )
 from src.services.redis_client import (
+    claim_cross,
     close_redis,
+    get_cached_json,
     init_redis,
     is_cross_detected,
     is_redis_connected,
-    mark_cross_detected,
+    release_cross,
+    set_cached_json,
 )
 from src.services.telegram import send_alert
 from src.strategy.macd import compute_macd, detect_macd_cross
@@ -56,6 +63,8 @@ from src.strategy.macd import compute_macd, detect_macd_cross
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 _client = None
@@ -68,8 +77,23 @@ def _get_client():
     return _client
 
 
+_API_KEY_MIN_LENGTH = 16
+_API_KEY_PLACEHOLDERS = frozenset({"your_secret_api_key_here", "changeme", "change_me", "secret", "password"})
+
+
+def _api_key_configured() -> bool:
+    key = API_SECRET_KEY or ""
+    return len(key) >= _API_KEY_MIN_LENGTH and key.lower() not in _API_KEY_PLACEHOLDERS
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if not _api_key_configured():
+        logger.warning(
+            "API_SECRET_KEY is unset, a placeholder, or shorter than %d characters; "
+            "protected endpoints are disabled and will return 503",
+            _API_KEY_MIN_LENGTH,
+        )
     await init_db()
     await init_redis()
     cron_scheduler.start(_get_client)
@@ -100,8 +124,8 @@ async def verify_api_key(
     x_api_key: Annotated[str | None, Header(alias="X-API-KEY")] = None,
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
 ) -> bool:
-    if not API_SECRET_KEY:
-        return True
+    if not _api_key_configured():
+        raise HTTPException(status_code=503, detail="API key not configured on server")
 
     token = None
     if x_api_key:
@@ -109,7 +133,7 @@ async def verify_api_key(
     elif authorization and authorization.lower().startswith("bearer "):
         token = authorization[7:].strip()
 
-    if token != API_SECRET_KEY:
+    if not token or not secrets.compare_digest(token.encode("utf-8"), API_SECRET_KEY.encode("utf-8")):
         raise HTTPException(
             status_code=401,
             detail="Unauthorized: Invalid or missing API Key",
@@ -121,7 +145,7 @@ app.mount("/static", StaticFiles(directory="src/static"), name="static")
 
 
 class WatchlistAddRequest(BaseModel):
-    symbol: str = Field(min_length=2, max_length=20)
+    symbol: str = Field(pattern=r"^[A-Za-z0-9]{2,20}$")
     notes: str = Field(default="", max_length=100)
 
 
@@ -291,22 +315,142 @@ async def toggle_symbol_status(symbol: str, body: WatchlistToggleRequest):
 
 
 # Chart Klines Endpoint
+KLINES_CACHE_TTL = 60
+KLINES_MISS_TTL = 120
+KLINES_FETCH_LIMIT = 499
+KLINES_UPSTREAM_BUDGET = 60
+KLINES_BUDGET_WINDOW = 60
+_klines_budget = {"window": 0, "count": 0}
+
+
+def _consume_klines_budget() -> bool:
+    window = int(time.time() // KLINES_BUDGET_WINDOW)
+    if _klines_budget["window"] != window:
+        _klines_budget["window"] = window
+        _klines_budget["count"] = 0
+    if _klines_budget["count"] >= KLINES_UPSTREAM_BUDGET:
+        return False
+    _klines_budget["count"] += 1
+    return True
+
+
+def _slice_klines(payload: dict, limit: int) -> dict:
+    return {**payload, "candles": payload["candles"][-limit:], "macd": payload["macd"][-limit:]}
+
+
+KLINES_SYMBOLS_KEY = "klines:symbols"
+KLINES_SYMBOLS_TTL = 3600
+KLINES_SYMBOLS_RETRY = 60
+_klines_symbols: dict = {"symbols": None, "expires": 0.0, "retry_at": 0.0}
+_klines_inflight: dict[tuple, asyncio.Future] = {}
+
+
+async def _single_flight(key: tuple, factory):
+    fut = _klines_inflight.get(key)
+    if fut is None:
+        fut = asyncio.ensure_future(factory())
+        _klines_inflight[key] = fut
+
+        def _cleanup(done: asyncio.Future) -> None:
+            if _klines_inflight.get(key) is done:
+                del _klines_inflight[key]
+
+        fut.add_done_callback(_cleanup)
+    return await asyncio.shield(fut)
+
+
+def _normalize_symbol(value: str) -> str:
+    sym = value.strip().upper()
+    if not (2 <= len(sym) <= 30 and sym.isalnum()):
+        raise ValueError("symbol must be 2-30 letters or digits")
+    return sym
+
+
+async def _refresh_valid_symbols() -> dict[str, str] | None:
+    now = time.time()
+    cached = await get_cached_json(KLINES_SYMBOLS_KEY)
+    symbols = cached.get("symbols") if cached else None
+    fetched_at = cached.get("fetched_at", now) if cached else now
+    if not symbols:
+        try:
+            info = await asyncio.to_thread(_get_client().exchange_info)
+            symbols = [s["symbol"] for s in info.get("symbols", []) if s.get("symbol")]
+        except Exception:
+            logger.exception("Failed to load exchange info for symbol validation")
+            symbols = None
+        if symbols:
+            fetched_at = now
+            await set_cached_json(
+                KLINES_SYMBOLS_KEY, {"symbols": symbols, "fetched_at": now}, ttl=KLINES_SYMBOLS_TTL
+            )
+    if symbols:
+        _klines_symbols["symbols"] = {s.upper(): s for s in symbols}
+        _klines_symbols["expires"] = max(fetched_at + KLINES_SYMBOLS_TTL, now + KLINES_SYMBOLS_RETRY)
+    else:
+        _klines_symbols["retry_at"] = now + KLINES_SYMBOLS_RETRY
+    return _klines_symbols["symbols"]
+
+
+async def _get_valid_symbols() -> dict[str, str] | None:
+    now = time.time()
+    if now < _klines_symbols["expires"] or now < _klines_symbols["retry_at"]:
+        return _klines_symbols["symbols"]
+    try:
+        return await _single_flight(("symbols",), _refresh_valid_symbols)
+    except Exception:
+        logger.exception("Symbol list refresh failed")
+        return _klines_symbols["symbols"]
+
+
+async def _load_klines(sym: str, interval: str) -> dict:
+    cache_key = f"klines:{interval}:{sym}"
+    miss_key = f"{cache_key}:miss"
+    cached = await get_cached_json(cache_key)
+    if cached:
+        return cached
+
+    if await get_cached_json(miss_key):
+        raise HTTPException(status_code=502, detail="Failed to load candle data from upstream")
+
+    if not _consume_klines_budget():
+        raise HTTPException(status_code=503, detail="Chart data temporarily unavailable, retry later")
+
+    try:
+        client = _get_client()
+        payload = await asyncio.to_thread(
+            fetch_candles_payload,
+            client=client,
+            symbol=sym,
+            timeframe=interval,
+            limit=KLINES_FETCH_LIMIT,
+        )
+    except Exception:
+        logger.exception("Klines fetch failed for %s %s", sym, interval)
+        payload = None
+
+    if not payload:
+        await set_cached_json(miss_key, {"miss": True}, ttl=KLINES_MISS_TTL)
+        raise HTTPException(status_code=502, detail="Failed to load candle data from upstream")
+
+    await set_cached_json(cache_key, payload, ttl=KLINES_CACHE_TTL)
+    return payload
+
+
 @app.get("/api/klines")
 async def get_klines_chart(
-    symbol: Annotated[str, Query(description="Symbol name e.g. BTCUSDT")],
-    limit: Annotated[int, Query(ge=35, le=500, description="Candles count")] = 100,
+    symbol: Annotated[
+        str, Query(max_length=64, description="Symbol name e.g. BTCUSDT"), AfterValidator(_normalize_symbol)
+    ],
+    interval: Annotated[Literal["2h"], Query(description="Candle interval")] = "2h",
+    limit: Annotated[int, Query(ge=50, le=500, description="Candles count")] = 100,
 ):
-    client = _get_client()
-    payload = await asyncio.to_thread(
-        fetch_candles_payload,
-        client=client,
-        symbol=symbol.upper().strip(),
-        timeframe="2h",
-        limit=limit,
-    )
-    if not payload:
-        raise HTTPException(status_code=404, detail="Failed to load candle data from Binance")
-    return payload
+    valid = await _get_valid_symbols()
+    if valid is not None:
+        if symbol not in valid:
+            raise HTTPException(status_code=404, detail="Unknown symbol")
+        symbol = valid[symbol]
+    payload = await _single_flight(("klines", interval, symbol), lambda: _load_klines(symbol, interval))
+    return _slice_klines(payload, limit)
 
 
 # Single Signal Detail
@@ -327,6 +471,8 @@ async def get_cron_scheduler_status():
 @app.post("/api/cron/trigger", dependencies=[Depends(verify_api_key)])
 async def trigger_cron_execution():
     res = await cron_scheduler.trigger_now()
+    if res.get("status") in ("skipped", "busy"):
+        raise HTTPException(status_code=409, detail=res.get("message", "Cron job is busy"))
     summary = await get_macd_signals_summary()
     return {"status": "success", "result": res, "summary": summary}
 
@@ -489,23 +635,47 @@ async def run_macd_scan(
     telegram_parts = []
     new_signals_count = 0
 
+    preview = not save_db and not send_telegram
+    alert_enabled = send_telegram and bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
+
     for sig in detected:
-        is_dup = await is_cross_detected(
-            sig.side, sig.symbol, sig.cross_candle_ms, timeframe=timeframe
-        )
-        is_new = not is_dup
+        if preview:
+            is_new = not await is_cross_detected(
+                sig.side, sig.symbol, sig.cross_candle_ms, timeframe=timeframe
+            )
+        else:
+            is_new = await claim_cross(
+                sig.side, sig.symbol, sig.cross_candle_ms, timeframe=timeframe
+            )
         db_id = None
+
+        if is_new and save_db:
+            saved = await save_macd_signal(sig, timeframe=timeframe)
+            if saved and "id" in saved:
+                db_id = saved["id"]
+                if saved.get("inserted") is False:
+                    is_new = False
+            elif alert_enabled:
+                logger.warning(
+                    "Failed to save MACD signal %s %s @ %s; alerting without persistence",
+                    sig.side,
+                    sig.symbol,
+                    sig.cross_candle_ms,
+                )
+            else:
+                is_new = False
+                await release_cross(
+                    sig.side, sig.symbol, sig.cross_candle_ms, timeframe=timeframe
+                )
+                logger.warning(
+                    "Failed to save MACD signal %s %s @ %s; dedup claim released",
+                    sig.side,
+                    sig.symbol,
+                    sig.cross_candle_ms,
+                )
 
         if is_new:
             new_signals_count += 1
-            await mark_cross_detected(
-                sig.side, sig.symbol, sig.cross_candle_ms, timeframe=timeframe
-            )
-            if save_db:
-                saved = await save_macd_signal(sig, timeframe=timeframe)
-                if saved and "id" in saved:
-                    db_id = saved["id"]
-
             emoji = "🟢" if sig.side == "LONG" else "🔴"
             status_tag = "✅ Confirmed" if sig.is_confirmed else "⏳ In Progress"
             telegram_parts.append(
@@ -540,6 +710,23 @@ async def run_macd_scan(
                 is_new=is_new,
             )
         )
+
+    stored = await get_signals_by_keys(
+        [(sig.symbol, sig.side, sig.cross_candle_ms) for sig in detected], timeframe=timeframe
+    )
+    for sig, item in zip(detected, signals_output, strict=True):
+        record = stored.get((sig.symbol, sig.side, sig.cross_candle_ms))
+        if record:
+            item.id = record["id"]
+            item.win_status = record["win_status"]
+            item.cross_time = record["cross_time"]
+            item.cross_price = record["cross_price"]
+            item.close = record["close_price"]
+            item.entry_price = record["entry_price"]
+            item.stop_loss = record["stop_loss"]
+            item.tp1 = record["tp1"]
+            item.risk_reward_ratio = record["risk_reward_ratio"]
+            item.confirmed = record["is_confirmed"]
 
     # Trigger outcome evaluation asynchronously
     background_tasks.add_task(evaluate_pending_signals, client)

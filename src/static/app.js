@@ -1,6 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
   let activeTab = 'scan';
-  let liveSignals = [];
+  let liveSignals = null;
+  let liveGeneration = 0;
   let dbSignals = [];
   let pnlHistory = [];
   let watchlist = [];
@@ -44,6 +45,26 @@ document.addEventListener('DOMContentLoaded', () => {
   const modal = document.getElementById('signal-modal');
   const modalClose = document.getElementById('modal-close');
   const chartViewport = document.getElementById('chart-viewport');
+
+  function createNotice(anchor, placeAfter = false) {
+    const el = document.createElement('div');
+    el.className = 'color-short';
+    el.style.cssText = 'font-family:var(--font-mono); font-size:0.78rem; margin:0 0 12px;';
+    el.hidden = true;
+    if (anchor) {
+      if (placeAfter) anchor.after(el);
+      else anchor.before(el);
+    }
+    return el;
+  }
+
+  function showNotice(el, message) {
+    el.textContent = message || '';
+    el.hidden = !message;
+  }
+
+  const evalNotice = createNotice(document.querySelector('.deck-panel'), true);
+  const watchlistNotice = createNotice(watchlistGrid);
 
   // WIB (UTC+7) Live Clock
   setInterval(() => {
@@ -97,6 +118,17 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  function escapeHtml(value) {
+    if (value == null) return '';
+    return String(value).replace(/[&<>"']/g, ch => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    }[ch]));
+  }
+
   function getApiKey() {
     return localStorage.getItem('tokyo_api_key') || '';
   }
@@ -125,6 +157,34 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
     return res;
+  }
+
+  async function responseError(res) {
+    let detail = null;
+    try {
+      detail = (await res.json()).detail;
+    } catch {
+      detail = null;
+    }
+    if (typeof detail === 'string' && detail) return detail;
+    if (Array.isArray(detail) && detail.length) {
+      return detail.map(d => (d && d.msg) ? d.msg : String(d)).join('; ');
+    }
+    if (res.status === 503) return 'API key not configured on server';
+    return `Request failed (HTTP ${res.status})`;
+  }
+
+  function messageHtml(message) {
+    return `
+        <div style="text-align:center; padding:36px; color:var(--short); font-family:var(--font-mono); font-size:0.85rem;">
+          ${escapeHtml(message)}
+        </div>`;
+  }
+
+  function renderSignalsError(message) {
+    const html = messageHtml(message);
+    tbody.innerHTML = `<tr><td colspan="10">${html}</td></tr>`;
+    mobileContainer.innerHTML = html;
   }
 
   // Health & Cron Status Check
@@ -179,7 +239,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const pending = data.pending_count || 0;
       const winRatioEl = document.getElementById('stat-win-ratio');
       if (winRatioEl) {
-        winRatioEl.innerHTML = `<span class="color-long">${wins} Win</span> / <span class="color-short">${losses} Loss</span>`;
+        winRatioEl.innerHTML = `<span class="color-long">${escapeHtml(wins)} Win</span> / <span class="color-short">${escapeHtml(losses)} Loss</span>`;
       }
       const pendingEl = document.getElementById('stat-active-pending');
       if (pendingEl) {
@@ -259,18 +319,18 @@ document.addEventListener('DOMContentLoaded', () => {
       const timeStr = formatWIB(s.cross_time);
 
       return `
-        <tr class="clickable-row" data-symbol="${s.symbol}">
-          <td class="tag-symbol">${s.symbol}</td>
-          <td><span class="badge-drift ${badgeCls}">${arrow} ${s.side}</span></td>
+        <tr class="clickable-row" data-symbol="${escapeHtml(s.symbol)}">
+          <td class="tag-symbol">${escapeHtml(s.symbol)}</td>
+          <td><span class="badge-drift ${badgeCls}">${arrow} ${escapeHtml(s.side)}</span></td>
           <td style="color:var(--pink); font-weight:700;">2H</td>
           <td style="color:var(--cyan); font-weight:700;">$${formatPrice(s.entry_price || s.cross_price)}</td>
           <td style="color:var(--short); font-weight:600;">$${formatPrice(s.stop_loss)}</td>
           <td style="color:var(--long); font-weight:600;">$${formatPrice(s.tp1)}</td>
-          <td style="font-weight:700; color:var(--pink);">1:${s.risk_reward_ratio || 1.5}</td>
+          <td style="font-weight:700; color:var(--pink);">1:${escapeHtml(s.risk_reward_ratio || 1.5)}</td>
           <td>${outcomeBadge}</td>
-          <td style="color:var(--text-muted); font-size:0.75rem;">${timeStr}</td>
+          <td style="color:var(--text-muted); font-size:0.75rem;">${escapeHtml(timeStr)}</td>
           <td>
-            <button class="btn-outline btn-view-chart" style="padding:4px 10px; font-size:0.7rem;" data-symbol="${s.symbol}">
+            <button class="btn-outline btn-view-chart" style="padding:4px 10px; font-size:0.7rem;" data-symbol="${escapeHtml(s.symbol)}">
               VIEW CHART >
             </button>
           </td>
@@ -294,11 +354,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const timeStr = formatWIB(s.cross_time);
 
       return `
-        <div class="sig-card clickable-row" data-symbol="${s.symbol}">
+        <div class="sig-card clickable-row" data-symbol="${escapeHtml(s.symbol)}">
           <div class="sig-card-header">
             <div class="sig-card-title">
-              <span class="tag-symbol">${s.symbol}</span>
-              <span class="badge-drift ${badgeCls}">${arrow} ${s.side}, 2H</span>
+              <span class="tag-symbol">${escapeHtml(s.symbol)}</span>
+              <span class="badge-drift ${badgeCls}">${arrow} ${escapeHtml(s.side)}, 2H</span>
             </div>
             <div>${outcomeBadge}</div>
           </div>
@@ -319,7 +379,7 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
 
           <div class="sig-card-footer">
-            <span style="font-family:var(--font-mono); font-size:0.7rem; color:var(--text-muted);">${timeStr}</span>
+            <span style="font-family:var(--font-mono); font-size:0.7rem; color:var(--text-muted);">${escapeHtml(timeStr)}</span>
             <button class="btn-outline" style="padding:5px 12px; font-size:0.72rem; color:var(--cyan); border-color:var(--border-cyan);">
               VIEW CHART >
             </button>
@@ -336,6 +396,56 @@ document.addEventListener('DOMContentLoaded', () => {
         if (sig) openChartModal(sig);
       });
     });
+  }
+
+  async function refreshLiveStatuses() {
+    if (!liveSignals) return false;
+    const generation = liveGeneration;
+    const tracked = liveSignals.filter(s => s.id);
+    if (!tracked.length) return false;
+    const updates = await Promise.all(tracked.map(async (s) => {
+      try {
+        const res = await fetch(`/api/signals/${encodeURIComponent(s.id)}`);
+        return res.ok ? await res.json() : null;
+      } catch (e) {
+        return null;
+      }
+    }));
+    if (generation !== liveGeneration) return false;
+    updates.forEach((row, idx) => {
+      if (row && row.win_status) tracked[idx].win_status = row.win_status;
+    });
+    return true;
+  }
+
+  async function refreshLiveView() {
+    const applied = await refreshLiveStatuses();
+    if (applied && activeTab === 'scan') renderScanView();
+    return applied;
+  }
+
+  function scheduleLiveRefresh() {
+    const generation = liveGeneration;
+    if (!(liveSignals || []).some(s => s.id && s.win_status === 'PENDING')) return;
+    [5000, 15000].forEach((delay) => {
+      setTimeout(async () => {
+        if (generation !== liveGeneration) return;
+        if (await refreshLiveView()) await loadSummary();
+      }, delay);
+    });
+  }
+
+  function renderScanView() {
+    if (liveSignals === null) {
+      const idleHtml = `
+        <div style="text-align:center; padding:36px; color:var(--text-muted); font-family:var(--font-mono); font-size:0.85rem;">
+          Click "Launch 2H Scan" to run a MACD scan.
+        </div>`;
+      tbody.innerHTML = `<tr><td colspan="10">${idleHtml}</td></tr>`;
+      mobileContainer.innerHTML = idleHtml;
+      return;
+    }
+    renderSignals(liveSignals);
   }
 
   // Load Profit/Loss History (profitloss_history table)
@@ -396,16 +506,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
       return `
         <tr>
-          <td class="tag-symbol">${item.symbol}</td>
-          <td><span class="badge-drift ${item.direction === 'LONG' ? 'badge-drift-long' : 'badge-drift-short'}">${item.direction}</span></td>
-          <td style="color:var(--pink); font-weight:700;">${item.timeframe || '2h'}</td>
+          <td class="tag-symbol">${escapeHtml(item.symbol)}</td>
+          <td><span class="badge-drift ${item.direction === 'LONG' ? 'badge-drift-long' : 'badge-drift-short'}">${escapeHtml(item.direction)}</span></td>
+          <td style="color:var(--pink); font-weight:700;">${escapeHtml(item.timeframe || '2h')}</td>
           <td style="color:var(--cyan); font-weight:700;">$${formatPrice(item.entry_price)}</td>
           <td style="font-weight:700;">$${formatPrice(item.exit_price)}</td>
           <td>${badgeHtml}</td>
           <td style="color:${pnlColor}; font-weight:800;">${pnlSign}${item.pnl_percent.toFixed(2)}%</td>
-          <td style="color:var(--pink); font-weight:700;">1:${item.risk_reward_ratio || 1.5}</td>
-          <td style="color:var(--text-muted); font-size:0.75rem;">${formatWIB(item.cross_time)}</td>
-          <td style="color:var(--text-secondary); font-size:0.75rem;">${formatWIB(item.exit_time)}</td>
+          <td style="color:var(--pink); font-weight:700;">1:${escapeHtml(item.risk_reward_ratio || 1.5)}</td>
+          <td style="color:var(--text-muted); font-size:0.75rem;">${escapeHtml(formatWIB(item.cross_time))}</td>
+          <td style="color:var(--text-secondary); font-size:0.75rem;">${escapeHtml(formatWIB(item.exit_time))}</td>
         </tr>
       `;
     }).join('');
@@ -423,8 +533,8 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="sig-card">
           <div class="sig-card-header">
             <div class="sig-card-title">
-              <span class="tag-symbol">${item.symbol}</span>
-              <span class="badge-drift ${item.direction === 'LONG' ? 'badge-drift-long' : 'badge-drift-short'}">${item.direction}, ${item.timeframe}</span>
+              <span class="tag-symbol">${escapeHtml(item.symbol)}</span>
+              <span class="badge-drift ${item.direction === 'LONG' ? 'badge-drift-long' : 'badge-drift-short'}">${escapeHtml(item.direction)}, ${escapeHtml(item.timeframe)}</span>
             </div>
             <div>${badgeHtml}</div>
           </div>
@@ -446,10 +556,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
           <div class="sig-card-footer">
             <span style="font-family:var(--font-mono); font-size:0.68rem; color:var(--text-muted);">
-              Signal: ${formatWIB(item.cross_time)}
+              Signal: ${escapeHtml(formatWIB(item.cross_time))}
             </span>
             <span style="font-family:var(--font-mono); font-size:0.68rem; color:var(--text-secondary);">
-              Exit: ${formatWIB(item.exit_time)}
+              Exit: ${escapeHtml(formatWIB(item.exit_time))}
             </span>
           </div>
         </div>
@@ -474,31 +584,39 @@ document.addEventListener('DOMContentLoaded', () => {
       <div class="wl-chip">
         <div>
           <div style="font-family:var(--font-display); font-weight:800; font-size:0.92rem; color:#ffffff;">
-            ${item.symbol}
+            ${escapeHtml(item.symbol)}
           </div>
           <div style="font-family:var(--font-mono); font-size:0.68rem; color:var(--text-muted);">
-            ${item.notes || 'USDT-M Futures'}
+            ${escapeHtml(item.notes || 'USDT-M Futures')}
           </div>
         </div>
         <div style="display:flex; align-items:center; gap:12px;">
           <label class="switch">
-            <input type="checkbox" class="wl-toggle" data-symbol="${item.symbol}" ${item.is_active ? 'checked' : ''}>
+            <input type="checkbox" class="wl-toggle" data-symbol="${escapeHtml(item.symbol)}" ${item.is_active ? 'checked' : ''}>
             <span class="slider"></span>
           </label>
-          <button class="btn-del wl-delete" data-symbol="${item.symbol}">&times;</button>
+          <button class="btn-del wl-delete" data-symbol="${escapeHtml(item.symbol)}">&times;</button>
         </div>
       </div>
     `).join('');
 
     document.querySelectorAll('.wl-toggle').forEach(input => {
-      input.addEventListener('change', async (e) => {
-        const sym = e.target.getAttribute('data-symbol');
-        const active = e.target.checked;
-        await authFetch(`/api/watchlist/${sym}/toggle`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ is_active: active }),
-        });
+      input.addEventListener('change', async () => {
+        const sym = input.getAttribute('data-symbol');
+        const active = input.checked;
+        try {
+          const res = await authFetch(`/api/watchlist/${encodeURIComponent(sym)}/toggle`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ is_active: active }),
+          });
+          if (!res.ok) throw new Error(await responseError(res));
+          showNotice(watchlistNotice, '');
+        } catch (err) {
+          input.checked = !active;
+          showNotice(watchlistNotice, `Failed to update ${sym}: ${err.message}`);
+          return;
+        }
         await loadSummary();
       });
     });
@@ -507,7 +625,14 @@ document.addEventListener('DOMContentLoaded', () => {
       btn.addEventListener('click', async (e) => {
         const sym = e.target.getAttribute('data-symbol');
         if (confirm(`Remove ${sym} from Watchlist?`)) {
-          await authFetch(`/api/watchlist/${sym}`, { method: 'DELETE' });
+          try {
+            const res = await authFetch(`/api/watchlist/${encodeURIComponent(sym)}`, { method: 'DELETE' });
+            if (!res.ok) throw new Error(await responseError(res));
+            showNotice(watchlistNotice, '');
+          } catch (err) {
+            showNotice(watchlistNotice, `Failed to remove ${sym}: ${err.message}`);
+            return;
+          }
           await loadWatchlist();
           await loadSummary();
         }
@@ -525,13 +650,13 @@ document.addEventListener('DOMContentLoaded', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ symbol: sym, notes: 'User Added' }),
       });
-      if (res.ok) {
-        inputNewSymbol.value = '';
-        await loadWatchlist();
-        await loadSummary();
-      }
+      if (!res.ok) throw new Error(await responseError(res));
+      inputNewSymbol.value = '';
+      showNotice(watchlistNotice, '');
+      await loadWatchlist();
+      await loadSummary();
     } catch (e) {
-      console.error('Failed to add symbol:', e);
+      showNotice(watchlistNotice, `Failed to add ${sym}: ${e.message}`);
     }
   });
 
@@ -540,6 +665,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const lookback = document.getElementById('select-lookback').value;
     const includeCurrent = document.getElementById('select-forming').value;
 
+    liveGeneration += 1;
     btnScan.disabled = true;
     scanIcon.innerHTML = `<span class="spinner"></span>`;
     scanLabel.textContent = 'DRIFTING 2H...';
@@ -552,15 +678,20 @@ document.addEventListener('DOMContentLoaded', () => {
       });
 
       const res = await authFetch(`/api/macd-scan?${params.toString()}`);
+      if (!res.ok) throw new Error(await responseError(res));
       const data = await res.json();
       liveSignals = data.signals || [];
       activeTab = 'scan';
       switchView('signals');
       updateNavButtons();
       renderSignals(liveSignals);
+      scheduleLiveRefresh();
       await loadSummary();
     } catch (e) {
-      console.error('Scan error:', e);
+      activeTab = 'scan';
+      switchView('signals');
+      updateNavButtons();
+      renderSignalsError(`Scan failed: ${e.message}`);
     } finally {
       btnScan.disabled = false;
       scanIcon.innerHTML = '🏎️💨';
@@ -596,17 +727,19 @@ document.addEventListener('DOMContentLoaded', () => {
     btnEval.disabled = true;
     btnEval.textContent = 'Evaluating...';
     try {
-      await authFetch('/api/evaluate', { method: 'POST' });
+      const res = await authFetch('/api/evaluate', { method: 'POST' });
+      if (!res.ok) throw new Error(await responseError(res));
+      showNotice(evalNotice, '');
       await loadSummary();
       if (activeTab === 'history') {
         await loadHistory();
       } else if (activeTab === 'profitloss') {
         await loadProfitLossHistory();
       } else {
-        renderSignals(liveSignals);
+        await refreshLiveView();
       }
     } catch (e) {
-      console.error('Eval error:', e);
+      showNotice(evalNotice, `Evaluate failed: ${e.message}`);
     } finally {
       btnEval.disabled = false;
       btnEval.textContent = '⚖️ Evaluate Outcomes';
@@ -640,11 +773,12 @@ document.addEventListener('DOMContentLoaded', () => {
     tabWatchlist.className = activeTab === 'watchlist' ? 'nav-btn active' : 'nav-btn';
   }
 
-  tabScan.addEventListener('click', () => {
+  tabScan.addEventListener('click', async () => {
     activeTab = 'scan';
     switchView('signals');
     updateNavButtons();
-    renderSignals(liveSignals);
+    renderScanView();
+    await refreshLiveView();
   });
 
   tabHistory.addEventListener('click', () => {
@@ -671,7 +805,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Dynamic Filtering on inputs
   function onFilterChanged() {
     if (activeTab === 'scan') {
-      renderSignals(liveSignals);
+      renderScanView();
     } else if (activeTab === 'history') {
       loadHistory();
     } else if (activeTab === 'profitloss') {
@@ -714,8 +848,16 @@ document.addEventListener('DOMContentLoaded', () => {
     chartViewport.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--cyan);font-family:var(--font-display);font-size:0.85rem;"><span class="spinner" style="margin-right:10px;"></span> LOADING 2H CANDLESTICK TELEMETRY (UTC+7)...</div>';
 
     try {
-      const res = await fetch(`/api/klines?symbol=${sig.symbol}&limit=80`);
+      const res = await fetch(`/api/klines?symbol=${encodeURIComponent(sig.symbol)}&limit=80`);
+      if (!res.ok) {
+        showChartMessage(`Chart unavailable: ${await responseError(res)}`);
+        return;
+      }
       const payload = await res.json();
+      if (!Array.isArray(payload.candles) || payload.candles.length === 0) {
+        showChartMessage('No candle data available for this symbol.');
+        return;
+      }
       chartViewport.innerHTML = '';
 
       if (window.LightweightCharts) {
@@ -757,7 +899,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Shift candle timestamps by +7 hours to render natively in UTC+7 (WIB)
         const UTC7_OFFSET_SEC = 7 * 3600;
-        const candles = (payload.candles || []).map(c => ({
+        const candles = payload.candles.map(c => ({
           ...c,
           time: c.time + UTC7_OFFSET_SEC,
         }));
@@ -826,8 +968,12 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } catch (e) {
       console.error('Failed to render chart:', e);
-      chartViewport.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--short);font-family:var(--font-mono);font-size:0.8rem;">Failed to fetch candle data from Binance.</div>';
+      showChartMessage('Failed to fetch candle data from Binance.');
     }
+  }
+
+  function showChartMessage(message) {
+    chartViewport.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--short);font-family:var(--font-mono);font-size:0.8rem;text-align:center;padding:0 16px;">${escapeHtml(message)}</div>`;
   }
 
   modalClose.addEventListener('click', () => { modal.style.display = 'none'; });
@@ -838,5 +984,5 @@ document.addEventListener('DOMContentLoaded', () => {
   checkHealth();
   loadSummary();
   loadWatchlist();
-  runScan();
+  renderScanView();
 });

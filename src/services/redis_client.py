@@ -1,5 +1,6 @@
 import json
 import logging
+import secrets
 
 import redis.asyncio as aioredis
 
@@ -10,6 +11,10 @@ logger = logging.getLogger(__name__)
 _redis: aioredis.Redis | None = None
 CROSS_TTL = 3600 * 24
 SCAN_CACHE_TTL = 30
+LOCAL_LOCK_TOKEN = "local"
+_RELEASE_LOCK_SCRIPT = (
+    "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end"
+)
 
 
 async def init_redis() -> bool:
@@ -73,19 +78,32 @@ async def is_cross_detected(
         return False
 
 
-async def mark_cross_detected(
+async def claim_cross(
     side: str,
     symbol: str,
     candle_ms: int,
     timeframe: str = "2h",
     ttl: int = CROSS_TTL,
+) -> bool:
+    if _redis is None:
+        return True
+    try:
+        res = await _redis.set(_dedup_key(side, symbol, candle_ms, timeframe), "1", nx=True, ex=ttl)
+        return bool(res)
+    except Exception as e:
+        logger.warning("Redis claim cross error: %s", e)
+        return True
+
+
+async def release_cross(
+    side: str, symbol: str, candle_ms: int, timeframe: str = "2h"
 ) -> None:
     if _redis is None:
         return
     try:
-        await _redis.setex(_dedup_key(side, symbol, candle_ms, timeframe), ttl, "1")
+        await _redis.delete(_dedup_key(side, symbol, candle_ms, timeframe))
     except Exception as e:
-        logger.warning("Redis mark cross error: %s", e)
+        logger.warning("Redis release cross error: %s", e)
 
 
 async def get_cached_json(key: str) -> dict | None:
@@ -109,21 +127,22 @@ async def set_cached_json(key: str, data: dict, ttl: int = SCAN_CACHE_TTL) -> No
         logger.warning("Redis set error for key %s: %s", key, e)
 
 
-async def acquire_lock(lock_name: str, timeout_seconds: int = 300) -> bool:
+async def acquire_lock(lock_name: str, timeout_seconds: int = 300) -> str | None:
     if _redis is None:
-        return True
+        return LOCAL_LOCK_TOKEN
+    token = secrets.token_hex(16)
     try:
-        res = await _redis.set(f"lock:{lock_name}", "1", nx=True, ex=timeout_seconds)
-        return bool(res)
+        res = await _redis.set(f"lock:{lock_name}", token, nx=True, ex=timeout_seconds)
+        return token if res else None
     except Exception as e:
         logger.warning("Failed to acquire Redis lock %s: %s", lock_name, e)
-        return True
+        return LOCAL_LOCK_TOKEN
 
 
-async def release_lock(lock_name: str) -> None:
-    if _redis is None:
+async def release_lock(lock_name: str, token: str | None) -> None:
+    if _redis is None or not token or token == LOCAL_LOCK_TOKEN:
         return
     try:
-        await _redis.delete(f"lock:{lock_name}")
+        await _redis.eval(_RELEASE_LOCK_SCRIPT, 1, f"lock:{lock_name}", token)
     except Exception as e:
         logger.warning("Failed to release Redis lock %s: %s", lock_name, e)

@@ -13,6 +13,8 @@ from src.config.settings import (
     MACD_SLOW,
     MACD_TIMEFRAME,
     SCAN_CONCURRENCY,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID,
 )
 from src.data_feed.ohlcv import fetch_klines
 from src.services.db import (
@@ -22,8 +24,8 @@ from src.services.db import (
 )
 from src.services.redis_client import (
     acquire_lock,
-    is_cross_detected,
-    mark_cross_detected,
+    claim_cross,
+    release_cross,
     release_lock,
 )
 from src.services.telegram import send_alert
@@ -134,24 +136,32 @@ class MacdCronScheduler:
 
     async def _execute_job(self, is_manual: bool = False) -> dict:
         lock_name = "cron:2h_execution"
-        acquired = await acquire_lock(lock_name, timeout_seconds=180)
-        if not acquired and not is_manual:
-            logger.info("[CRON] Job skipped: already acquired/executed by another worker")
-            return {"status": "skipped", "message": "Already executed by another worker"}
+        if is_manual and self._lock.locked():
+            logger.info("[CRON] Manual trigger rejected: a job is already running")
+            return {"status": "busy", "message": "A cron job is already running, try again later"}
 
+        await self._lock.acquire()
+        token = None
         try:
-            async with self._lock:
-                client = self._client_getter() if self._client_getter else None
-                if client is None:
-                    logger.warning("Cron job execution skipped: Binance client not initialized")
-                    return {"status": "error", "message": "Client not initialized"}
+            token = await acquire_lock(lock_name, timeout_seconds=180)
+            if token is None:
+                if is_manual:
+                    logger.info("[CRON] Manual trigger rejected: lock held by another job")
+                    return {"status": "busy", "message": "A cron job is already running or just ran, try again later"}
+                logger.info("[CRON] Job skipped: already acquired/executed by another worker")
+                return {"status": "skipped", "message": "Already executed by another worker"}
 
-                start_time = time.perf_counter()
-                exec_iso = datetime.now(UTC).isoformat()
-                self._last_run = exec_iso
-                self._total_runs += 1
+            client = self._client_getter() if self._client_getter else None
+            if client is None:
+                logger.warning("Cron job execution skipped: Binance client not initialized")
+                return {"status": "error", "message": "Client not initialized"}
 
-                logger.info(">>> [CRON] Starting 2H Scheduled Job (Manual: %s) <<<", is_manual)
+            start_time = time.perf_counter()
+            exec_iso = datetime.now(UTC).isoformat()
+            self._last_run = exec_iso
+            self._total_runs += 1
+
+            logger.info(">>> [CRON] Starting 2H Scheduled Job (Manual: %s) <<<", is_manual)
 
             # Step 1: Evaluate existing pending signals in database
             eval_res = await evaluate_pending_signals(client)
@@ -189,18 +199,37 @@ class MacdCronScheduler:
                 tasks = [_detect_symbol(s) for s in symbols]
                 results = await asyncio.gather(*tasks)
                 detected = [r for r in results if r is not None]
+                alert_enabled = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 
                 for sig in detected:
-                    is_dup = await is_cross_detected(
+                    claimed = await claim_cross(
                         sig.side, sig.symbol, sig.cross_candle_ms, timeframe=MACD_TIMEFRAME
                     )
-                    if not is_dup:
-                        new_signals_found += 1
-                        await mark_cross_detected(
-                            sig.side, sig.symbol, sig.cross_candle_ms, timeframe=MACD_TIMEFRAME
-                        )
-                        await save_macd_signal(sig, timeframe=MACD_TIMEFRAME)
+                    if claimed:
+                        saved = await save_macd_signal(sig, timeframe=MACD_TIMEFRAME)
+                        if saved and "id" in saved:
+                            if saved.get("inserted") is False:
+                                continue
+                        elif alert_enabled:
+                            logger.warning(
+                                "[CRON] Failed to save MACD signal %s %s @ %s; alerting without persistence",
+                                sig.side,
+                                sig.symbol,
+                                sig.cross_candle_ms,
+                            )
+                        else:
+                            await release_cross(
+                                sig.side, sig.symbol, sig.cross_candle_ms, timeframe=MACD_TIMEFRAME
+                            )
+                            logger.warning(
+                                "[CRON] Failed to save MACD signal %s %s @ %s; dedup claim released",
+                                sig.side,
+                                sig.symbol,
+                                sig.cross_candle_ms,
+                            )
+                            continue
 
+                        new_signals_found += 1
                         emoji = "🟢" if sig.side == "LONG" else "🔴"
                         telegram_parts.append(
                             f"{emoji} <b>[CRON 2H] {sig.side}</b> #${sig.symbol}\n"
@@ -227,8 +256,11 @@ class MacdCronScheduler:
                 "symbols_scanned": len(symbols),
             }
         finally:
-            if is_manual:
-                await release_lock(lock_name)
+            try:
+                if is_manual and token is not None:
+                    await release_lock(lock_name, token)
+            finally:
+                self._lock.release()
 
 
 cron_scheduler = MacdCronScheduler()
