@@ -1,1409 +1,699 @@
 <!DOCTYPE html>
-<html lang="id">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>TOKYO DRIFT // MACD 2H QUANT SCANNER (WIB)</title>
-  
-  <!-- Premium Modern Typography -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <title>Crossline</title>
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;700;800;900&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-  
-  <!-- TradingView Lightweight Charts -->
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+
   <script src="https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js"></script>
 
   <style>
-    /* ==========================================================================
-       1. DESIGN TOKENS & SYSTEM VARIABLES (Refined Tokyo Drift Fintech)
-       ========================================================================== */
     :root {
-      /* Surface & Atmosphere (Dark Obsidian Glassmorphism) */
-      --bg-base: #06080e;
-      --bg-surface: rgba(11, 16, 28, 0.72);
-      --bg-surface-elevated: rgba(16, 22, 38, 0.85);
-      --bg-card: rgba(14, 20, 34, 0.65);
-      --bg-card-hover: rgba(20, 28, 48, 0.8);
-      --bg-input: rgba(7, 10, 18, 0.75);
-      --bg-inset: rgba(6, 9, 16, 0.65);
+      --bg: #0f1012;
+      --surface: #151619;
+      --surface-2: #1b1c20;
+      --line: #25272c;
+      --line-strong: #34373d;
 
-      /* Glass Borders & Edge Highlights */
-      --border-subtle: rgba(255, 255, 255, 0.08);
-      --border-glass: rgba(255, 255, 255, 0.12);
-      --border-accent-pink: rgba(244, 63, 94, 0.28);
-      --border-accent-cyan: rgba(34, 211, 238, 0.28);
-      --border-focus: rgba(34, 211, 238, 0.45);
+      --text: #e6e7e9;
+      --text-2: #a3a6ad;
+      --text-3: #6f737b;
 
-      /* Tokyo Drift Ambient Accents (Softened Neon) */
-      --sakura-pink: #f43f5e;
-      --sakura-pink-deep: #e11d48;
-      --sakura-glow: rgba(244, 63, 94, 0.22);
-      --sakura-soft: rgba(244, 63, 94, 0.1);
+      --long: #3fb68b;
+      --long-bg: rgba(63, 182, 139, 0.12);
+      --short: #e5605a;
+      --short-bg: rgba(229, 96, 90, 0.12);
+      --entry: #7aa2f7;
+      --warn: #d4a72c;
 
-      --nitro-cyan: #22d3ee;
-      --nitro-cyan-deep: #06b6d4;
-      --nitro-glow: rgba(34, 211, 238, 0.22);
-      --nitro-soft: rgba(34, 211, 238, 0.1);
+      --font-sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
 
-      --cyber-purple: #a855f7;
-      --cyber-purple-soft: rgba(168, 85, 247, 0.1);
-
-      /* Direct Aliases for JavaScript Compatibility */
-      --cyan: var(--nitro-cyan);
-      --pink: var(--sakura-pink);
-      --border-cyan: var(--border-accent-cyan);
-      --font-racing: var(--font-display);
-
-      /* Directional Indicators (High-End Emerald & Coral) */
-      --color-long: #10b981;
-      --color-long-glow: rgba(16, 185, 129, 0.22);
-      --color-long-soft: rgba(16, 185, 129, 0.1);
-      --long: var(--color-long);
-
-      --color-short: #fb7185;
-      --color-short-glow: rgba(251, 113, 133, 0.22);
-      --color-short-soft: rgba(251, 113, 133, 0.1);
-      --short: var(--color-short);
-
-      /* High-Legibility Typography Colors (Anti-Glare Dark Mode) */
-      --text-primary: #f8fafc;
-      --text-secondary: #94a3b8;
-      --text-muted: #64748b;
-      --text-dim: #475569;
-      --text-dark: #040914;
-
-      /* Typography Families */
-      --font-display: 'Orbitron', -apple-system, sans-serif;
-      --font-body: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      --font-mono: 'JetBrains Mono', monospace;
-
-      /* Radii & Elevation */
-      --radius-xs: 6px;
-      --radius-sm: 10px;
-      --radius-md: 16px;
-      --radius-lg: 22px;
-      --radius-xl: 28px;
-      --radius-full: 9999px;
-
-      --shadow-card: 0 12px 32px -8px rgba(0, 0, 0, 0.55), 0 4px 12px -2px rgba(0, 0, 0, 0.4);
-      --shadow-elevated: 0 24px 56px -12px rgba(0, 0, 0, 0.75);
-      --shadow-glow-cyan: 0 0 24px -2px var(--nitro-glow);
-      --shadow-glow-pink: 0 0 24px -2px var(--sakura-glow);
-      --shadow-btn-nitro: 0 6px 20px -3px rgba(244, 63, 94, 0.4);
-      --shadow-btn-hover: 0 10px 28px -2px rgba(244, 63, 94, 0.55);
+      --radius: 6px;
     }
 
-    /* ==========================================================================
-       2. RESET & BASE ATMOSPHERE
-       ========================================================================== */
-    *, *::before, *::after {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-      -webkit-tap-highlight-color: transparent;
-    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-    html {
-      color-scheme: dark;
-    }
+    html { color-scheme: dark; }
 
     body {
-      font-family: var(--font-body);
-      background-color: var(--bg-base);
-      background-image:
-        radial-gradient(circle 600px at 10% -5%, rgba(244, 63, 94, 0.08) 0%, transparent 70%),
-        radial-gradient(circle 600px at 90% 12%, rgba(34, 211, 238, 0.07) 0%, transparent 70%),
-        radial-gradient(circle 800px at 50% 100%, rgba(168, 85, 247, 0.04) 0%, transparent 70%),
-        linear-gradient(rgba(255, 255, 255, 0.012) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255, 255, 255, 0.012) 1px, transparent 1px);
-      background-size: 100% 100%, 100% 100%, 100% 100%, 48px 48px, 48px 48px;
-      color: var(--text-primary);
-      min-height: 100vh;
-      padding: 12px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 14px;
       line-height: 1.5;
       -webkit-font-smoothing: antialiased;
-      -moz-osx-font-smoothing: grayscale;
+      min-height: 100vh;
     }
 
-    @media (min-width: 768px) {
-      body {
-        padding: 24px 28px;
-      }
-    }
+    button, input, select { font: inherit; color: inherit; }
 
-    .container {
-      max-width: 1380px;
+    :focus-visible { outline: 2px solid var(--entry); outline-offset: 2px; }
+
+    .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+    .muted { color: var(--text-3); }
+    .is-long { color: var(--long); }
+    .is-short { color: var(--short); }
+
+    .wrap {
+      max-width: 1240px;
       margin: 0 auto;
+      padding: 0 16px 48px;
     }
 
-    /* ==========================================================================
-       3. TOP HEADER & NAVIGATION (Mobile-First Ergonomics)
-       ========================================================================== */
-    header {
+    @media (min-width: 768px) {
+      .wrap { padding: 0 28px 64px; }
+    }
+
+    /* Top bar */
+    .topbar {
       display: flex;
+      align-items: center;
       justify-content: space-between;
-      align-items: center;
-      padding: 12px 16px;
-      background: var(--bg-surface);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-md);
-      backdrop-filter: blur(24px);
-      -webkit-backdrop-filter: blur(24px);
-      box-shadow: var(--shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.06);
-      margin-bottom: 14px;
       flex-wrap: wrap;
-      gap: 12px;
+      gap: 8px 24px;
+      padding: 16px 0;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 24px;
     }
 
-    @media (min-width: 768px) {
-      header {
-        padding: 16px 24px;
-        border-radius: var(--radius-lg);
-        margin-bottom: 20px;
-      }
-    }
+    .brand { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+    .brand-name { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+    .brand-meta { font-size: 13px; color: var(--text-3); }
 
-    .brand-group {
+    .status {
       display: flex;
-      align-items: center;
-      gap: 12px;
+      gap: 20px;
+      font-size: 13px;
+      color: var(--text-2);
     }
 
-    .turbo-badge {
-      font-family: var(--font-display);
-      font-size: 1.05rem;
-      font-weight: 800;
-      color: #ffffff;
-      background: linear-gradient(135deg, var(--sakura-pink) 0%, var(--cyber-purple) 100%);
-      width: 38px;
-      height: 38px;
-      border-radius: var(--radius-sm);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      box-shadow: 0 4px 16px var(--sakura-glow);
-      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
-      flex-shrink: 0;
-      border: 1px solid rgba(255, 255, 255, 0.2);
-    }
+    .status div { display: flex; gap: 6px; align-items: center; }
+    .status dt { color: var(--text-3); }
 
-    @media (min-width: 768px) {
-      .turbo-badge {
-        width: 42px;
-        height: 42px;
-        font-size: 1.15rem;
-      }
-    }
-
-    .brand-title h1 {
-      font-family: var(--font-display);
-      font-size: 1.05rem;
-      font-weight: 800;
-      letter-spacing: 0.02em;
-      background: linear-gradient(90deg, #ffffff 40%, var(--nitro-cyan) 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      text-transform: uppercase;
-      line-height: 1.2;
-    }
-
-    @media (min-width: 768px) {
-      .brand-title h1 {
-        font-size: 1.35rem;
-      }
-    }
-
-    .brand-subtitle {
-      font-family: var(--font-mono);
-      font-size: 0.68rem;
-      color: var(--sakura-pink);
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      margin-top: 1px;
-    }
-
-    .brand-subtitle span {
-      color: var(--nitro-cyan);
-      margin-left: 6px;
-      font-weight: 600;
-    }
-
-    .header-pills {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      flex-wrap: wrap;
-    }
-
-    .hud-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 12px;
-      border-radius: var(--radius-full);
-      background: rgba(6, 9, 16, 0.6);
-      border: 1px solid var(--border-subtle);
-      font-family: var(--font-mono);
-      font-size: 0.72rem;
-      font-weight: 600;
-      color: var(--text-secondary);
-      white-space: nowrap;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
-    }
-
-    .hud-pill.active {
-      border-color: var(--border-accent-cyan);
-      box-shadow: var(--shadow-glow-cyan);
-    }
-
-    .hud-pill.cron {
-      border-color: rgba(244, 63, 94, 0.35);
-      color: var(--text-primary);
-    }
-
-    .hud-pill.time {
-      border-color: rgba(255, 255, 255, 0.12);
-      color: var(--text-primary);
-    }
-
-    .dot-live {
+    .dot {
       width: 7px;
       height: 7px;
       border-radius: 50%;
-      background: var(--nitro-cyan);
-      box-shadow: 0 0 10px var(--nitro-cyan);
-      animation: soft-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-    }
-
-    @keyframes soft-pulse {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.4; transform: scale(0.9); }
-    }
-
-    /* ==========================================================================
-       4. COCKPIT & METRICS DASHBOARD (Mobile-First Modern Widgets)
-       ========================================================================== */
-    .cockpit-grid {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 12px;
-      margin-bottom: 14px;
-    }
-
-    @media (min-width: 580px) {
-      .cockpit-grid {
-        grid-template-columns: repeat(2, 1fr);
-        gap: 14px;
-      }
-    }
-
-    @media (min-width: 1024px) {
-      .cockpit-grid {
-        grid-template-columns: 310px repeat(3, 1fr);
-        gap: 16px;
-        margin-bottom: 20px;
-      }
-    }
-
-    .cockpit-card {
-      background: var(--bg-card);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-md);
-      padding: 18px 20px;
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      position: relative;
-      overflow: hidden;
-      box-shadow: var(--shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.05);
-      transition: border-color 0.25s ease, transform 0.25s ease, box-shadow 0.25s ease;
-    }
-
-    .cockpit-card:hover {
-      transform: translateY(-2px);
-      border-color: var(--border-accent-cyan);
-      box-shadow: var(--shadow-card), var(--shadow-glow-cyan);
-    }
-
-    .gauge-card {
-      border: 1px solid var(--border-accent-pink);
-      box-shadow: var(--shadow-card), 0 0 24px -4px var(--sakura-glow);
-      display: flex;
-      align-items: center;
-      gap: 18px;
-    }
-
-    .gauge-circle {
-      position: relative;
-      width: 76px;
-      height: 76px;
-      flex-shrink: 0;
-    }
-
-    .gauge-circle svg {
-      transform: rotate(-90deg);
-      width: 76px;
-      height: 76px;
-    }
-
-    .gauge-bg {
-      fill: none;
-      stroke: rgba(255, 255, 255, 0.06);
-      stroke-width: 7;
-    }
-
-    .gauge-meter {
-      fill: none;
-      stroke: url(#cyan-pink-grad);
-      stroke-width: 7;
-      stroke-linecap: round;
-      stroke-dasharray: 226;
-      stroke-dashoffset: 226;
-      transition: stroke-dashoffset 1.3s cubic-bezier(0.16, 1, 0.3, 1);
-      filter: drop-shadow(0 0 6px rgba(34, 211, 238, 0.35));
-    }
-
-    .gauge-center-text {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      font-family: var(--font-display);
-      font-weight: 700;
-      font-size: 0.95rem;
-      color: var(--text-primary);
-      text-shadow: 0 0 8px rgba(34, 211, 238, 0.4);
-    }
-
-    .card-kanji {
-      position: absolute;
-      right: 16px;
-      top: 12px;
-      font-size: 1.6rem;
-      opacity: 0.05;
-      font-weight: 900;
-      user-select: none;
-      pointer-events: none;
-      color: var(--text-primary);
-    }
-
-    .hud-title {
-      font-family: var(--font-body);
-      font-size: 0.72rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: var(--text-secondary);
-    }
-
-    .hud-stat {
-      font-family: var(--font-display);
-      font-size: 1.65rem;
-      font-weight: 700;
-      margin-top: 5px;
-      letter-spacing: -0.01em;
-      color: var(--text-primary);
-      line-height: 1.1;
-    }
-
-    .hud-sub {
-      font-family: var(--font-mono);
-      font-size: 0.72rem;
-      margin-top: 6px;
-      color: var(--text-muted);
-    }
-
-    #stat-win-ratio {
+      background: var(--text-3);
       display: inline-block;
-      padding: 2px 7px;
-      background: rgba(255, 255, 255, 0.04);
-      border-radius: 4px;
-      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .dot.ok { background: var(--long); }
+    .dot.warn { background: var(--warn); }
+    .dot.err { background: var(--short); }
+
+    /* Stats */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1px;
+      background: var(--line);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      margin-bottom: 24px;
     }
 
-    .color-long { color: var(--color-long); }
-    .color-short { color: var(--color-short); }
-    .color-cyan { color: var(--nitro-cyan); }
-    .color-pink { color: var(--sakura-pink); }
+    @media (min-width: 900px) {
+      .stats { grid-template-columns: repeat(4, 1fr); }
+    }
 
-    /* ==========================================================================
-       5. ACTION DECK (Interactive Controls & Premium Launch CTA)
-       ========================================================================== */
-    .deck-panel {
-      background: var(--bg-surface);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-md);
-      padding: 14px 16px;
-      margin-bottom: 14px;
-      backdrop-filter: blur(24px);
-      -webkit-backdrop-filter: blur(24px);
-      box-shadow: var(--shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    .stat { background: var(--surface); padding: 16px 18px; min-width: 0; }
+    .stat-label { font-size: 12px; color: var(--text-3); }
+    .stat-value { font-size: 24px; font-weight: 500; letter-spacing: -0.01em; margin-top: 2px; }
+    .stat-value.num { font-family: var(--font-sans); }
+    .stat-sub { font-size: 12px; color: var(--text-2); margin-top: 4px; }
+
+    .split-bar {
       display: flex;
+      height: 4px;
+      margin-top: 10px;
+      border-radius: 2px;
+      overflow: hidden;
+      background: var(--line-strong);
+    }
+    .split-bar span { display: block; height: 100%; transition: width 0.4s ease; }
+    .split-bar .w { background: var(--long); }
+    .split-bar .l { background: var(--short); }
+
+    /* Scan controls */
+    .controls {
+      display: flex;
+      align-items: flex-end;
       justify-content: space-between;
-      align-items: center;
       flex-wrap: wrap;
       gap: 12px;
+      margin-bottom: 12px;
     }
 
-    @media (min-width: 768px) {
-      .deck-panel {
-        padding: 16px 22px;
-        margin-bottom: 20px;
-      }
-    }
+    .params { display: flex; gap: 12px; flex-wrap: wrap; }
 
-    .deck-left {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
-      width: 100%;
-    }
+    .field { display: flex; flex-direction: column; gap: 4px; }
+    .field-label { font-size: 12px; color: var(--text-3); }
 
-    @media (min-width: 768px) {
-      .deck-left { width: auto; }
-    }
+    .actions { display: flex; gap: 8px; }
 
-    .timeframe-lock {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 12px;
-      border-radius: var(--radius-sm);
-      background: linear-gradient(135deg, rgba(244, 63, 94, 0.15), rgba(34, 211, 238, 0.1));
-      border: 1px solid var(--border-accent-pink);
-      font-family: var(--font-display);
-      font-size: 0.74rem;
-      font-weight: 700;
-      color: var(--text-primary);
-      box-shadow: 0 2px 10px var(--sakura-glow);
-    }
-
-    .param-group {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .param-label {
-      font-family: var(--font-body);
-      font-size: 0.72rem;
-      font-weight: 500;
-      color: var(--text-secondary);
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
+    @media (max-width: 599px) {
+      .actions { width: 100%; }
+      .actions .btn { flex: 1; justify-content: center; }
+      .tabs { gap: 16px; }
     }
 
     select, input[type="text"], input[type="date"] {
-      background: var(--bg-input);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-sm);
-      padding: 7px 12px;
-      color: var(--text-primary);
-      font-family: var(--font-mono);
-      font-size: 0.78rem;
-      outline: none;
-      transition: border-color 0.2s, box-shadow 0.2s;
+      height: 34px;
+      background: var(--surface);
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      padding: 0 10px;
+      font-size: 13px;
+      min-width: 0;
     }
 
     select {
       appearance: none;
       -webkit-appearance: none;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+      padding-right: 28px;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%236f737b' stroke-width='1.5'/%3E%3C/svg%3E");
       background-repeat: no-repeat;
       background-position: right 10px center;
-      padding-right: 28px;
       cursor: pointer;
     }
 
-    #filter-symbol {
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='13' height='13' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cpath d='m21 21-4.3-4.3'/%3E%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: left 10px center;
-      padding-left: 30px;
-    }
+    input::placeholder { color: var(--text-3); }
 
-    select:focus, input[type="text"]:focus, input[type="date"]:focus {
-      border-color: var(--border-focus);
-      box-shadow: var(--shadow-glow-cyan);
-    }
+    select:hover, input:hover { border-color: #43464d; }
 
-    .deck-actions {
-      display: flex;
-      gap: 8px;
-      width: 100%;
-    }
-
-    @media (min-width: 768px) {
-      .deck-actions { width: auto; }
-    }
-
-    /* Launch 2H Scan CTA (Refined Tokyo Drift Nitro Button) */
-    .btn-nitro {
-      font-family: var(--font-body);
-      font-size: 0.82rem;
-      font-weight: 700;
-      letter-spacing: 0.02em;
-      padding: 10px 22px;
-      border-radius: var(--radius-sm);
-      border: 1px solid rgba(255, 255, 255, 0.18);
-      background: linear-gradient(135deg, var(--sakura-pink) 0%, var(--sakura-pink-deep) 100%);
-      color: #ffffff;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      box-shadow: var(--shadow-btn-nitro), inset 0 1px 0 rgba(255, 255, 255, 0.25);
-      transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease, background 0.2s ease;
-      white-space: nowrap;
-      position: relative;
-      overflow: hidden;
-      flex: 1;
-    }
-
-    @media (min-width: 768px) {
-      .btn-nitro { flex: initial; }
-    }
-
-    .btn-nitro::before {
-      content: "";
-      position: absolute;
-      top: 0; left: -100%; width: 100%; height: 100%;
-      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.18), transparent);
-      transition: left 0.6s ease;
-    }
-
-    .btn-nitro:hover::before {
-      left: 100%;
-    }
-
-    .btn-nitro:hover {
-      transform: translateY(-1.5px) scale(1.01);
-      box-shadow: var(--shadow-btn-hover);
-      background: linear-gradient(135deg, #fb7185 0%, var(--sakura-pink) 100%);
-    }
-
-    .btn-nitro:active {
-      transform: translateY(0.5px) scale(0.99);
-      box-shadow: 0 4px 12px -2px rgba(244, 63, 94, 0.4);
-    }
-
-    .btn-nitro:disabled {
-      opacity: 0.55;
-      cursor: not-allowed;
-      transform: none;
-      box-shadow: none;
-    }
-
-    .btn-outline {
-      font-family: var(--font-body);
-      font-size: 0.78rem;
-      font-weight: 600;
-      padding: 9px 16px;
-      border-radius: var(--radius-sm);
-      background: rgba(255, 255, 255, 0.035);
-      border: 1px solid var(--border-subtle);
-      color: var(--nitro-cyan);
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      transition: all 0.2s ease;
-      white-space: nowrap;
-    }
-
-    .btn-outline:hover {
-      background: var(--nitro-soft);
-      border-color: var(--border-accent-cyan);
-      box-shadow: 0 4px 16px rgba(34, 211, 238, 0.18);
-      transform: translateY(-1px);
-    }
-
-    .btn-outline:active {
-      transform: translateY(0);
-    }
-
-    /* ==========================================================================
-       6. TELEMETRY & SIGNALS VIEW (Cards on Mobile, Table on Desktop)
-       ========================================================================== */
-    .telemetry-section {
-      background: var(--bg-surface);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-lg);
-      padding: 16px;
-      backdrop-filter: blur(24px);
-      -webkit-backdrop-filter: blur(24px);
-      box-shadow: var(--shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.05);
-      margin-bottom: 24px;
-    }
-
-    @media (min-width: 768px) {
-      .telemetry-section { padding: 22px 24px; }
-    }
-
-    .section-nav {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 16px;
-      flex-wrap: wrap;
-      gap: 12px;
-    }
-
-    .nav-tabs {
-      display: flex;
-      background: rgba(6, 9, 16, 0.65);
-      padding: 4px;
-      border-radius: var(--radius-sm);
-      border: 1px solid var(--border-subtle);
-      gap: 4px;
-      overflow-x: auto;
-      max-width: 100%;
-      scrollbar-width: none;
-    }
-
-    .nav-tabs::-webkit-scrollbar { display: none; }
-
-    .nav-btn {
-      padding: 7px 16px;
-      border-radius: 8px;
-      background: transparent;
-      border: 1px solid transparent;
-      color: var(--text-secondary);
-      font-family: var(--font-body);
-      font-size: 0.74rem;
-      font-weight: 600;
-      letter-spacing: 0.02em;
-      cursor: pointer;
-      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-      white-space: nowrap;
-    }
-
-    .nav-btn:hover {
-      color: var(--text-primary);
-      background: rgba(255, 255, 255, 0.03);
-    }
-
-    .nav-btn.active {
-      background: linear-gradient(135deg, var(--nitro-cyan) 0%, #0284c7 100%);
-      color: #030d17;
-      font-weight: 700;
-      border-color: rgba(255, 255, 255, 0.2);
-      box-shadow: 0 2px 10px var(--nitro-glow);
-    }
-
-    .filter-group-wrap {
-      display: flex;
-      gap: 8px;
-      width: 100%;
-      flex-wrap: wrap;
-    }
-
-    @media (min-width: 860px) {
-      .filter-group-wrap { width: auto; flex-wrap: nowrap; }
-    }
-
-    /* Signal Card (Mobile View - Sleek High-End Fintech Widget) */
-    .mobile-cards-view {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-
-    @media (min-width: 860px) {
-      .mobile-cards-view { display: none; }
-    }
-
-    .sig-card {
-      background: var(--bg-card);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-md);
-      padding: 16px 18px;
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.25s ease, box-shadow 0.25s ease;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      box-shadow: var(--shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.05);
-      cursor: pointer;
-    }
-
-    .sig-card:hover {
-      transform: translateY(-2px);
-      border-color: var(--border-accent-cyan);
-      box-shadow: 0 12px 32px -6px rgba(0, 0, 0, 0.6), var(--shadow-glow-cyan);
-    }
-
-    .sig-card:active {
-      transform: scale(0.99);
-    }
-
-    .sig-card-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding-bottom: 2px;
-    }
-
-    .sig-card-title {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    /* High-End Segmented Metrics Widget for Mobile */
-    .sig-card-metrics {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 8px;
-      background: var(--bg-inset);
-      padding: 10px 12px;
-      border-radius: var(--radius-sm);
-      border: 1px solid var(--border-subtle);
-    }
-
-    .sig-metric-item {
-      display: flex;
-      flex-direction: column;
-      gap: 3px;
-      padding: 6px 8px;
-      border-radius: 8px;
-      background: rgba(255, 255, 255, 0.02);
-      border: 1px solid rgba(255, 255, 255, 0.03);
-    }
-
-    .sig-metric-item:nth-child(1) {
-      background: rgba(34, 211, 238, 0.05);
-      border-color: rgba(34, 211, 238, 0.16);
-    }
-
-    .sig-metric-item:nth-child(2) {
-      background: rgba(251, 113, 133, 0.05);
-      border-color: rgba(251, 113, 133, 0.16);
-    }
-
-    .sig-metric-item:nth-child(3) {
-      background: rgba(16, 185, 129, 0.05);
-      border-color: rgba(16, 185, 129, 0.16);
-    }
-
-    .sig-metric-label {
-      font-family: var(--font-body);
-      font-size: 0.64rem;
-      font-weight: 600;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-    }
-
-    .sig-metric-val {
-      font-family: var(--font-mono);
-      font-size: 0.92rem;
-      font-weight: 700;
-      letter-spacing: -0.01em;
-    }
-
-    .sig-card-footer {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding-top: 4px;
-      border-top: 1px solid rgba(255, 255, 255, 0.04);
-    }
-
-    .sig-card:hover .btn-outline {
-      background: var(--nitro-soft);
-      border-color: var(--nitro-cyan);
-      box-shadow: 0 0 12px var(--nitro-glow);
-    }
-
-    /* Desktop Table View */
-    .desktop-table-view {
-      display: none;
-      overflow-x: auto;
-      border-radius: var(--radius-md);
-      border: 1px solid var(--border-subtle);
-      background: rgba(6, 9, 16, 0.35);
-    }
-
-    @media (min-width: 860px) {
-      .desktop-table-view { display: block; }
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      text-align: left;
-    }
-
-    th {
-      background: rgba(6, 9, 16, 0.7);
-      padding: 13px 16px;
-      font-family: var(--font-body);
-      font-size: 0.7rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: var(--text-secondary);
-      border-bottom: 1px solid var(--border-subtle);
-    }
-
-    td {
-      padding: 14px 16px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.035);
-      font-family: var(--font-mono);
-      font-size: 0.82rem;
-      color: var(--text-primary);
-    }
-
-    tr.clickable-row {
-      cursor: pointer;
-      transition: background 0.15s ease;
-    }
-
-    tr.clickable-row:hover td {
-      background: rgba(34, 211, 238, 0.035);
-    }
-
-    .tag-symbol {
-      font-family: var(--font-display);
-      font-weight: 700;
-      color: #ffffff;
-      font-size: 0.9rem;
-      letter-spacing: 0.02em;
-    }
-
-    .badge-drift {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 3px 9px;
-      border-radius: 6px;
-      font-family: var(--font-body);
-      font-size: 0.68rem;
-      font-weight: 700;
-      letter-spacing: 0.03em;
-    }
-
-    .badge-drift-long {
-      background: var(--color-long-soft);
-      color: var(--color-long);
-      border: 1px solid rgba(16, 185, 129, 0.28);
-    }
-
-    .badge-drift-short {
-      background: var(--color-short-soft);
-      color: var(--color-short);
-      border: 1px solid rgba(251, 113, 133, 0.28);
-    }
-
-    .badge-win {
-      background: rgba(16, 185, 129, 0.14);
-      color: var(--color-long);
-      border: 1px solid rgba(16, 185, 129, 0.3);
-      padding: 3px 9px;
-      border-radius: 6px;
-      font-size: 0.68rem;
-      font-weight: 600;
-    }
-
-    .badge-loss {
-      background: rgba(251, 113, 133, 0.14);
-      color: var(--color-short);
-      border: 1px solid rgba(251, 113, 133, 0.3);
-      padding: 3px 9px;
-      border-radius: 6px;
-      font-size: 0.68rem;
-      font-weight: 600;
-    }
-
-    .badge-pending {
-      background: rgba(255, 255, 255, 0.04);
-      color: var(--text-muted);
-      border: 1px solid var(--border-subtle);
-      padding: 3px 9px;
-      border-radius: 6px;
-      font-size: 0.68rem;
-    }
-
-    /* ==========================================================================
-       7. TELEMETRY MODAL & CHART DRAWER
-       ========================================================================== */
-    .modal-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(4, 6, 12, 0.85);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      display: none;
-      align-items: center;
-      justify-content: center;
-      z-index: 1000;
-      padding: 12px;
-    }
-
-    .modal-box {
-      background: var(--bg-surface-elevated);
-      border: 1px solid var(--border-glass);
-      box-shadow: var(--shadow-elevated), 0 0 36px var(--nitro-glow);
-      border-radius: var(--radius-lg);
-      width: 100%;
-      max-width: 1040px;
-      max-height: 90vh;
-      overflow-y: auto;
-      padding: 18px;
-      position: relative;
-    }
-
-    @media (min-width: 768px) {
-      .modal-box { padding: 26px 28px; }
-    }
-
-    .modal-close {
-      position: absolute;
-      top: 14px;
-      right: 14px;
-      background: rgba(255, 255, 255, 0.06);
-      border: 1px solid var(--border-subtle);
-      color: var(--text-secondary);
-      width: 34px;
+    .btn {
       height: 34px;
-      border-radius: var(--radius-sm);
+      padding: 0 14px;
+      border-radius: var(--radius);
+      border: 1px solid var(--line-strong);
+      background: var(--surface);
+      font-size: 13px;
+      font-weight: 500;
       cursor: pointer;
-      font-size: 1.15rem;
-      display: flex;
+      display: inline-flex;
       align-items: center;
-      justify-content: center;
-      transition: all 0.2s ease;
+      gap: 8px;
+      white-space: nowrap;
     }
+    .btn:hover { background: var(--surface-2); }
+    .btn:disabled { opacity: 0.55; cursor: progress; }
 
-    .modal-close:hover {
-      background: var(--sakura-pink);
-      color: #ffffff;
-      border-color: var(--sakura-pink);
-      box-shadow: var(--shadow-glow-pink);
+    .btn-primary {
+      background: var(--text);
+      border-color: var(--text);
+      color: #111214;
     }
+    .btn-primary:hover { background: #ffffff; }
 
-    .modal-header {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 16px;
+    .btn-quiet {
+      height: auto;
+      padding: 4px 8px;
+      border-color: transparent;
+      background: transparent;
+      color: var(--text-3);
+      font-weight: 400;
     }
+    .btn-quiet:hover { color: var(--short); background: transparent; }
 
-    .chart-container {
-      width: 100%;
-      height: 340px;
-      background: rgba(4, 6, 12, 0.7);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-md);
-      margin-bottom: 16px;
-      position: relative;
-      overflow: hidden;
+    .spinner {
+      width: 12px;
+      height: 12px;
+      border: 1.5px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      display: none;
     }
+    .spinner.on { display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
-    @media (min-width: 768px) {
-      .chart-container { height: 380px; }
-    }
-
-    .levels-deck {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 10px;
+    .notice {
+      font-size: 13px;
+      color: var(--short);
+      background: var(--short-bg);
+      border-radius: var(--radius);
+      padding: 8px 12px;
       margin-bottom: 12px;
     }
 
-    @media (min-width: 640px) {
-      .levels-deck { grid-template-columns: repeat(4, 1fr); }
+    /* Panel */
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
     }
 
-    .level-box {
-      background: var(--bg-inset);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-sm);
-      padding: 12px 14px;
+    .panel-head {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px 24px;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--line);
     }
 
-    .level-box.entry { border-color: var(--border-accent-cyan); background: var(--nitro-soft); }
-    .level-box.sl { border-color: rgba(251, 113, 133, 0.3); background: var(--color-short-soft); }
-    .level-box.tp { border-color: rgba(16, 185, 129, 0.3); background: var(--color-long-soft); }
+    .tabs { display: flex; gap: 20px; overflow-x: auto; scrollbar-width: none; }
+    .tabs::-webkit-scrollbar { display: none; }
 
-    .level-tag {
-      font-family: var(--font-body);
-      font-size: 0.65rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: var(--text-secondary);
+    .tab {
+      background: none;
+      border: none;
+      padding: 14px 0 12px;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      color: var(--text-3);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .tab:hover { color: var(--text-2); }
+    .tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--text); }
+    .tab .count { color: var(--text-3); font-weight: 400; margin-left: 4px; }
+
+    .filters {
+      display: flex;
+      gap: 8px;
+      padding: 10px 0;
+      flex-wrap: wrap;
+      width: 100%;
+    }
+    .filters > * { flex: 1 1 120px; }
+
+    @media (min-width: 1000px) {
+      .filters { width: auto; flex-wrap: nowrap; }
+      .filters > * { flex: 0 0 auto; }
+      #filter-symbol { width: 130px; }
     }
 
-    .level-price {
-      font-family: var(--font-mono);
-      font-size: 1.05rem;
-      font-weight: 700;
-      margin-top: 3px;
+    .caption {
+      padding: 10px 16px;
+      font-size: 12px;
+      color: var(--text-3);
+      border-bottom: 1px solid var(--line);
+    }
+    .caption:empty { display: none; }
+
+    /* Tables */
+    .table-view { display: none; overflow-x: auto; }
+    .card-view { display: flex; flex-direction: column; }
+
+    @media (min-width: 860px) {
+      .table-view { display: block; }
+      .card-view { display: none; }
     }
 
-    /* ==========================================================================
-       8. WATCHLIST MANAGEMENT & UTILITIES
-       ========================================================================== */
-    .watchlist-manager { display: none; }
+    table { width: 100%; border-collapse: collapse; }
 
-    .wl-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-      gap: 10px;
-      margin-top: 14px;
+    th {
+      text-align: left;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-3);
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--line);
+      white-space: nowrap;
     }
 
-    .wl-chip {
+    td {
+      padding: 11px 16px;
+      border-bottom: 1px solid var(--line);
+      white-space: nowrap;
+      font-size: 13px;
+    }
+
+    tbody tr:last-child td { border-bottom: none; }
+
+    th.r, td.r { text-align: right; }
+
+    tr[data-index] { cursor: pointer; }
+    tr[data-index]:hover td { background: var(--surface-2); }
+
+    .sym { font-weight: 600; }
+
+    .tag-new {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--warn);
+      margin-left: 6px;
+    }
+
+    .outcome {
+      display: inline-block;
+      font-size: 12px;
+      padding: 1px 8px;
+      border-radius: 4px;
+      background: var(--surface-2);
+      color: var(--text-2);
+    }
+    .outcome.win { background: var(--long-bg); color: var(--long); }
+    .outcome.loss { background: var(--short-bg); color: var(--short); }
+
+    .empty {
+      padding: 40px 16px;
+      text-align: center;
+      color: var(--text-3);
+      font-size: 13px;
+      white-space: normal;
+    }
+    .empty.err { color: var(--short); }
+
+    /* Mobile cards */
+    .card {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .card:last-child { border-bottom: none; }
+    .card[data-index] { cursor: pointer; }
+    .card[data-index]:active { background: var(--surface-2); }
+
+    .card-top {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      background: var(--bg-card);
-      border: 1px solid var(--border-subtle);
-      padding: 12px 14px;
-      border-radius: var(--radius-sm);
-      transition: border-color 0.2s ease, transform 0.2s ease;
+      gap: 8px;
+      margin-bottom: 10px;
     }
 
-    .wl-chip:hover {
-      border-color: var(--border-accent-cyan);
-      transform: translateY(-1px);
+    .card-levels {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
     }
+    .card-levels dt { font-size: 11px; color: var(--text-3); }
+    .card-levels dd { font-size: 13px; }
 
-    .btn-del {
-      background: transparent;
-      border: none;
-      color: var(--color-short);
-      cursor: pointer;
-      font-size: 1.15rem;
-      padding: 4px;
-      transition: opacity 0.2s;
+    .card-time { font-size: 12px; color: var(--text-3); margin-top: 10px; }
+
+    /* Watchlist */
+    .wl-add {
+      display: flex;
+      gap: 8px;
+      padding: 16px;
+      border-bottom: 1px solid var(--line);
     }
+    .wl-add input { flex: 1; max-width: 320px; text-transform: uppercase; }
+    .wl-add input::placeholder { text-transform: none; }
 
-    .btn-del:hover {
-      opacity: 0.8;
+    .wl-list { list-style: none; }
+
+    .wl-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--line);
     }
+    .wl-row:last-child { border-bottom: none; }
+    .wl-row.off .sym { color: var(--text-3); }
+    .wl-info { flex: 1; min-width: 0; display: flex; gap: 12px; align-items: baseline; }
+    .wl-notes { font-size: 12px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-    .switch {
+    .toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); cursor: pointer; }
+    .toggle input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+    .toggle .track {
+      width: 28px;
+      height: 16px;
+      border-radius: 8px;
+      background: var(--line-strong);
       position: relative;
-      display: inline-block;
-      width: 36px;
-      height: 20px;
+      transition: background 0.15s;
     }
-    .switch input { opacity: 0; width: 0; height: 0; }
-    .slider {
-      position: absolute; cursor: pointer; inset: 0;
-      background-color: rgba(255, 255, 255, 0.12);
-      transition: .3s cubic-bezier(0.4, 0, 0.2, 1);
-      border-radius: 20px;
-    }
-    .slider:before {
-      position: absolute; content: ""; height: 14px; width: 14px;
-      left: 3px; bottom: 3px; background-color: #ffffff;
-      transition: .3s cubic-bezier(0.4, 0, 0.2, 1);
+    .toggle .track::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 12px;
+      height: 12px;
       border-radius: 50%;
+      background: var(--text-2);
+      transition: transform 0.15s, background 0.15s;
     }
-    input:checked + .slider { background-color: var(--nitro-cyan); box-shadow: 0 0 10px var(--nitro-cyan); }
-    input:checked + .slider:before { transform: translateX(16px); }
+    .toggle input:checked + .track { background: var(--long); }
+    .toggle input:checked + .track::after { transform: translateX(12px); background: #fff; }
+    .toggle input:focus-visible + .track { outline: 2px solid var(--entry); outline-offset: 2px; }
 
-    .spinner {
-      display: inline-block;
-      width: 14px;
-      height: 14px;
-      border: 2px solid rgba(255, 255, 255, 0.3);
-      border-radius: 50%;
-      border-top-color: #ffffff;
-      animation: spin 0.8s linear infinite;
+    /* Signal detail dialog */
+    dialog {
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--text);
+      width: min(1000px, calc(100vw - 24px));
+      max-height: calc(100vh - 24px);
+      margin: auto;
+      padding: 0;
     }
-    @keyframes spin { to { transform: rotate(360deg); } }
+    dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
+
+    .dlg-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--line);
+    }
+    .dlg-title { font-size: 16px; font-weight: 600; display: flex; gap: 10px; align-items: baseline; }
+    .dlg-sub { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+
+    .dlg-close {
+      background: none;
+      border: none;
+      color: var(--text-3);
+      font-size: 22px;
+      line-height: 1;
+      width: 32px;
+      height: 32px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .dlg-close:hover { color: var(--text); background: var(--surface-2); }
+
+    .dlg-body { padding: 16px 20px 20px; }
+
+    .chart {
+      height: 320px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      margin-bottom: 16px;
+      overflow: hidden;
+    }
+
+    @media (min-width: 768px) {
+      .chart { height: 380px; }
+    }
+
+    .chart-msg {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 0 16px;
+      text-align: center;
+      font-size: 13px;
+      color: var(--text-3);
+    }
+    .chart-msg.err { color: var(--short); }
+
+    .levels {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px 24px;
+    }
+
+    @media (min-width: 640px) {
+      .levels { grid-template-columns: repeat(4, 1fr); }
+    }
+
+    .levels dt { font-size: 12px; color: var(--text-3); }
+    .levels dd { font-size: 15px; margin-top: 2px; }
+    .levels dd small { font-size: 12px; color: var(--text-3); margin-left: 6px; }
+    .levels hr { grid-column: 1 / -1; border: none; border-top: 1px solid var(--line); }
+
+    [hidden] { display: none; }
   </style>
 </head>
 <body>
-
-  <!-- SVG Gradient Definitions -->
-  <svg width="0" height="0" style="position: absolute;">
-    <defs>
-      <linearGradient id="cyan-pink-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" stop-color="#22d3ee" />
-        <stop offset="100%" stop-color="#f43f5e" />
-      </linearGradient>
-    </defs>
-  </svg>
-
-  <div class="container">
-    <!-- Top Header & Navigation -->
-    <header>
-      <div class="brand-group">
-        <div class="turbo-badge">2H</div>
-        <div class="brand-title">
-          <h1>Tokyo Drift // MACD</h1>
-          <div class="brand-subtitle">
-            東京ドリフト <span>QUANT OVERCROSS ENGINE</span>
-          </div>
-        </div>
+  <div class="wrap">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-name">Crossline</span>
+        <span class="brand-meta">MACD crossover scanner, 2H, Binance USDⓈ-M futures</span>
       </div>
-      <div class="header-pills">
-        <div class="hud-pill active" id="health-pill">
-          <span class="dot-live" id="health-dot"></span>
-          <span id="health-text">SYSTEM ACTIVE // 2H</span>
-        </div>
-        <div class="hud-pill cron" id="cron-pill">
-          <span class="dot-live" id="cron-dot" style="background: var(--pink); box-shadow: 0 0 10px var(--pink);"></span>
-          <span id="cron-text">CRON: 2H ACTIVE</span>
-        </div>
-        <div class="hud-pill time" id="clock-pill">
-          --:--:-- WIB (UTC+7)
-        </div>
-      </div>
+      <dl class="status">
+        <div><dt>API</dt><dd><span class="dot" id="health-dot"></span> <span id="health-text">Checking</span></dd></div>
+        <div><dt>Next cron</dt><dd class="num" id="cron-text">--:--</dd></div>
+        <div><dt>WIB</dt><dd class="num" id="clock">--:--:--</dd></div>
+      </dl>
     </header>
 
-    <!-- Cockpit / Telemetry HUD Grid -->
-    <div class="cockpit-grid">
-      <!-- Historical Winrate Speedometer Card -->
-      <div class="cockpit-card gauge-card">
-        <div class="gauge-circle">
-          <svg viewBox="0 0 100 100">
-            <circle class="gauge-bg" cx="50" cy="50" r="36" />
-            <circle class="gauge-meter" id="winrate-meter" cx="50" cy="50" r="36" />
-          </svg>
-          <div class="gauge-center-text" id="winrate-text">0%</div>
-        </div>
-        <div>
-          <div class="hud-title">Historical Winrate</div>
-          <div class="hud-stat color-cyan" id="stat-winrate">0.0%</div>
-          <div class="hud-sub" id="stat-win-ratio">
-            <span class="color-long" id="stat-wins">0 Win</span> / <span class="color-short" id="stat-losses">0 Loss</span>
-          </div>
-        </div>
+    <section class="stats" aria-label="Summary">
+      <div class="stat">
+        <div class="stat-label">Win rate</div>
+        <div class="stat-value num" id="stat-winrate">–</div>
+        <div class="split-bar" aria-hidden="true"><span class="w" id="bar-wins" style="width:0"></span><span class="l" id="bar-losses" style="width:0"></span></div>
+        <div class="stat-sub" id="stat-win-ratio">0 won, 0 lost</div>
       </div>
-
-      <!-- Total Crossovers Card -->
-      <div class="cockpit-card">
-        <div class="card-kanji">信号</div>
-        <div class="hud-title">Total Crossovers</div>
-        <div class="hud-stat" id="stat-total-signals">0</div>
-        <div class="hud-sub" id="stat-active-pending">0 In-Progress Trades</div>
+      <div class="stat">
+        <div class="stat-label">Signals recorded</div>
+        <div class="stat-value num" id="stat-total-signals">–</div>
+        <div class="stat-sub" id="stat-active-pending">0 still open</div>
       </div>
-
-      <!-- Direction Ratio Card -->
-      <div class="cockpit-card">
-        <div class="card-kanji">方向</div>
-        <div class="hud-title">Golden vs Death</div>
-        <div class="hud-stat" style="font-size: 1.35rem;">
-          <span class="color-long" id="stat-long">0 L</span> / <span class="color-short" id="stat-short">0 S</span>
-        </div>
-        <div class="hud-sub">Risk:Reward 1:1.5 Strict</div>
+      <div class="stat">
+        <div class="stat-label">Long / short</div>
+        <div class="stat-value num"><span class="is-long" id="stat-long">0</span> <span class="muted">/</span> <span class="is-short" id="stat-short">0</span></div>
+        <div class="stat-sub" id="stat-rr">Target at 1.5× risk</div>
       </div>
-
-      <!-- Total Net PnL Card -->
-      <div class="cockpit-card">
-        <div class="card-kanji">損益</div>
-        <div class="hud-title">Total Net PnL</div>
-        <div class="hud-stat color-long" id="stat-total-pnl">+0.00%</div>
-        <div class="hud-sub" id="stat-pnl-sub">0 Closed Trades</div>
+      <div class="stat">
+        <div class="stat-label">Net PnL</div>
+        <div class="stat-value num" id="stat-total-pnl">–</div>
+        <div class="stat-sub" id="stat-pnl-sub">0 closed trades</div>
       </div>
-    </div>
+    </section>
 
-    <!-- Action Deck Controls -->
-    <div class="deck-panel">
-      <div class="deck-left">
-        <div class="timeframe-lock">
-          <span>⚡ STRICT:</span>
-          <span>2H</span>
-        </div>
-        <div class="param-group">
-          <span class="param-label">Lookback:</span>
+    <section class="controls" aria-label="Scan">
+      <div class="params">
+        <label class="field">
+          <span class="field-label">Look back</span>
           <select id="select-lookback">
-            <option value="1">1 Bar</option>
-            <option value="3">3 Bars</option>
-            <option value="5" selected>5 Bars</option>
-            <option value="10">10 Bars</option>
+            <option value="1">1 bar</option>
+            <option value="3">3 bars</option>
+            <option value="5" selected>5 bars</option>
+            <option value="10">10 bars</option>
           </select>
-        </div>
-        <div class="param-group">
-          <span class="param-label">Candle:</span>
+        </label>
+        <label class="field">
+          <span class="field-label">Candle</span>
           <select id="select-forming">
-            <option value="false" selected>Confirmed</option>
-            <option value="true">Forming</option>
+            <option value="false" selected>Closed only</option>
+            <option value="true">Include forming</option>
           </select>
-        </div>
+        </label>
       </div>
-      <div class="deck-actions">
-        <button class="btn-outline" id="btn-eval">⚖️ Evaluate Outcomes</button>
-        <button class="btn-nitro" id="btn-scan">
-          <span id="scan-icon">🏎️💨</span>
-          <span id="scan-label">Launch 2H Scan</span>
+      <div class="actions">
+        <button class="btn" id="btn-eval" type="button">Evaluate outcomes</button>
+        <button class="btn btn-primary" id="btn-scan" type="button">
+          <span class="spinner" id="scan-icon"></span>
+          <span id="scan-label">Run scan</span>
         </button>
       </div>
-    </div>
+    </section>
 
-    <!-- Main Telemetry & Signals Section -->
-    <div class="telemetry-section">
-      <div class="section-nav">
-        <div class="nav-tabs">
-          <button class="nav-btn active" id="tab-scan">⚡ Live Signals</button>
-          <button class="nav-btn" id="tab-history">🏆 Signals History</button>
-          <button class="nav-btn" id="tab-profitloss">💰 PnL History</button>
-          <button class="nav-btn" id="tab-watchlist">🏎️ Watchlist</button>
+    <div class="notice" id="action-notice" role="alert" hidden></div>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div class="tabs" role="tablist" aria-label="Views">
+          <button class="tab" role="tab" id="tab-scan" data-tab="scan" aria-selected="true">Latest scan</button>
+          <button class="tab" role="tab" id="tab-history" data-tab="history" aria-selected="false">Signal history</button>
+          <button class="tab" role="tab" id="tab-profitloss" data-tab="profitloss" aria-selected="false">Closed trades</button>
+          <button class="tab" role="tab" id="tab-watchlist" data-tab="watchlist" aria-selected="false">Watchlist<span class="count num" id="wl-count"></span></button>
         </div>
-        <div class="filter-group-wrap">
-          <input type="text" id="filter-symbol" placeholder="Symbol..." style="width: 110px; flex: 1;">
-          <input type="date" id="filter-date" title="Filter by date" style="width: 130px;">
-          <select id="filter-side" style="width: 120px;">
-            <option value="">All Directions</option>
-            <option value="LONG">LONG (Golden)</option>
-            <option value="SHORT">SHORT (Death)</option>
+        <div class="filters" id="filters">
+          <input type="text" id="filter-symbol" placeholder="Symbol" autocomplete="off" spellcheck="false" aria-label="Filter by symbol">
+          <input type="date" id="filter-date" aria-label="Filter by date">
+          <select id="filter-side" aria-label="Filter by side">
+            <option value="">Any side</option>
+            <option value="LONG">Long</option>
+            <option value="SHORT">Short</option>
           </select>
-          <select id="filter-result" style="width: 120px;">
-            <option value="">All Results</option>
-            <option value="PROFIT">PROFIT (TP1)</option>
-            <option value="LOSS">LOSS (SL)</option>
-            <option value="PENDING">PENDING</option>
+          <select id="filter-result" aria-label="Filter by outcome">
+            <option value="">Any outcome</option>
+            <option value="PROFIT">Target hit</option>
+            <option value="LOSS">Stopped out</option>
+            <option value="PENDING">Open</option>
           </select>
         </div>
       </div>
 
-      <!-- Signals Mobile View (Responsive Card Deck) -->
-      <div id="signals-mobile-container" class="mobile-cards-view">
-        <!-- Rendered dynamically on mobile devices -->
-      </div>
+      <div class="caption" id="caption"></div>
 
-      <!-- Signals Desktop View (Spacious Clean Table) -->
-      <div id="view-signals" class="desktop-table-view">
-        <table>
-          <thead>
-            <tr>
-              <th>Symbol</th>
-              <th>Direction</th>
-              <th>TF</th>
-              <th>Entry Level</th>
-              <th>Stop Loss</th>
-              <th>Take Profit 1</th>
-              <th>R:R</th>
-              <th>Outcome</th>
-              <th>Cross Time (WIB)</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody id="signals-tbody">
-            <tr>
-              <td colspan="10" style="text-align: center; padding: 36px; color: var(--text-muted); font-size: 0.85rem;">
-                Initializing Tokyo Drift Scanner... Click "Launch 2H Scan" to begin.
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <!-- Profit/Loss History View (Dedicated View for profitloss_history table) -->
-      <div id="view-profitloss" style="display: none;">
-        <!-- Profit/Loss Mobile View -->
-        <div id="pnl-mobile-container" class="mobile-cards-view">
-          <!-- Rendered dynamically -->
-        </div>
-
-        <!-- Profit/Loss Desktop Table -->
-        <div id="pnl-desktop-table" class="desktop-table-view">
+      <div id="view-signals">
+        <div class="table-view">
           <table>
             <thead>
               <tr>
                 <th>Symbol</th>
-                <th>Direction</th>
-                <th>TF</th>
-                <th>Entry Price</th>
-                <th>Exit Price</th>
-                <th>Result</th>
-                <th>PnL (%)</th>
-                <th>R:R</th>
-                <th>Signal Time (WIB)</th>
-                <th>Exit Time (WIB)</th>
+                <th>Side</th>
+                <th class="r">Entry</th>
+                <th class="r">Stop</th>
+                <th class="r">Target</th>
+                <th>Outcome</th>
+                <th>Crossed (WIB)</th>
               </tr>
             </thead>
-            <tbody id="pnl-tbody">
-              <tr>
-                <td colspan="10" style="text-align: center; padding: 36px; color: var(--text-muted); font-size: 0.85rem;">
-                  Loading Profit/Loss History...
-                </td>
-              </tr>
-            </tbody>
+            <tbody id="signals-tbody"></tbody>
           </table>
         </div>
+        <div class="card-view" id="signals-cards"></div>
       </div>
 
-      <!-- Watchlist Configuration View -->
-      <div id="view-watchlist" class="watchlist-manager">
-        <div style="display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap;">
-          <input type="text" id="input-new-symbol" placeholder="Enter symbol (e.g. SUIUSDT, INJUSDT)" style="width: 260px; flex: 1;">
-          <button class="btn-nitro" id="btn-add-symbol" style="padding: 8px 18px;">+ Add Pair</button>
+      <div id="view-profitloss" hidden>
+        <div class="table-view">
+          <table>
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Side</th>
+                <th class="r">Entry</th>
+                <th class="r">Exit</th>
+                <th>Result</th>
+                <th class="r">PnL</th>
+                <th>Signal (WIB)</th>
+                <th>Closed (WIB)</th>
+              </tr>
+            </thead>
+            <tbody id="pnl-tbody"></tbody>
+          </table>
         </div>
-        <div class="wl-grid" id="watchlist-grid">
-          <!-- Rendered dynamically -->
-        </div>
+        <div class="card-view" id="pnl-cards"></div>
       </div>
-    </div>
+
+      <div id="view-watchlist" hidden>
+        <form class="wl-add" id="wl-form">
+          <input type="text" id="input-new-symbol" placeholder="Add symbol, e.g. SUIUSDT" autocomplete="off" spellcheck="false" aria-label="Symbol to add">
+          <button class="btn" id="btn-add-symbol" type="submit">Add</button>
+        </form>
+        <ul class="wl-list" id="watchlist-list"></ul>
+      </div>
+    </section>
   </div>
 
-  <!-- Signal Detail & Chart Modal -->
-  <div class="modal-overlay" id="signal-modal">
-    <div class="modal-box">
-      <button class="modal-close" id="modal-close">&times;</button>
-      <div class="modal-header">
-        <div class="turbo-badge" id="modal-badge">2H</div>
-        <div>
-          <h2 id="modal-title" style="font-family: var(--font-display); font-size: 1.25rem;">BTCUSDT // LONG</h2>
-          <p id="modal-time" style="font-family: var(--font-mono); font-size: 0.74rem; color: var(--text-muted); margin-top: 2px;"></p>
-        </div>
+  <dialog id="signal-modal" aria-labelledby="modal-title">
+    <div class="dlg-head">
+      <div>
+        <h2 class="dlg-title" id="modal-title">Signal</h2>
+        <p class="dlg-sub" id="modal-time"></p>
       </div>
-
-      <!-- Dynamic Chart Viewport -->
-      <div class="chart-container" id="chart-viewport">
-        <!-- Lightweight Chart Canvas rendered here -->
-      </div>
-
-      <!-- Strategy Parameters Level Deck -->
-      <div class="levels-deck">
-        <div class="level-box entry">
-          <div class="level-tag">📍 Entry Price</div>
-          <div class="level-price color-cyan" id="detail-entry">-</div>
-        </div>
-        <div class="level-box sl">
-          <div class="level-tag">⛔ Stop Loss</div>
-          <div class="level-price color-short" id="detail-sl">-</div>
-        </div>
-        <div class="level-box tp">
-          <div class="level-tag">🎯 Take Profit 1</div>
-          <div class="level-price color-long" id="detail-tp">-</div>
-        </div>
-        <div class="level-box">
-          <div class="level-tag">📊 Risk / Reward</div>
-          <div class="level-price color-pink" id="detail-rr">1:1.5</div>
-        </div>
-      </div>
-
-      <!-- MACD Telemetry -->
-      <div class="levels-deck" style="margin-bottom: 0;">
-        <div class="level-box">
-          <div class="level-tag">MACD Line</div>
-          <div class="level-price" id="detail-macd" style="font-size: 0.95rem;">-</div>
-        </div>
-        <div class="level-box">
-          <div class="level-tag">Signal Line</div>
-          <div class="level-price" id="detail-signal" style="font-size: 0.95rem;">-</div>
-        </div>
-        <div class="level-box">
-          <div class="level-tag">Histogram</div>
-          <div class="level-price" id="detail-hist" style="font-size: 0.95rem;">-</div>
-        </div>
-        <div class="level-box">
-          <div class="level-tag">Outcome Status</div>
-          <div class="level-price" id="detail-outcome" style="font-size: 0.95rem;">-</div>
-        </div>
-      </div>
+      <button class="dlg-close" id="modal-close" type="button" aria-label="Close">&times;</button>
     </div>
-  </div>
+    <div class="dlg-body">
+      <div class="chart" id="chart-viewport"></div>
+      <dl class="levels">
+        <div><dt>Entry</dt><dd class="num" id="detail-entry">–</dd></div>
+        <div><dt>Stop loss</dt><dd class="num is-short" id="detail-sl">–</dd></div>
+        <div><dt>Target (TP1)</dt><dd class="num is-long" id="detail-tp">–</dd></div>
+        <div><dt>Risk / reward</dt><dd class="num" id="detail-rr">–</dd></div>
+        <hr>
+        <div><dt>MACD</dt><dd class="num" id="detail-macd">–</dd></div>
+        <div><dt>Signal line</dt><dd class="num" id="detail-signal">–</dd></div>
+        <div><dt>Histogram</dt><dd class="num" id="detail-hist">–</dd></div>
+        <div><dt>Outcome</dt><dd id="detail-outcome">–</dd></div>
+      </dl>
+    </div>
+  </dialog>
 
   <script src="/static/app.js"></script>
 </body>
