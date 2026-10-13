@@ -45,6 +45,26 @@ document.addEventListener('DOMContentLoaded', () => {
   const modalClose = document.getElementById('modal-close');
   const chartViewport = document.getElementById('chart-viewport');
 
+  function createNotice(anchor, placeAfter = false) {
+    const el = document.createElement('div');
+    el.className = 'color-short';
+    el.style.cssText = 'font-family:var(--font-mono); font-size:0.78rem; margin:0 0 12px;';
+    el.hidden = true;
+    if (anchor) {
+      if (placeAfter) anchor.after(el);
+      else anchor.before(el);
+    }
+    return el;
+  }
+
+  function showNotice(el, message) {
+    el.textContent = message || '';
+    el.hidden = !message;
+  }
+
+  const evalNotice = createNotice(document.querySelector('.deck-panel'), true);
+  const watchlistNotice = createNotice(watchlistGrid);
+
   // WIB (UTC+7) Live Clock
   setInterval(() => {
     const now = new Date();
@@ -136,6 +156,34 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
     return res;
+  }
+
+  async function responseError(res) {
+    let detail = null;
+    try {
+      detail = (await res.json()).detail;
+    } catch {
+      detail = null;
+    }
+    if (typeof detail === 'string' && detail) return detail;
+    if (Array.isArray(detail) && detail.length) {
+      return detail.map(d => (d && d.msg) ? d.msg : String(d)).join('; ');
+    }
+    if (res.status === 503) return 'API key not configured on server';
+    return `Request failed (HTTP ${res.status})`;
+  }
+
+  function messageHtml(message) {
+    return `
+        <div style="text-align:center; padding:36px; color:var(--short); font-family:var(--font-mono); font-size:0.85rem;">
+          ${escapeHtml(message)}
+        </div>`;
+  }
+
+  function renderSignalsError(message) {
+    const html = messageHtml(message);
+    tbody.innerHTML = `<tr><td colspan="10">${html}</td></tr>`;
+    mobileContainer.innerHTML = html;
   }
 
   // Health & Cron Status Check
@@ -515,14 +563,22 @@ document.addEventListener('DOMContentLoaded', () => {
     `).join('');
 
     document.querySelectorAll('.wl-toggle').forEach(input => {
-      input.addEventListener('change', async (e) => {
-        const sym = e.target.getAttribute('data-symbol');
-        const active = e.target.checked;
-        await authFetch(`/api/watchlist/${encodeURIComponent(sym)}/toggle`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ is_active: active }),
-        });
+      input.addEventListener('change', async () => {
+        const sym = input.getAttribute('data-symbol');
+        const active = input.checked;
+        try {
+          const res = await authFetch(`/api/watchlist/${encodeURIComponent(sym)}/toggle`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ is_active: active }),
+          });
+          if (!res.ok) throw new Error(await responseError(res));
+          showNotice(watchlistNotice, '');
+        } catch (err) {
+          input.checked = !active;
+          showNotice(watchlistNotice, `Failed to update ${sym}: ${err.message}`);
+          return;
+        }
         await loadSummary();
       });
     });
@@ -531,7 +587,14 @@ document.addEventListener('DOMContentLoaded', () => {
       btn.addEventListener('click', async (e) => {
         const sym = e.target.getAttribute('data-symbol');
         if (confirm(`Remove ${sym} from Watchlist?`)) {
-          await authFetch(`/api/watchlist/${encodeURIComponent(sym)}`, { method: 'DELETE' });
+          try {
+            const res = await authFetch(`/api/watchlist/${encodeURIComponent(sym)}`, { method: 'DELETE' });
+            if (!res.ok) throw new Error(await responseError(res));
+            showNotice(watchlistNotice, '');
+          } catch (err) {
+            showNotice(watchlistNotice, `Failed to remove ${sym}: ${err.message}`);
+            return;
+          }
           await loadWatchlist();
           await loadSummary();
         }
@@ -549,13 +612,13 @@ document.addEventListener('DOMContentLoaded', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ symbol: sym, notes: 'User Added' }),
       });
-      if (res.ok) {
-        inputNewSymbol.value = '';
-        await loadWatchlist();
-        await loadSummary();
-      }
+      if (!res.ok) throw new Error(await responseError(res));
+      inputNewSymbol.value = '';
+      showNotice(watchlistNotice, '');
+      await loadWatchlist();
+      await loadSummary();
     } catch (e) {
-      console.error('Failed to add symbol:', e);
+      showNotice(watchlistNotice, `Failed to add ${sym}: ${e.message}`);
     }
   });
 
@@ -576,7 +639,7 @@ document.addEventListener('DOMContentLoaded', () => {
       });
 
       const res = await authFetch(`/api/macd-scan?${params.toString()}`);
-      if (!res.ok) throw new Error(`Scan failed with status ${res.status}`);
+      if (!res.ok) throw new Error(await responseError(res));
       const data = await res.json();
       liveSignals = data.signals || [];
       activeTab = 'scan';
@@ -585,7 +648,10 @@ document.addEventListener('DOMContentLoaded', () => {
       renderSignals(liveSignals);
       await loadSummary();
     } catch (e) {
-      console.error('Scan error:', e);
+      activeTab = 'scan';
+      switchView('signals');
+      updateNavButtons();
+      renderSignalsError(`Scan failed: ${e.message}`);
     } finally {
       btnScan.disabled = false;
       scanIcon.innerHTML = '🏎️💨';
@@ -621,7 +687,9 @@ document.addEventListener('DOMContentLoaded', () => {
     btnEval.disabled = true;
     btnEval.textContent = 'Evaluating...';
     try {
-      await authFetch('/api/evaluate', { method: 'POST' });
+      const res = await authFetch('/api/evaluate', { method: 'POST' });
+      if (!res.ok) throw new Error(await responseError(res));
+      showNotice(evalNotice, '');
       await loadSummary();
       if (activeTab === 'history') {
         await loadHistory();
@@ -631,7 +699,7 @@ document.addEventListener('DOMContentLoaded', () => {
         renderScanView();
       }
     } catch (e) {
-      console.error('Eval error:', e);
+      showNotice(evalNotice, `Evaluate failed: ${e.message}`);
     } finally {
       btnEval.disabled = false;
       btnEval.textContent = '⚖️ Evaluate Outcomes';
@@ -740,7 +808,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     try {
       const res = await fetch(`/api/klines?symbol=${encodeURIComponent(sig.symbol)}&limit=80`);
+      if (!res.ok) {
+        showChartMessage(`Chart unavailable: ${await responseError(res)}`);
+        return;
+      }
       const payload = await res.json();
+      if (!Array.isArray(payload.candles) || payload.candles.length === 0) {
+        showChartMessage('No candle data available for this symbol.');
+        return;
+      }
       chartViewport.innerHTML = '';
 
       if (window.LightweightCharts) {
@@ -782,7 +858,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Shift candle timestamps by +7 hours to render natively in UTC+7 (WIB)
         const UTC7_OFFSET_SEC = 7 * 3600;
-        const candles = (payload.candles || []).map(c => ({
+        const candles = payload.candles.map(c => ({
           ...c,
           time: c.time + UTC7_OFFSET_SEC,
         }));
@@ -851,8 +927,12 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } catch (e) {
       console.error('Failed to render chart:', e);
-      chartViewport.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--short);font-family:var(--font-mono);font-size:0.8rem;">Failed to fetch candle data from Binance.</div>';
+      showChartMessage('Failed to fetch candle data from Binance.');
     }
+  }
+
+  function showChartMessage(message) {
+    chartViewport.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--short);font-family:var(--font-mono);font-size:0.8rem;text-align:center;padding:0 16px;">${escapeHtml(message)}</div>`;
   }
 
   modalClose.addEventListener('click', () => { modal.style.display = 'none'; });
