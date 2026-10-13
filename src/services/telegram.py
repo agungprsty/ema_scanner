@@ -39,6 +39,12 @@ def _chunk_message(text: str, max_length: int = 3800) -> list[str]:
     return chunks
 
 
+def _redact(text: str) -> str:
+    if TELEGRAM_BOT_TOKEN:
+        text = text.replace(TELEGRAM_BOT_TOKEN, "***")
+    return text
+
+
 async def send_alert(message: str, parse_mode: str = "HTML") -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
@@ -58,11 +64,11 @@ async def send_alert(message: str, parse_mode: str = "HTML") -> bool:
                 }
                 resp = await client.post(url, data=payload)
                 if resp.status_code != 200:
-                    logger.error("Telegram API error %s: %s", resp.status_code, resp.text)
+                    logger.error("Telegram API error %s: %s", resp.status_code, _redact(resp.text))
                     all_ok = False
                 if len(chunks) > 1 and idx < len(chunks) - 1:
                     await asyncio.sleep(0.3)
         return all_ok
     except Exception as e:
-        logger.error("Failed to send Telegram alert: %s", e)
+        logger.error("Failed to send Telegram alert: %s: %s", type(e).__name__, _redact(str(e)))
         return False
