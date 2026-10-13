@@ -68,6 +68,7 @@ Write endpoints (scan, evaluate, watchlist changes) require the `X-API-KEY` head
 - `GET /api/macd-scan` runs a scan over the active watchlist. Query: `lookback` (default 5), `include_current` (default false), `send_telegram` (default true).
 - `GET /api/klines?symbol=BTCUSDT` returns 2H candles and the MACD series for charting.
 - `GET /api/signals/{signal_id}` returns one stored signal with its journal entry.
+- `GET /api/signals/{signal_id}/candles` returns the candles around one signal's trade: from 30 candles before the cross to now while it is open, or to 6 candles after the exit once it has closed. Closed windows are cached for 7 days.
 - `POST /api/evaluate` checks open signals against later price action and marks them `TP1_HIT`, `SL_HIT` or `EXPIRED`.
 
 ### Watchlist

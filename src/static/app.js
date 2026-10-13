@@ -1154,7 +1154,11 @@ document.addEventListener('DOMContentLoaded', () => {
     showChartMessage('<span class="spinner on"></span> Loading candles…');
 
     try {
-      const res = await fetch(`/api/klines?symbol=${encodeURIComponent(sig.symbol)}&limit=80`);
+      // Recorded signals chart their own trade window; unsaved scan results show the latest candles
+      const url = sig.id
+        ? `/api/signals/${encodeURIComponent(sig.id)}/candles`
+        : `/api/klines?symbol=${encodeURIComponent(sig.symbol)}&limit=80`;
+      const res = await fetch(url);
       if (request !== chartRequest) return;
       if (!res.ok) {
         showChartMessage(escapeHtml(`Chart unavailable: ${await responseError(res)}`), true);
@@ -1215,21 +1219,37 @@ document.addEventListener('DOMContentLoaded', () => {
       const candles = payload.candles.map(c => ({ ...c, time: c.time + UTC7_OFFSET_SEC }));
       candleSeries.setData(candles);
 
-      const crossDate = parseTime(sig.cross_time);
-      if (crossDate) {
-        const crossTsSec = Math.floor(crossDate.getTime() / 1000) + UTC7_OFFSET_SEC;
-        const matchingCandle = candles.find(c => Math.abs(c.time - crossTsSec) < 3600);
-        if (matchingCandle) {
-          const isLong = sig.side === 'LONG';
-          candleSeries.setMarkers([{
-            time: matchingCandle.time,
-            position: isLong ? 'belowBar' : 'aboveBar',
-            color: isLong ? longColor : shortColor,
-            shape: isLong ? 'arrowUp' : 'arrowDown',
-            text: 'Cross',
-          }]);
-        }
+      // Candle containing a moment; an expiry is stamped at the close, so it belongs to the candle before
+      const candleAt = (date, closeStamp = false) => {
+        if (!date) return null;
+        const ts = Math.floor(date.getTime() / 1000) + UTC7_OFFSET_SEC - (closeStamp ? 1 : 0);
+        return candles.find(c => c.time <= ts && ts < c.time + CANDLE_MS / 1000) || null;
+      };
+
+      const markers = [];
+      const isLong = sig.side === 'LONG';
+      const crossCandle = candleAt(parseTime(sig.cross_time));
+      if (crossCandle) {
+        markers.push({
+          time: crossCandle.time,
+          position: isLong ? 'belowBar' : 'aboveBar',
+          color: isLong ? longColor : shortColor,
+          shape: isLong ? 'arrowUp' : 'arrowDown',
+          text: 'Cross',
+        });
       }
+      const exitCandle = sig.exit_price != null ? candleAt(parseTime(sig.exit_time), sig.win_status === 'EXPIRED') : null;
+      if (exitCandle) {
+        const entry = sig.entry_price || sig.cross_price;
+        markers.push({
+          time: exitCandle.time,
+          position: sig.exit_price >= entry ? 'aboveBar' : 'belowBar',
+          color: (sig.r_multiple ?? sig.pnl_percent) >= 0 ? longColor : shortColor,
+          shape: 'circle',
+          text: 'Exit',
+        });
+      }
+      if (markers.length) candleSeries.setMarkers(markers.sort((a, b) => a.time - b.time));
 
       const lines = [
         [sig.entry_price, color('--entry'), LightweightCharts.LineStyle.Solid, 'Entry'],

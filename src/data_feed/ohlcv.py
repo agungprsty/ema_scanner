@@ -101,3 +101,29 @@ def fetch_candles_payload(
         "candles": candles,
         "macd": macd_data,
     }
+
+
+def fetch_candles_range(
+    client: UMFutures,
+    symbol: str,
+    timeframe: str,
+    start_ms: int,
+    end_ms: int,
+) -> list[dict] | None:
+    """Candles whose open time falls between start_ms and end_ms, oldest first, for charting."""
+    resp = client.klines(symbol=symbol, interval=timeframe, startTime=start_ms, endTime=end_ms, limit=1500)
+    if isinstance(resp, dict) and "data" in resp:
+        resp = resp["data"]
+    if not resp:
+        return None
+    return [
+        {
+            "time": int(k[0]) // 1000,
+            "open": float(k[1]),
+            "high": float(k[2]),
+            "low": float(k[3]),
+            "close": float(k[4]),
+            "volume": float(k[5]),
+        }
+        for k in resp
+    ]

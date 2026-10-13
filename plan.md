@@ -115,3 +115,5 @@ Backtest bawaan, filter strategi, panel MACD di chart, dan Alembic.
 - Pagination 20 baris per halaman untuk tab Signals, Closed, dan Journal. Sebelumnya UI hanya memuat 100 baris pertama dan sisanya tidak bisa dibuka. Halaman kembali ke 1 setiap filter diubah.
 - Tab Closed digabung ke tab Signals. Signals kini punya kolom Result (R dan PnL) dan ringkasan hasil di keterangannya, dan tab Scan berganti nama menjadi "Latest scan". Kartu statistik hanya menghitung hasil yang terhubung ke sinyal, supaya angkanya sama dengan daftar Signals.
 - Container app selalu memakai service Redis dari compose. Sebelumnya, `REDIS_URL=localhost` di `.env` ikut terbawa ke container, sehingga Redis tidak pernah terhubung.
+- Chart sinyal yang tersimpan menampilkan periode trade-nya sendiri, dengan penanda Cross dan Exit. Sebelumnya chart selalu menampilkan 80 candle terakhir, sehingga sinyal yang lebih tua dari ~6,7 hari kehilangan titik crossover-nya. Data trade yang sudah tutup di-cache 7 hari di Redis dan di browser.
+- Library chart dimuat hanya saat dibutuhkan, dan data chart bisa di-cache browser selama 60 detik.

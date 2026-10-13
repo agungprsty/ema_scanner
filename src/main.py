@@ -3,6 +3,7 @@ import logging
 import secrets
 import time
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Response
@@ -32,7 +33,7 @@ from src.config.settings import (
     VOLUME_THRESHOLD_USD,
 )
 from src.data_feed.binance_client import create_futures_client
-from src.data_feed.ohlcv import fetch_candles_payload, fetch_klines
+from src.data_feed.ohlcv import fetch_candles_payload, fetch_candles_range, fetch_klines
 from src.services.alerts import format_signal_alert, notify_closed_trades
 from src.services.cron_scheduler import cron_scheduler
 from src.services.db import (
@@ -67,6 +68,7 @@ from src.services.redis_client import (
 )
 from src.services.telegram import send_alert
 from src.strategy.macd import compute_macd, detect_macd_cross
+from src.strategy.outcome import CANDLE_INTERVAL_MS
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -529,6 +531,87 @@ async def remove_journal_entry(signal_id: int):
     if not await delete_journal_entry(signal_id):
         raise HTTPException(status_code=404, detail="No journal entry for this signal")
     return {"status": "success"}
+
+
+# Candles framing one signal's trade, for its chart
+SIGNAL_CANDLES_BEFORE = 30
+SIGNAL_CANDLES_AFTER = 6
+# A closed trade's window never changes once all its candles have closed
+SIGNAL_CANDLES_FINAL_TTL = 7 * 24 * 3600
+
+
+def _parse_utc_ms(value: str | None) -> int | None:
+    """Parse stored UTC times, with or without a zone ("2026-10-11T06:00:00Z", "2026-10-11 14:00:00")."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return int(dt.timestamp() * 1000)
+
+
+def _signal_candle_window(sig: dict, now_ms: int) -> tuple[int, int, bool]:
+    """(start_ms, end_ms, final) of the candles to chart for a signal.
+
+    Open signals run from before the cross to now. Closed ones stop a few candles after the exit,
+    and are final once every candle in that range has closed.
+    """
+    interval_ms = CANDLE_INTERVAL_MS.get(sig.get("timeframe") or "2h", CANDLE_INTERVAL_MS["2h"])
+    cross_ms = int(sig["cross_candle_ms"])
+    start_ms = cross_ms - SIGNAL_CANDLES_BEFORE * interval_ms
+    if sig.get("win_status", "PENDING") == "PENDING":
+        return start_ms, now_ms, False
+    exit_ms = _parse_utc_ms(sig.get("exit_time")) or cross_ms + (SIGNAL_EXPIRY_CANDLES + 1) * interval_ms
+    last_open_ms = exit_ms - exit_ms % interval_ms + SIGNAL_CANDLES_AFTER * interval_ms
+    final = last_open_ms + interval_ms <= now_ms
+    return start_ms, min(last_open_ms, now_ms), final
+
+
+async def _load_signal_candles(sig: dict, start_ms: int, end_ms: int, cache_key: str, ttl: int) -> dict:
+    miss_key = f"{cache_key}:miss"
+    cached = await get_cached_json(cache_key)
+    if cached:
+        return cached
+    if await get_cached_json(miss_key):
+        raise HTTPException(status_code=502, detail="Failed to load candle data from upstream")
+    if not _consume_klines_budget():
+        raise HTTPException(status_code=503, detail="Chart data temporarily unavailable, retry later")
+
+    timeframe = sig.get("timeframe") or "2h"
+    try:
+        candles = await asyncio.to_thread(
+            fetch_candles_range, _get_client(), sig["symbol"], timeframe, start_ms, end_ms
+        )
+    except Exception:
+        logger.exception("Signal candles fetch failed for signal %s", sig.get("id"))
+        candles = None
+    if not candles:
+        await set_cached_json(miss_key, {"miss": True}, ttl=KLINES_MISS_TTL)
+        raise HTTPException(status_code=502, detail="Failed to load candle data from upstream")
+
+    payload = {"symbol": sig["symbol"], "timeframe": timeframe, "candles": candles}
+    await set_cached_json(cache_key, payload, ttl=ttl)
+    return payload
+
+
+@app.get("/api/signals/{signal_id}/candles")
+async def get_signal_candles(signal_id: int, response: Response):
+    sig = await get_signal_by_id(signal_id)
+    if not sig:
+        raise HTTPException(status_code=404, detail="Signal not found")
+
+    start_ms, end_ms, final = _signal_candle_window(sig, int(time.time() * 1000))
+    ttl = SIGNAL_CANDLES_FINAL_TTL if final else KLINES_CACHE_TTL
+    cache_key = f"klines:signal:{signal_id}:{'final' if final else 'live'}"
+    payload = await _single_flight(
+        ("signal-candles", signal_id, final),
+        lambda: _load_signal_candles(sig, start_ms, end_ms, cache_key, ttl),
+    )
+    response.headers["Cache-Control"] = f"public, max-age={ttl}"
+    return {**payload, "final": final}
 
 
 # Cron Scheduler Management Endpoints
