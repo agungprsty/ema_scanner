@@ -37,7 +37,7 @@ It runs as a FastAPI service backed by PostgreSQL and Redis, with a small dashbo
 ```
 src/
   config/settings.py         MACD, risk and timeframe settings
-  data_feed/binance_client.py  Binance futures client (HMAC/RSA, proxy support)
+  data_feed/binance_client.py  Binance futures client (HMAC/RSA)
   data_feed/ohlcv.py         2H kline ingestion and chart payloads
   strategy/macd.py           Crossover detection, stop loss and target calculation
   services/db.py             Schema, signal storage, outcome evaluation
