@@ -3,6 +3,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const API_KEY_STORAGE = 'crossline_api_key';
   const LEGACY_API_KEY_STORAGE = 'tokyo_api_key';
   const CANDLE_MS = 2 * 60 * 60 * 1000;
+  const PAGE_SIZE = 20;
 
   // Defaults until /api/info answers
   const config = { signal_expiry_candles: 48, round_trip_fee_percent: 0.1 };
@@ -19,6 +20,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let chart = null;
   let chartRequest = 0;
   let currentSignal = null;
+  const pageIndex = { history: 0, profitloss: 0, journal: 0 };
 
   const $ = (id) => document.getElementById(id);
 
@@ -56,6 +58,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const filterResult = $('filter-result');
   const filterJournal = $('filter-journal');
   const pendingOption = filterResult.querySelector('option[value="PENDING"]');
+  const pagers = Object.fromEntries(
+    Array.from(document.querySelectorAll('[data-pager]')).map(el => [el.dataset.pager, el])
+  );
 
   // Watchlist
   const wlForm = $('wl-form');
@@ -288,17 +293,55 @@ document.addEventListener('DOMContentLoaded', () => {
   function setSignalsMessage(message, isError = false) {
     setListMessage(tbody, signalCards, 7, message, isError);
     shownSignals = [];
+    pagers.history.hidden = true;
   }
 
   function setPnlMessage(message, isError = false) {
     setListMessage(pnlTbody, pnlCards, 8, message, isError);
     shownTrades = [];
+    pagers.profitloss.hidden = true;
   }
 
   function setJournalMessage(message, isError = false) {
     setListMessage(journalTbody, journalCards, 8, message, isError);
     shownJournal = [];
+    pagers.journal.hidden = true;
   }
+
+  // Pagination
+  function pageParams(tab) {
+    return { limit: String(PAGE_SIZE), offset: String(pageIndex[tab] * PAGE_SIZE) };
+  }
+
+  function renderPager(tab, total, count) {
+    const el = pagers[tab];
+    const start = pageIndex[tab] * PAGE_SIZE;
+    if (!total || (total <= PAGE_SIZE && start === 0)) {
+      el.hidden = true;
+      return;
+    }
+    el.querySelector('.pager-info').textContent = `${start + 1}–${start + count} of ${total}`;
+    el.querySelector('[data-step="-1"]').disabled = start === 0;
+    el.querySelector('[data-step="1"]').disabled = start + count >= total;
+    el.hidden = false;
+  }
+
+  // A page can end up past the last row, e.g. after a journal entry is removed; go to the last page
+  function stepBackIfEmpty(tab, count, total) {
+    if (count > 0 || !total || pageIndex[tab] === 0) return false;
+    pageIndex[tab] = Math.floor((total - 1) / PAGE_SIZE);
+    reloadActiveList();
+    return true;
+  }
+
+  Object.entries(pagers).forEach(([tab, el]) => el.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-step]');
+    if (!btn || btn.disabled || activeTab !== tab) return;
+    pageIndex[tab] = Math.max(0, pageIndex[tab] + Number(btn.dataset.step));
+    reloadActiveList();
+    const panel = document.querySelector('.panel');
+    if (panel.getBoundingClientRect().top < 0) panel.scrollIntoView({ block: 'start' });
+  }));
 
   function setCaption(text) {
     caption.textContent = text || '';
@@ -404,10 +447,12 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function renderSignals(list) {
-    const filtered = filterSignals(list);
+    // History rows arrive filtered and paged by the server; only the scan result is filtered here
+    const filtered = activeTab === 'scan' ? filterSignals(list) : list;
 
     if (filtered.length === 0) {
-      setSignalsMessage(list.length ? 'No signals match these filters.' : 'No crossovers found.');
+      const filteredOut = activeTab === 'scan' ? list.length > 0 : hasFilters();
+      setSignalsMessage(filteredOut ? 'No signals match these filters.' : 'No crossovers found.');
       return;
     }
     shownSignals = filtered;
@@ -474,6 +519,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function renderScanView() {
     if (activeTab !== 'scan') return;
+    pagers.history.hidden = true;
     setCaption(scanCaption());
     if (liveSignals === null) {
       setSignalsMessage('Results from your next scan will appear here.');
@@ -590,13 +636,13 @@ document.addEventListener('DOMContentLoaded', () => {
   async function loadHistory() {
     const request = ++listRequest;
     try {
-      const data = await getJson(`/api/signals?${filterParams({ timeframe: '2h', limit: '100' })}`);
+      const data = await getJson(`/api/signals?${filterParams({ timeframe: '2h', ...pageParams('history') })}`);
       if (request !== listRequest || activeTab !== 'history') return;
       const signals = data.signals || [];
-      setCaption(data.total > signals.length
-        ? `Showing the latest ${signals.length} of ${data.total} signals.`
-        : `${plural(data.total, 'signal')}.`);
+      if (stepBackIfEmpty('history', signals.length, data.total)) return;
+      setCaption(data.total ? `${plural(data.total, 'signal')}, newest first.` : '');
       renderSignals(signals);
+      renderPager('history', data.total, signals.length);
     } catch (e) {
       if (request !== listRequest || activeTab !== 'history') return;
       setCaption('');
@@ -608,14 +654,17 @@ document.addEventListener('DOMContentLoaded', () => {
   async function loadProfitLossHistory() {
     const request = ++listRequest;
     try {
-      const data = await getJson(`/api/profitloss-history?${filterParams({ limit: '100' })}`);
+      const data = await getJson(`/api/profitloss-history?${filterParams(pageParams('profitloss'))}`);
       if (request !== listRequest || activeTab !== 'profitloss') return;
+      const history = data.history || [];
+      if (stepBackIfEmpty('profitloss', history.length, data.total)) return;
       const sum = data.summary || {};
       setCaption(sum.total_trades
         ? `${plural(sum.total_trades, 'trade')}: ${sum.profit_count} hit target, ${sum.loss_count} stopped, `
           + `${sum.expired_count || 0} expired. Net ${formatR(sum.total_r)} (${formatPct(sum.total_pnl_percent)} after fees).`
         : '');
-      renderProfitLossHistory(data.history || []);
+      renderProfitLossHistory(history);
+      if (history.length) renderPager('profitloss', data.total, history.length);
     } catch (e) {
       if (request !== listRequest || activeTab !== 'profitloss') return;
       setCaption('');
@@ -664,15 +713,18 @@ document.addEventListener('DOMContentLoaded', () => {
   // Journal
   async function loadJournal() {
     const request = ++listRequest;
-    const params = new URLSearchParams({ limit: '100' });
+    const params = new URLSearchParams(pageParams('journal'));
     const search = filterSymbol.value.toUpperCase().trim();
     if (search) params.append('symbol', search);
     if (filterJournal.value) params.append('status', filterJournal.value);
     try {
       const data = await getJson(`/api/journal?${params}`);
       if (request !== listRequest || activeTab !== 'journal') return;
+      const entries = data.entries || [];
+      if (stepBackIfEmpty('journal', entries.length, data.total)) return;
       setCaption(journalCaption(data.summary || {}));
-      renderJournal(data.entries || [], Boolean(search || filterJournal.value));
+      renderJournal(entries, Boolean(search || filterJournal.value));
+      if (entries.length) renderPager('journal', data.total, entries.length);
     } catch (e) {
       if (request !== listRequest || activeTab !== 'journal') return;
       setCaption('');
@@ -920,6 +972,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }));
 
   function onFilterChanged() {
+    // Filters are shared across tabs, so every list starts again from its first page
+    Object.keys(pageIndex).forEach(tab => { pageIndex[tab] = 0; });
     if (activeTab === 'scan') {
       renderScanView();
     } else {

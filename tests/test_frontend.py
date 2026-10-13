@@ -88,3 +88,11 @@ def test_app_js_does_not_scan_on_page_load():
     calls = [line.strip() for line in source.splitlines() if "runScan" in line]
     assert calls == ["async function runScan() {", "btnScan.addEventListener('click', runScan);"]
     assert "renderScanView();\n});" in source
+
+
+def test_app_js_pages_lists_twenty_rows_at_a_time():
+    source = APP_JS.read_text()
+    assert "const PAGE_SIZE = 20;" in source
+    assert "limit: '100'" not in source
+    for loader in ("pageParams('history')", "pageParams('profitloss')", "pageParams('journal')"):
+        assert loader in source

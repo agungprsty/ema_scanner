@@ -96,7 +96,7 @@ Statistik sinyal berbeda dari hasil trading sebenarnya. Jurnal mencatat sinyal m
 - Screenshot desktop dan ponsel memakai API tiruan.
 
 ## Di luar cakupan
-Backtest bawaan, filter strategi, panel MACD di chart, pagination riwayat, dan Alembic.
+Backtest bawaan, filter strategi, panel MACD di chart, dan Alembic.
 
 ---
 
@@ -112,3 +112,4 @@ Backtest bawaan, filter strategi, panel MACD di chart, pagination riwayat, dan A
 - Scan kini melaporkan simbol yang candle-nya gagal dimuat (`failed_symbols`). Sebelumnya, kalau koneksi ke Binance gagal, dashboard hanya menampilkan "No crossovers found".
 - Waktu exit lama yang tersimpan tanpa zona waktu kini dibaca sebagai UTC. Sebelumnya browser menganggapnya waktu lokal.
 - Agregat ringkasan closed trades kini memakai filter `start_date`/`end_date` yang sama dengan daftar.
+- Pagination 20 baris per halaman untuk tab Signals, Closed, dan Journal. Sebelumnya UI hanya memuat 100 baris pertama dan sisanya tidak bisa dibuka. Halaman kembali ke 1 setiap filter diubah.
