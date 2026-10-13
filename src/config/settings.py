@@ -52,10 +52,16 @@ MACD_TIMEFRAME = "2h"
 MACD_CROSS_LOOKBACK_CANDLES = int(os.getenv("MACD_CROSS_LOOKBACK_CANDLES", "5"))
 MACD_MAX_SYMBOLS = int(os.getenv("MACD_MAX_SYMBOLS", "50"))
 MACD_INCLUDE_CURRENT = os.getenv("MACD_INCLUDE_CURRENT", "false").lower() in ("true", "1", "yes")
+# Candles fetched per scan; EMA-based MACD needs a long history to match charting platforms
+MACD_CANDLES = int(os.getenv("MACD_CANDLES", "500"))
 
 # Strategy Risk Parameters
 RISK_REWARD_RATIO = float(os.getenv("RISK_REWARD_RATIO", "1.5"))
 SWING_LOOKBACK_CANDLES = int(os.getenv("SWING_LOOKBACK_CANDLES", "5"))
+# Close a signal as EXPIRED when neither target nor stop is hit within this many candles
+SIGNAL_EXPIRY_CANDLES = int(os.getenv("SIGNAL_EXPIRY_CANDLES", "48"))
+# Exchange fees for opening and closing a position, in percent of notional
+ROUND_TRIP_FEE_PERCENT = float(os.getenv("ROUND_TRIP_FEE_PERCENT", "0.1"))
 
 # Filtering & Concurrency
 VOLUME_THRESHOLD_USD = float(os.getenv("VOLUME_THRESHOLD_USD", "50000000"))
@@ -64,3 +70,8 @@ SCAN_CONCURRENCY = int(os.getenv("SCAN_CONCURRENCY", "10"))
 # Cron Scheduler Parameters
 CRON_ENABLED = os.getenv("CRON_ENABLED", "true").lower() in ("true", "1", "yes")
 CRON_SAFETY_DELAY_SECONDS = int(os.getenv("CRON_SAFETY_DELAY_SECONDS", "15"))
+# Closed candles the scheduled scan re-checks, so a missed run (restart, deploy) is caught up
+CRON_LOOKBACK_CANDLES = int(os.getenv("CRON_LOOKBACK_CANDLES", "3"))
+
+# Telegram message when a tracked trade closes
+TELEGRAM_OUTCOME_ALERTS = os.getenv("TELEGRAM_OUTCOME_ALERTS", "true").lower() in ("true", "1", "yes")

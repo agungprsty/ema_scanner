@@ -15,6 +15,7 @@ from src.config.settings import (
     API_SECRET_KEY,
     CORS_ORIGINS,
     DRY_RUN,
+    MACD_CANDLES,
     MACD_CROSS_LOOKBACK_CANDLES,
     MACD_FAST,
     MACD_INCLUDE_CURRENT,
@@ -22,13 +23,17 @@ from src.config.settings import (
     MACD_SIGNAL,
     MACD_SLOW,
     MACD_TIMEFRAME,
+    RISK_REWARD_RATIO,
+    ROUND_TRIP_FEE_PERCENT,
     SCAN_CONCURRENCY,
+    SIGNAL_EXPIRY_CANDLES,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
     VOLUME_THRESHOLD_USD,
 )
 from src.data_feed.binance_client import create_futures_client
 from src.data_feed.ohlcv import fetch_candles_payload, fetch_klines
+from src.services.alerts import format_signal_alert, notify_closed_trades
 from src.services.cron_scheduler import cron_scheduler
 from src.services.db import (
     add_watchlist_symbol,
@@ -225,12 +230,16 @@ class SummaryResponse(BaseModel):
     tp1_hit_count: int
     sl_hit_count: int
     pending_count: int
+    expired_count: int = 0
     winrate: float
     avg_rr: float
     watchlist_count: int
     latest_signal_time: str | None = None
     total_net_pnl: float = 0.0
     closed_trades: int = 0
+    total_r: float = 0.0
+    avg_r: float = 0.0
+    max_drawdown_r: float = 0.0
 
 
 class HealthResponse(BaseModel):
@@ -263,6 +272,9 @@ async def get_info():
         "strategy": f"MACD ({MACD_FAST}, {MACD_SLOW}, {MACD_SIGNAL}) Overcross with Dynamic Swing SL/TP1",
         "enforced_timeframe": "2h",
         "default_lookback": MACD_CROSS_LOOKBACK_CANDLES,
+        "risk_reward_ratio": RISK_REWARD_RATIO,
+        "signal_expiry_candles": SIGNAL_EXPIRY_CANDLES,
+        "round_trip_fee_percent": ROUND_TRIP_FEE_PERCENT,
         "max_symbols": MACD_MAX_SYMBOLS,
         "cron": cron_scheduler.get_status(),
     }
@@ -477,12 +489,18 @@ async def trigger_cron_execution():
     return {"status": "success", "result": res, "summary": summary}
 
 
+async def _evaluate_and_notify(client) -> dict:
+    res = await evaluate_pending_signals(client)
+    closed = res.pop("closed", None) if isinstance(res, dict) else None
+    await notify_closed_trades(closed)
+    return res
+
+
 # Evaluate Outcome Endpoints
 @app.post("/api/evaluate", dependencies=[Depends(verify_api_key)])
 @app.post("/api/profitloss-history/evaluate", dependencies=[Depends(verify_api_key)])
 async def evaluate_trades():
-    client = _get_client()
-    eval_res = await evaluate_pending_signals(client)
+    eval_res = await _evaluate_and_notify(_get_client())
     summary = await get_macd_signals_summary()
     return {"status": "success", "evaluated": eval_res, "summary": summary}
 
@@ -554,8 +572,8 @@ async def run_macd_scan(
         Query(description="Comma-separated whitelist. If omitted, uses Database Watchlist."),
     ] = None,
     limit: Annotated[
-        int, Query(ge=35, le=1000, description="Candles to fetch")
-    ] = 100,
+        int, Query(ge=35, le=1500, description="Candles to fetch")
+    ] = MACD_CANDLES,
     lookback: Annotated[
         int, Query(ge=1, le=20, description="Candles lookback for crossover")
     ] = MACD_CROSS_LOOKBACK_CANDLES,
@@ -618,8 +636,6 @@ async def run_macd_scan(
             df = await asyncio.to_thread(fetch_klines, client, sym, timeframe, limit)
             if df is None:
                 return None
-            if not include_current:
-                df = df.iloc[:-1].copy()
             df = compute_macd(df, fast=MACD_FAST, slow=MACD_SLOW, signal=MACD_SIGNAL)
             if df is None:
                 return None
@@ -639,7 +655,11 @@ async def run_macd_scan(
     alert_enabled = send_telegram and bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 
     for sig in detected:
-        if preview:
+        if not sig.is_confirmed:
+            # A cross on the forming candle can still disappear before the close, so it is shown
+            # but never claimed, stored or alerted; the confirmed cross is picked up after the close
+            is_new = False
+        elif preview:
             is_new = not await is_cross_detected(
                 sig.side, sig.symbol, sig.cross_candle_ms, timeframe=timeframe
             )
@@ -676,16 +696,7 @@ async def run_macd_scan(
 
         if is_new:
             new_signals_count += 1
-            status_tag = "closed candle" if sig.is_confirmed else "candle still forming"
-            telegram_parts.append(
-                f"<b>{sig.side}</b> #${sig.symbol} (2h)\n"
-                f"Status: {status_tag} | Reason: {sig.reason}\n"
-                f"Entry: {sig.entry_price:.4f}\n"
-                f"Stop loss: {sig.stop_loss:.4f}\n"
-                f"TP1: {sig.tp1:.4f} (R:R 1:{sig.risk_reward_ratio:.1f})\n"
-                f"MACD: {sig.macd:.4f} | Signal: {sig.signal:.4f} | Hist: {sig.histogram:.4f}\n"
-                f"Time: {sig.cross_time}"
-            )
+            telegram_parts.append(format_signal_alert(sig))
 
         signals_output.append(
             SignalItem(
@@ -728,7 +739,7 @@ async def run_macd_scan(
             item.confirmed = record["is_confirmed"]
 
     # Trigger outcome evaluation asynchronously
-    background_tasks.add_task(evaluate_pending_signals, client)
+    background_tasks.add_task(_evaluate_and_notify, client)
 
     if send_telegram and telegram_parts:
         header = "<b>Crossline: MACD 2H signals</b>\n\n"
