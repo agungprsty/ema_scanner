@@ -94,5 +94,11 @@ def test_app_js_pages_lists_twenty_rows_at_a_time():
     source = APP_JS.read_text()
     assert "const PAGE_SIZE = 20;" in source
     assert "limit: '100'" not in source
-    for loader in ("pageParams('history')", "pageParams('profitloss')", "pageParams('journal')"):
+    for loader in ("pageParams('history')", "pageParams('journal')"):
         assert loader in source
+
+
+def test_dashboard_has_no_separate_closed_trades_tab():
+    html = (APP_JS.parent / "index.html").read_text()
+    assert 'data-tab="profitloss"' not in html
+    assert "loadProfitLossHistory" not in APP_JS.read_text()

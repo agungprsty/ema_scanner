@@ -14,13 +14,12 @@ document.addEventListener('DOMContentLoaded', () => {
   let liveGeneration = 0;
   let listRequest = 0;
   let shownSignals = [];
-  let shownTrades = [];
   let shownJournal = [];
   let watchlist = [];
   let chart = null;
   let chartRequest = 0;
   let currentSignal = null;
-  const pageIndex = { history: 0, profitloss: 0, journal: 0 };
+  const pageIndex = { history: 0, journal: 0 };
 
   const $ = (id) => document.getElementById(id);
 
@@ -39,14 +38,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const tabs = Array.from(document.querySelectorAll('.tab'));
   const views = {
     signals: $('view-signals'),
-    profitloss: $('view-profitloss'),
     journal: $('view-journal'),
     watchlist: $('view-watchlist'),
   };
 
-  // Closed trades & journal
-  const pnlTbody = $('pnl-tbody');
-  const pnlCards = $('pnl-cards');
+  // Journal
   const journalTbody = $('journal-tbody');
   const journalCards = $('journal-cards');
 
@@ -57,7 +53,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const filterSide = $('filter-side');
   const filterResult = $('filter-result');
   const filterJournal = $('filter-journal');
-  const pendingOption = filterResult.querySelector('option[value="PENDING"]');
   const pagers = Object.fromEntries(
     Array.from(document.querySelectorAll('[data-pager]')).map(el => [el.dataset.pager, el])
   );
@@ -152,7 +147,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function formatPct(val) {
     const num = Number(val) || 0;
-    return `${num > 0 ? '+' : ''}${num.toFixed(2)}%`;
+    return `${num > 0 ? '+' : num < 0 ? '−' : ''}${Math.abs(num).toFixed(2)}%`;
   }
 
   function formatR(val, digits = 2) {
@@ -196,6 +191,13 @@ document.addEventListener('DOMContentLoaded', () => {
   function outcomeHtml(status) {
     const o = outcomeOf(status);
     return `<span class="outcome ${o.cls}">${o.label}</span>`;
+  }
+
+  // R and PnL of a closed signal; a dash while it is open
+  function resultHtml(s) {
+    if (s.r_multiple == null && s.pnl_percent == null) return '<span class="muted">–</span>';
+    const r = s.r_multiple != null ? `<span class="${signClass(s.r_multiple)}">${formatR(s.r_multiple)}</span> ` : '';
+    return `${r}<span class="muted">${formatPct(s.pnl_percent)}</span>`;
   }
 
   function journalTagHtml(status) {
@@ -291,15 +293,9 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function setSignalsMessage(message, isError = false) {
-    setListMessage(tbody, signalCards, 7, message, isError);
+    setListMessage(tbody, signalCards, 8, message, isError);
     shownSignals = [];
     pagers.history.hidden = true;
-  }
-
-  function setPnlMessage(message, isError = false) {
-    setListMessage(pnlTbody, pnlCards, 8, message, isError);
-    shownTrades = [];
-    pagers.profitloss.hidden = true;
   }
 
   function setJournalMessage(message, isError = false) {
@@ -465,6 +461,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <td class="r num">${formatPrice(s.stop_loss)}</td>
         <td class="r num">${formatPrice(s.tp1)}</td>
         <td>${outcomeHtml(s.win_status)}</td>
+        <td class="r num">${resultHtml(s)}</td>
         <td class="num muted">${escapeHtml(formatWIB(s.cross_time))}</td>
       </tr>
     `).join('');
@@ -480,7 +477,10 @@ document.addEventListener('DOMContentLoaded', () => {
           <div><dt>Stop</dt><dd class="num">${formatPrice(s.stop_loss)}</dd></div>
           <div><dt>Target</dt><dd class="num">${formatPrice(s.tp1)}</dd></div>
         </dl>
-        <div class="card-time num">${escapeHtml(formatWIB(s.cross_time))} WIB</div>
+        <div class="card-foot">
+          <span class="card-time num">${escapeHtml(formatWIB(s.cross_time))} WIB</span>
+          ${s.r_multiple != null || s.pnl_percent != null ? `<span class="card-result num">${resultHtml(s)}</span>` : ''}
+        </div>
       </div>
     `).join('');
   }
@@ -501,10 +501,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   bindRowOpen([tbody, signalCards], i => shownSignals[i]);
   bindRowOpen([journalTbody, journalCards], i => shownJournal[i]);
-  bindRowOpen([pnlTbody, pnlCards], i => {
-    const trade = shownTrades[i];
-    return trade && trade.signal_id ? { id: trade.signal_id, symbol: trade.symbol, side: trade.direction } : null;
-  });
 
   function scanCaption() {
     if (!liveMeta) return 'No scan has run in this session. The scheduled scan runs every 2 hours; use Run scan to check now.';
@@ -549,6 +545,7 @@ document.addEventListener('DOMContentLoaded', () => {
     updates.forEach((row, idx) => {
       if (!row) return;
       if (row.win_status) tracked[idx].win_status = row.win_status;
+      ['r_multiple', 'pnl_percent', 'exit_price', 'exit_time'].forEach(k => { tracked[idx][k] = row[k]; });
       tracked[idx].journal_status = row.journal ? row.journal.status : null;
     });
     return true;
@@ -640,7 +637,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (request !== listRequest || activeTab !== 'history') return;
       const signals = data.signals || [];
       if (stepBackIfEmpty('history', signals.length, data.total)) return;
-      setCaption(data.total ? `${plural(data.total, 'signal')}, newest first.` : '');
+      setCaption(signalsCaption(data.total, data.summary || {}));
       renderSignals(signals);
       renderPager('history', data.total, signals.length);
     } catch (e) {
@@ -650,64 +647,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Closed trades
-  async function loadProfitLossHistory() {
-    const request = ++listRequest;
-    try {
-      const data = await getJson(`/api/profitloss-history?${filterParams(pageParams('profitloss'))}`);
-      if (request !== listRequest || activeTab !== 'profitloss') return;
-      const history = data.history || [];
-      if (stepBackIfEmpty('profitloss', history.length, data.total)) return;
-      const sum = data.summary || {};
-      setCaption(sum.total_trades
-        ? `${plural(sum.total_trades, 'trade')}: ${sum.profit_count} hit target, ${sum.loss_count} stopped, `
-          + `${sum.expired_count || 0} expired. Net ${formatR(sum.total_r)} (${formatPct(sum.total_pnl_percent)} after fees).`
-        : '');
-      renderProfitLossHistory(history);
-      if (history.length) renderPager('profitloss', data.total, history.length);
-    } catch (e) {
-      if (request !== listRequest || activeTab !== 'profitloss') return;
-      setCaption('');
-      setPnlMessage(`Could not load closed trades: ${e.message}`, true);
+  function signalsCaption(total, sum) {
+    if (!total) return '';
+    let text = `${plural(total, 'signal')}, newest first: ${sum.open_count || 0} open, `
+      + `${sum.profit_count || 0} hit target, ${sum.loss_count || 0} stopped, ${sum.expired_count || 0} expired.`;
+    if (sum.closed_count) {
+      text += ` Closed result: ${formatR(sum.total_r)} (${formatPct(sum.total_pnl_percent)} after fees).`;
     }
-  }
-
-  function renderProfitLossHistory(list) {
-    if (list.length === 0) {
-      setPnlMessage(hasFilters()
-        ? 'No closed trades match these filters.'
-        : 'No trades have closed yet. A trade closes at its target, its stop, or when it expires.');
-      return;
-    }
-    shownTrades = list;
-
-    pnlTbody.innerHTML = list.map((item, i) => `
-      <tr ${item.signal_id ? `data-index="${i}" tabindex="0"` : ''}>
-        <td><span class="sym">${escapeHtml(item.symbol)}</span></td>
-        <td>${sideHtml(item.direction)}</td>
-        <td class="r num">${formatPrice(item.entry_price)}</td>
-        <td class="r num">${formatPrice(item.exit_price)}</td>
-        <td>${outcomeHtml(item.result)}</td>
-        <td class="r num ${signClass(item.r_multiple)}">${formatR(item.r_multiple)}</td>
-        <td class="r num ${signClass(item.pnl_percent)}">${formatPct(item.pnl_percent)}</td>
-        <td class="num muted">${escapeHtml(formatWIB(item.exit_time))}</td>
-      </tr>
-    `).join('');
-
-    pnlCards.innerHTML = list.map((item, i) => `
-      <div class="card" ${item.signal_id ? `data-index="${i}" tabindex="0"` : ''}>
-        <div class="card-top">
-          <div><span class="sym">${escapeHtml(item.symbol)}</span> &nbsp;${sideHtml(item.direction)}</div>
-          ${outcomeHtml(item.result)}
-        </div>
-        <dl class="card-levels">
-          <div><dt>Entry</dt><dd class="num">${formatPrice(item.entry_price)}</dd></div>
-          <div><dt>Exit</dt><dd class="num">${formatPrice(item.exit_price)}</dd></div>
-          <div><dt>Result</dt><dd class="num ${signClass(item.r_multiple)}">${formatR(item.r_multiple)}</dd></div>
-        </dl>
-        <div class="card-time num">Closed ${escapeHtml(formatWIB(item.exit_time))} WIB, ${formatPct(item.pnl_percent)}</div>
-      </div>
-    `).join('');
+    return text;
   }
 
   // Journal
@@ -923,7 +870,6 @@ document.addEventListener('DOMContentLoaded', () => {
   // Tabs
   function reloadActiveList() {
     if (activeTab === 'history') return loadHistory();
-    if (activeTab === 'profitloss') return loadProfitLossHistory();
     if (activeTab === 'journal') return loadJournal();
     if (activeTab === 'scan') return refreshLiveView();
     return loadWatchlist();
@@ -934,7 +880,6 @@ document.addEventListener('DOMContentLoaded', () => {
     tabs.forEach(t => t.setAttribute('aria-selected', String(t.dataset.tab === tab)));
 
     views.signals.hidden = !(tab === 'scan' || tab === 'history');
-    views.profitloss.hidden = tab !== 'profitloss';
     views.journal.hidden = tab !== 'journal';
     views.watchlist.hidden = tab !== 'watchlist';
 
@@ -943,18 +888,12 @@ document.addEventListener('DOMContentLoaded', () => {
       el.hidden = !el.dataset.tabs.split(' ').includes(tab);
     });
 
-    pendingOption.disabled = tab === 'profitloss';
-    if (tab === 'profitloss' && filterResult.value === 'PENDING') filterResult.value = '';
-
     setCaption('');
     if (tab === 'scan') {
       renderScanView();
     } else if (tab === 'history') {
       setSignalsMessage('Loading…');
       loadHistory();
-    } else if (tab === 'profitloss') {
-      setPnlMessage('Loading…');
-      loadProfitLossHistory();
     } else if (tab === 'journal') {
       setJournalMessage('Loading…');
       loadJournal();
@@ -1013,7 +952,12 @@ document.addEventListener('DOMContentLoaded', () => {
     $('detail-sl').innerHTML = formatPrice(sig.stop_loss) + pctFrom(entry, sig.stop_loss);
     $('detail-tp').innerHTML = formatPrice(sig.tp1) + pctFrom(entry, sig.tp1);
     $('detail-rr').textContent = sig.risk_reward_ratio ? `1:${sig.risk_reward_ratio}` : '–';
-    $('detail-outcome').innerHTML = sig.win_status ? outcomeHtml(sig.win_status) : '–';
+    let outcome = sig.win_status ? outcomeHtml(sig.win_status) : '–';
+    if (sig.exit_price != null) {
+      outcome += `<span class="hint">Exit ${formatPrice(sig.exit_price)} on ${escapeHtml(formatWIB(sig.exit_time))}, `
+        + `${formatR(sig.r_multiple)} (${formatPct(sig.pnl_percent)})</span>`;
+    }
+    $('detail-outcome').innerHTML = outcome;
 
     const fmt4 = (v) => (v != null ? Number(v).toFixed(4) : '–');
     $('detail-macd').textContent = fmt4(sig.macd);

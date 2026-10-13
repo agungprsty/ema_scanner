@@ -477,6 +477,9 @@
     .card-levels dd { font-size: 13px; overflow-wrap: anywhere; }
 
     .card-time { font-size: 12px; color: var(--text-3); margin-top: 10px; }
+    .card-foot { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-top: 10px; }
+    .card-foot .card-time { margin-top: 0; }
+    .card-result { font-size: 13px; white-space: nowrap; }
 
     /* Watchlist */
     .wl-add {
@@ -781,21 +784,20 @@
     <section class="panel">
       <div class="panel-head">
         <div class="tabs" role="tablist" aria-label="Views">
-          <button class="tab" role="tab" id="tab-scan" data-tab="scan" aria-selected="true">Scan</button>
+          <button class="tab" role="tab" id="tab-scan" data-tab="scan" aria-selected="true">Latest scan</button>
           <button class="tab" role="tab" id="tab-history" data-tab="history" aria-selected="false">Signals</button>
-          <button class="tab" role="tab" id="tab-profitloss" data-tab="profitloss" aria-selected="false">Closed</button>
           <button class="tab" role="tab" id="tab-journal" data-tab="journal" aria-selected="false">Journal</button>
           <button class="tab" role="tab" id="tab-watchlist" data-tab="watchlist" aria-selected="false">Watchlist<span class="count num" id="wl-count"></span></button>
         </div>
         <div class="filters" id="filters">
-          <input type="text" id="filter-symbol" data-tabs="scan history profitloss journal" placeholder="Symbol" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Filter by symbol">
-          <input type="date" id="filter-date" data-tabs="scan history profitloss" aria-label="Filter by date">
-          <select id="filter-side" data-tabs="scan history profitloss" aria-label="Filter by side">
+          <input type="text" id="filter-symbol" data-tabs="scan history journal" placeholder="Symbol" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Filter by symbol">
+          <input type="date" id="filter-date" data-tabs="scan history" aria-label="Filter by date">
+          <select id="filter-side" data-tabs="scan history" aria-label="Filter by side">
             <option value="">Any side</option>
             <option value="LONG">Long</option>
             <option value="SHORT">Short</option>
           </select>
-          <select id="filter-result" data-tabs="scan history profitloss" aria-label="Filter by outcome">
+          <select id="filter-result" data-tabs="scan history" aria-label="Filter by outcome">
             <option value="">Any outcome</option>
             <option value="PROFIT">Target hit</option>
             <option value="LOSS">Stopped out</option>
@@ -823,6 +825,7 @@
                 <th class="r">Stop</th>
                 <th class="r">Target</th>
                 <th>Outcome</th>
+                <th class="r">Result</th>
                 <th>Crossed (WIB)</th>
               </tr>
             </thead>
@@ -831,34 +834,6 @@
         </div>
         <div class="card-view" id="signals-cards"></div>
         <nav class="pager" data-pager="history" aria-label="Pages" hidden>
-          <span class="pager-info num"></span>
-          <div class="pager-btns">
-            <button class="btn" type="button" data-step="-1">Previous</button>
-            <button class="btn" type="button" data-step="1">Next</button>
-          </div>
-        </nav>
-      </div>
-
-      <div id="view-profitloss" hidden>
-        <div class="table-view">
-          <table>
-            <thead>
-              <tr>
-                <th>Symbol</th>
-                <th>Side</th>
-                <th class="r">Entry</th>
-                <th class="r">Exit</th>
-                <th>Result</th>
-                <th class="r">R</th>
-                <th class="r">PnL</th>
-                <th>Closed (WIB)</th>
-              </tr>
-            </thead>
-            <tbody id="pnl-tbody"></tbody>
-          </table>
-        </div>
-        <div class="card-view" id="pnl-cards"></div>
-        <nav class="pager" data-pager="profitloss" aria-label="Pages" hidden>
           <span class="pager-info num"></span>
           <div class="pager-btns">
             <button class="btn" type="button" data-step="-1">Previous</button>

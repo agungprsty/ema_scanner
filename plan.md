@@ -113,3 +113,5 @@ Backtest bawaan, filter strategi, panel MACD di chart, dan Alembic.
 - Waktu exit lama yang tersimpan tanpa zona waktu kini dibaca sebagai UTC. Sebelumnya browser menganggapnya waktu lokal.
 - Agregat ringkasan closed trades kini memakai filter `start_date`/`end_date` yang sama dengan daftar.
 - Pagination 20 baris per halaman untuk tab Signals, Closed, dan Journal. Sebelumnya UI hanya memuat 100 baris pertama dan sisanya tidak bisa dibuka. Halaman kembali ke 1 setiap filter diubah.
+- Tab Closed digabung ke tab Signals. Signals kini punya kolom Result (R dan PnL) dan ringkasan hasil di keterangannya, dan tab Scan berganti nama menjadi "Latest scan". Kartu statistik hanya menghitung hasil yang terhubung ke sinyal, supaya angkanya sama dengan daftar Signals.
+- Container app selalu memakai service Redis dari compose. Sebelumnya, `REDIS_URL=localhost` di `.env` ikut terbawa ke container, sehingga Redis tidak pernah terhubung.

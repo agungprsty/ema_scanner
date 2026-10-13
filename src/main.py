@@ -228,6 +228,7 @@ class SignalsHistoryResponse(BaseModel):
     total: int
     limit: int
     offset: int
+    summary: dict = {}
     signals: list[dict]
 
 
@@ -832,7 +833,7 @@ async def list_signals(
     offset: Annotated[int, Query(ge=0, description="Page offset")] = 0,
 ):
     target_side = direction or side
-    records, total = await get_macd_signals(
+    records, total, summary = await get_macd_signals(
         symbol=symbol,
         side=target_side,
         timeframe=timeframe,
@@ -848,6 +849,7 @@ async def list_signals(
         total=total,
         limit=limit,
         offset=offset,
+        summary=summary,
         signals=records,
     )
 

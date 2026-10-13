@@ -572,6 +572,39 @@ async def save_macd_signal(signal: MacdSignal, timeframe: str = "2h") -> dict | 
         return None
 
 
+def _empty_signals_summary() -> dict:
+    return {
+        "open_count": 0,
+        "profit_count": 0,
+        "loss_count": 0,
+        "expired_count": 0,
+        "closed_count": 0,
+        "total_r": 0.0,
+        "total_pnl_percent": 0.0,
+    }
+
+
+def _trade_result(pl) -> dict:
+    """Result fields shown with a signal; all None while the signal is still open."""
+    if pl is None:
+        return {"exit_price": None, "exit_time": None, "r_multiple": None, "pnl_percent": None}
+    return {
+        "exit_price": round(pl.exit_price, 6),
+        "exit_time": pl.exit_time,
+        "r_multiple": round(pl.r_multiple, 2) if pl.r_multiple is not None else None,
+        "pnl_percent": round(pl.pnl_percent, 2),
+    }
+
+
+async def _trade_results_by_signal(session: AsyncSession, signal_ids: list[int]) -> dict[int, dict]:
+    if not signal_ids:
+        return {}
+    rows = await session.execute(
+        select(ProfitLossHistoryModel).where(ProfitLossHistoryModel.signal_id.in_(signal_ids))
+    )
+    return {pl.signal_id: _trade_result(pl) for pl in rows.scalars().all()}
+
+
 async def get_macd_signals(
     symbol: str | None = None,
     side: str | None = None,
@@ -584,75 +617,79 @@ async def get_macd_signals(
     end_date: str | None = None,
     limit: int = 50,
     offset: int = 0,
-) -> tuple[list[dict], int]:
+) -> tuple[list[dict], int, dict]:
+    """Signals newest first, each with its journal status and trade result, plus a summary of
+    every signal matching the filters."""
     if _session_maker is None:
-        return [], 0
+        return [], 0, _empty_signals_summary()
 
+    sig, pl = MacdSignalModel, ProfitLossHistoryModel
     target_side = (direction or side or "").strip().upper() or None
     target_status = None
     if result:
         res_upper = result.strip().upper()
-        if res_upper == "PROFIT":
-            target_status = "TP1_HIT"
-        elif res_upper == "LOSS":
-            target_status = "SL_HIT"
-        elif res_upper == "PENDING":
-            target_status = "PENDING"
-        else:
-            target_status = res_upper
+        target_status = {"PROFIT": "TP1_HIT", "LOSS": "SL_HIT"}.get(res_upper, res_upper)
     elif win_status:
         target_status = win_status.strip().upper()
 
+    conditions = []
+    if symbol:
+        conditions.append(sig.symbol == symbol.upper().strip())
+    if target_side:
+        conditions.append(sig.side == target_side)
+    if timeframe:
+        conditions.append(sig.timeframe == timeframe.strip().lower())
+    if target_status:
+        conditions.append(sig.win_status == target_status)
+    if date:
+        conditions.append(sig.cross_time.like(f"{date.strip()}%"))
+    if start_date:
+        conditions.append(sig.cross_time >= start_date.strip())
+    if end_date:
+        conditions.append(sig.cross_time <= f"{end_date.strip()} 23:59:59")
+
     try:
         async with _session_maker() as session:
-            query = select(MacdSignalModel)
-            count_query = select(func.count(MacdSignalModel.id))
+            agg = (
+                await session.execute(
+                    select(
+                        func.count(sig.id).label("total"),
+                        func.count().filter(sig.win_status == "PENDING").label("open"),
+                        func.count().filter(sig.win_status == "TP1_HIT").label("profit"),
+                        func.count().filter(sig.win_status == "SL_HIT").label("loss"),
+                        func.count().filter(sig.win_status == "EXPIRED").label("expired"),
+                        func.count(pl.id).label("closed"),
+                        func.coalesce(func.sum(pl.r_multiple), 0.0).label("total_r"),
+                        func.coalesce(func.sum(pl.pnl_percent), 0.0).label("pnl"),
+                    )
+                    .select_from(sig)
+                    .outerjoin(pl, pl.signal_id == sig.id)
+                    .where(*conditions)
+                )
+            ).one()
 
-            if symbol:
-                clean_sym = symbol.upper().strip()
-                query = query.where(MacdSignalModel.symbol == clean_sym)
-                count_query = count_query.where(MacdSignalModel.symbol == clean_sym)
-            if target_side:
-                query = query.where(MacdSignalModel.side == target_side)
-                count_query = count_query.where(MacdSignalModel.side == target_side)
-            if timeframe:
-                clean_tf = timeframe.strip().lower()
-                query = query.where(MacdSignalModel.timeframe == clean_tf)
-                count_query = count_query.where(MacdSignalModel.timeframe == clean_tf)
-            if target_status:
-                query = query.where(MacdSignalModel.win_status == target_status)
-                count_query = count_query.where(MacdSignalModel.win_status == target_status)
-
-            if date:
-                clean_date = date.strip()
-                query = query.where(MacdSignalModel.cross_time.like(f"{clean_date}%"))
-                count_query = count_query.where(MacdSignalModel.cross_time.like(f"{clean_date}%"))
-
-            if start_date:
-                clean_start = start_date.strip()
-                query = query.where(MacdSignalModel.cross_time >= clean_start)
-                count_query = count_query.where(MacdSignalModel.cross_time >= clean_start)
-
-            if end_date:
-                clean_end = f"{end_date.strip()} 23:59:59"
-                query = query.where(MacdSignalModel.cross_time <= clean_end)
-                count_query = count_query.where(MacdSignalModel.cross_time <= clean_end)
-
-            total_res = await session.execute(count_query)
-            total = total_res.scalar_one() or 0
-
-            query = (
-                query.order_by(desc(MacdSignalModel.id))
-                .limit(limit)
-                .offset(offset)
-            )
-            res = await session.execute(query)
-            records = res.scalars().all()
-            journal = await _journal_status_by_signal(session, [r.id for r in records])
-            return [{**r.to_dict(), "journal_status": journal.get(r.id)} for r in records], total
+            query = select(sig).where(*conditions).order_by(desc(sig.id)).limit(limit).offset(offset)
+            records = (await session.execute(query)).scalars().all()
+            ids = [r.id for r in records]
+            journal = await _journal_status_by_signal(session, ids)
+            results = await _trade_results_by_signal(session, ids)
+            items = [
+                {**r.to_dict(), **results.get(r.id, _trade_result(None)), "journal_status": journal.get(r.id)}
+                for r in records
+            ]
+            summary = {
+                "open_count": agg.open or 0,
+                "profit_count": agg.profit or 0,
+                "loss_count": agg.loss or 0,
+                "expired_count": agg.expired or 0,
+                "closed_count": agg.closed or 0,
+                "total_r": round(float(agg.total_r or 0.0), 2),
+                "total_pnl_percent": round(float(agg.pnl or 0.0), 2),
+            }
+            return items, agg.total or 0, summary
     except Exception as e:
         logger.exception("Failed to query MACD signals: %s", e)
-        return [], 0
+        return [], 0, _empty_signals_summary()
 
 
 async def get_signals_by_keys(
@@ -692,7 +729,12 @@ async def get_signal_by_id(signal_id: int) -> dict | None:
             entry = (
                 await session.execute(select(TradeJournalModel).where(TradeJournalModel.signal_id == signal_id))
             ).scalar_one_or_none()
-            return {**sig.to_dict(), "journal": journal_view(sig, entry)}
+            results = await _trade_results_by_signal(session, [signal_id])
+            return {
+                **sig.to_dict(),
+                **results.get(signal_id, _trade_result(None)),
+                "journal": journal_view(sig, entry),
+            }
     except Exception as e:
         logger.error("Failed to get signal %d: %s", signal_id, e)
         return None
@@ -977,10 +1019,12 @@ async def get_macd_signals_summary() -> dict:
             resolved = tp1_hits + sl_hits + expired
             winrate = round((tp1_hits / resolved) * 100, 1) if resolved > 0 else 0.0
 
+            # Only results tied to a recorded signal, so these totals match the signal list
+            linked = ProfitLossHistoryModel.signal_id.in_(select(MacdSignalModel.id))
             pl_stmt = select(
                 func.coalesce(func.sum(ProfitLossHistoryModel.pnl_percent), 0.0).label("total_pnl"),
                 func.count(ProfitLossHistoryModel.id).label("closed_trades"),
-            )
+            ).where(linked)
             pl_row = (await session.execute(pl_stmt)).one()
             total_net_pnl = round(float(pl_row.total_pnl or 0.0), 2)
             closed_trades = pl_row.closed_trades or resolved
@@ -990,7 +1034,7 @@ async def get_macd_signals_summary() -> dict:
                 for v in (
                     await session.execute(
                         select(ProfitLossHistoryModel.r_multiple)
-                        .where(ProfitLossHistoryModel.r_multiple.is_not(None))
+                        .where(ProfitLossHistoryModel.r_multiple.is_not(None), linked)
                         .order_by(ProfitLossHistoryModel.exit_time, ProfitLossHistoryModel.id)
                     )
                 ).scalars().all()
