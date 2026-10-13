@@ -9,7 +9,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Qu
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import AfterValidator, BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field, model_validator
 
 from src.config.settings import (
     API_SECRET_KEY,
@@ -38,8 +38,10 @@ from src.services.cron_scheduler import cron_scheduler
 from src.services.db import (
     add_watchlist_symbol,
     close_db,
+    delete_journal_entry,
     delete_watchlist_symbol,
     evaluate_pending_signals,
+    get_journal,
     get_macd_signals,
     get_macd_signals_summary,
     get_profitloss_history,
@@ -51,6 +53,7 @@ from src.services.db import (
     record_profit_loss,
     save_macd_signal,
     toggle_watchlist_symbol,
+    upsert_journal_entry,
 )
 from src.services.redis_client import (
     claim_cross,
@@ -156,6 +159,19 @@ class WatchlistAddRequest(BaseModel):
 
 class WatchlistToggleRequest(BaseModel):
     is_active: bool
+
+
+class JournalRequest(BaseModel):
+    status: Literal["TAKEN", "SKIPPED"]
+    entry_fill: float | None = Field(default=None, gt=0)
+    exit_fill: float | None = Field(default=None, gt=0)
+    notes: str = Field(default="", max_length=500)
+
+    @model_validator(mode="after")
+    def exit_needs_entry(self):
+        if self.exit_fill is not None and self.entry_fill is None:
+            raise ValueError("exit_fill requires entry_fill")
+        return self
 
 
 class ProfitLossRecordRequest(BaseModel):
@@ -472,6 +488,42 @@ async def get_single_signal(signal_id: int):
     if not sig:
         raise HTTPException(status_code=404, detail="Signal not found")
     return sig
+
+
+# Trade Journal Endpoints
+@app.get("/api/journal")
+async def list_journal(
+    status: Annotated[Literal["TAKEN", "SKIPPED"] | None, Query(description="TAKEN or SKIPPED")] = None,
+    symbol: Annotated[str | None, Query(max_length=30, description="Filter by symbol")] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+):
+    items, total, summary = await get_journal(status=status, symbol=symbol, limit=limit, offset=offset)
+    return {"total": total, "limit": limit, "offset": offset, "summary": summary, "entries": items}
+
+
+@app.put("/api/signals/{signal_id}/journal", dependencies=[Depends(verify_api_key)])
+async def save_journal_entry(signal_id: int, body: JournalRequest):
+    try:
+        item = await upsert_journal_entry(
+            signal_id,
+            status=body.status,
+            entry_fill=body.entry_fill,
+            exit_fill=body.exit_fill,
+            notes=body.notes.strip(),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Failed to save journal entry") from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="Signal not found")
+    return item
+
+
+@app.delete("/api/signals/{signal_id}/journal", dependencies=[Depends(verify_api_key)])
+async def remove_journal_entry(signal_id: int):
+    if not await delete_journal_entry(signal_id):
+        raise HTTPException(status_code=404, detail="No journal entry for this signal")
+    return {"status": "success"}
 
 
 # Cron Scheduler Management Endpoints

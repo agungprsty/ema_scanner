@@ -186,6 +186,32 @@ class ProfitLossHistoryModel(Base):
         }
 
 
+class TradeJournalModel(Base):
+    """What the user actually did with a signal: taken or skipped, and at which fills."""
+
+    __tablename__ = "trade_journal"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    signal_id: Mapped[int] = mapped_column(Integer, unique=True, index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(10), index=True, nullable=False)
+    entry_fill: Mapped[float | None] = mapped_column(Float, nullable=True)
+    exit_fill: Mapped[float | None] = mapped_column(Float, nullable=True)
+    notes: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "status": self.status,
+            "entry_fill": self.entry_fill,
+            "exit_fill": self.exit_fill,
+            "notes": self.notes,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
 SIGNAL_UNIQUE_COLUMNS = ("symbol", "side", "timeframe", "cross_candle_ms")
 
 SIGNAL_SURVIVOR_RANK = """
@@ -622,7 +648,8 @@ async def get_macd_signals(
             )
             res = await session.execute(query)
             records = res.scalars().all()
-            return [r.to_dict() for r in records], total
+            journal = await _journal_status_by_signal(session, [r.id for r in records])
+            return [{**r.to_dict(), "journal_status": journal.get(r.id)} for r in records], total
     except Exception as e:
         logger.exception("Failed to query MACD signals: %s", e)
         return [], 0
@@ -660,7 +687,12 @@ async def get_signal_by_id(signal_id: int) -> dict | None:
             stmt = select(MacdSignalModel).where(MacdSignalModel.id == signal_id)
             res = await session.execute(stmt)
             sig = res.scalar_one_or_none()
-            return sig.to_dict() if sig else None
+            if sig is None:
+                return None
+            entry = (
+                await session.execute(select(TradeJournalModel).where(TradeJournalModel.signal_id == signal_id))
+            ).scalar_one_or_none()
+            return {**sig.to_dict(), "journal": journal_view(sig, entry)}
     except Exception as e:
         logger.error("Failed to get signal %d: %s", signal_id, e)
         return None
@@ -1017,3 +1049,154 @@ async def get_macd_signals_summary() -> dict:
             "avg_r": 0.0,
             "max_drawdown_r": 0.0,
         }
+
+
+# Trade Journal Operations
+JOURNAL_STATUSES = ("TAKEN", "SKIPPED")
+
+
+def journal_view(sig, entry) -> dict | None:
+    """Journal entry for a signal, with the result of the user's own fills when both are known."""
+    if entry is None:
+        return None
+    view = entry.to_dict()
+    pnl, r_multiple = None, None
+    if entry.status == "TAKEN" and entry.entry_fill and entry.exit_fill:
+        pnl, r_multiple = trade_return(
+            sig.side, entry.entry_fill, sig.stop_loss, entry.exit_fill, ROUND_TRIP_FEE_PERCENT
+        )
+    view["pnl_percent"] = round(pnl, 2) if pnl is not None else None
+    view["r_multiple"] = round(r_multiple, 2) if r_multiple is not None else None
+    return view
+
+
+async def _journal_status_by_signal(session: AsyncSession, signal_ids: list[int]) -> dict[int, str]:
+    if not signal_ids:
+        return {}
+    rows = await session.execute(
+        select(TradeJournalModel.signal_id, TradeJournalModel.status).where(
+            TradeJournalModel.signal_id.in_(signal_ids)
+        )
+    )
+    return {signal_id: status for signal_id, status in rows.all()}
+
+
+async def upsert_journal_entry(
+    signal_id: int,
+    status: str,
+    entry_fill: float | None = None,
+    exit_fill: float | None = None,
+    notes: str = "",
+) -> dict | None:
+    """Create or replace the journal entry for a signal. Returns None when the signal does not exist."""
+    if _session_maker is None:
+        return None
+    if status == "SKIPPED":
+        entry_fill = exit_fill = None
+    values = {"status": status, "entry_fill": entry_fill, "exit_fill": exit_fill, "notes": notes}
+
+    try:
+        async with _session_maker() as session:
+            sig = (
+                await session.execute(select(MacdSignalModel).where(MacdSignalModel.id == signal_id))
+            ).scalar_one_or_none()
+            if sig is None:
+                return None
+            await session.execute(
+                pg_insert(TradeJournalModel)
+                .values(signal_id=signal_id, **values)
+                .on_conflict_do_update(index_elements=["signal_id"], set_={**values, "updated_at": func.now()})
+            )
+            await session.commit()
+            entry = (
+                await session.execute(select(TradeJournalModel).where(TradeJournalModel.signal_id == signal_id))
+            ).scalar_one()
+            return {**sig.to_dict(), "journal": journal_view(sig, entry)}
+    except Exception as e:
+        logger.exception("Failed to save journal entry for signal %d: %s", signal_id, e)
+        raise
+
+
+async def delete_journal_entry(signal_id: int) -> bool:
+    if _session_maker is None:
+        return False
+    async with _session_maker() as session:
+        entry = (
+            await session.execute(select(TradeJournalModel).where(TradeJournalModel.signal_id == signal_id))
+        ).scalar_one_or_none()
+        if entry is None:
+            return False
+        await session.delete(entry)
+        await session.commit()
+        return True
+
+
+def _empty_journal_summary() -> dict:
+    return {
+        "taken": 0,
+        "skipped": 0,
+        "closed_taken": 0,
+        "your_total_r": 0.0,
+        "your_total_pnl_percent": 0.0,
+        "signal_r_taken": 0.0,
+        "signal_r_skipped": 0.0,
+    }
+
+
+async def get_journal(
+    status: str | None = None,
+    symbol: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[dict], int, dict]:
+    """Journal entries joined with their signals, newest signal first, plus a summary of all entries."""
+    if _session_maker is None:
+        return [], 0, _empty_journal_summary()
+
+    j, sig_m, pl = TradeJournalModel, MacdSignalModel, ProfitLossHistoryModel
+    conditions = []
+    if status:
+        conditions.append(j.status == status.strip().upper())
+    if symbol:
+        conditions.append(sig_m.symbol == symbol.strip().upper())
+
+    try:
+        async with _session_maker() as session:
+            base = select(sig_m, j).join(j, j.signal_id == sig_m.id).where(*conditions)
+            total = (
+                await session.execute(
+                    select(func.count(j.id)).join(sig_m, j.signal_id == sig_m.id).where(*conditions)
+                )
+            ).scalar_one() or 0
+            rows = (await session.execute(base.order_by(desc(sig_m.id)).limit(limit).offset(offset))).all()
+            items = [{**s.to_dict(), "journal": journal_view(s, e)} for s, e in rows]
+
+            # Summary across every entry, unfiltered, so the comparison is stable while browsing
+            all_rows = (await session.execute(select(sig_m, j).join(j, j.signal_id == sig_m.id))).all()
+            signal_r = dict(
+                (
+                    await session.execute(
+                        select(pl.signal_id, pl.r_multiple).where(
+                            pl.signal_id.in_([s.id for s, _ in all_rows]), pl.r_multiple.is_not(None)
+                        )
+                    )
+                ).all()
+            ) if all_rows else {}
+
+            summary = _empty_journal_summary()
+            for s, e in all_rows:
+                taken = e.status == "TAKEN"
+                summary["taken" if taken else "skipped"] += 1
+                key = "signal_r_taken" if taken else "signal_r_skipped"
+                summary[key] += signal_r.get(s.id, 0.0)
+                view = journal_view(s, e)
+                if taken and view["r_multiple"] is not None:
+                    summary["closed_taken"] += 1
+                    summary["your_total_r"] += view["r_multiple"]
+                    summary["your_total_pnl_percent"] += view["pnl_percent"]
+            for key in ("your_total_r", "your_total_pnl_percent", "signal_r_taken", "signal_r_skipped"):
+                summary[key] = round(summary[key], 2)
+            return items, total, summary
+    except Exception as e:
+        logger.exception("Failed to query trade journal: %s", e)
+        return [], 0, _empty_journal_summary()

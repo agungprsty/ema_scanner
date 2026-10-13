@@ -104,6 +104,6 @@ Backtest bawaan, filter strategi, panel MACD di chart, pagination riwayat, dan A
 
 - [x] 1. Akurasi pengukuran (backend)
 - [x] 2. Notifikasi outcome
-- [ ] 3. Jurnal trade
+- [x] 3. Jurnal trade (backend; UI menyusul di langkah 4)
 - [ ] 4. UI/UX responsif
 - [ ] 5. Verifikasi dan dokumentasi
