@@ -220,6 +220,7 @@ class ScanResponse(BaseModel):
     execution_time: str
     total_scanned: int
     new_signals_count: int
+    failed_symbols: list[str] = []
     signals: list[SignalItem]
 
 
@@ -683,10 +684,13 @@ async def run_macd_scan(
 
     sem = asyncio.Semaphore(SCAN_CONCURRENCY)
 
+    failed_symbols: list[str] = []
+
     async def _detect(sym: str):
         async with sem:
             df = await asyncio.to_thread(fetch_klines, client, sym, timeframe, limit)
             if df is None:
+                failed_symbols.append(sym)
                 return None
             df = compute_macd(df, fast=MACD_FAST, slow=MACD_SLOW, signal=MACD_SIGNAL)
             if df is None:
@@ -808,6 +812,7 @@ async def run_macd_scan(
         execution_time=elapsed,
         total_scanned=len(symbol_list),
         new_signals_count=new_signals_count,
+        failed_symbols=sorted(failed_symbols),
         signals=signals_output,
     )
 

@@ -102,8 +102,13 @@ Backtest bawaan, filter strategi, panel MACD di chart, pagination riwayat, dan A
 
 ## Progres
 
-- [x] 1. Akurasi pengukuran (backend)
+- [x] 1. Akurasi pengukuran
 - [x] 2. Notifikasi outcome
-- [x] 3. Jurnal trade (backend; UI menyusul di langkah 4)
-- [ ] 4. UI/UX responsif
-- [ ] 5. Verifikasi dan dokumentasi
+- [x] 3. Jurnal trade
+- [x] 4. UI/UX responsif
+- [x] 5. Verifikasi dan dokumentasi
+
+### Tambahan yang ditemukan saat verifikasi
+- Scan kini melaporkan simbol yang candle-nya gagal dimuat (`failed_symbols`). Sebelumnya, kalau koneksi ke Binance gagal, dashboard hanya menampilkan "No crossovers found".
+- Waktu exit lama yang tersimpan tanpa zona waktu kini dibaca sebagai UTC. Sebelumnya browser menganggapnya waktu lokal.
+- Agregat ringkasan closed trades kini memakai filter `start_date`/`end_date` yang sama dengan daftar.

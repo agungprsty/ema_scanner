@@ -201,6 +201,18 @@ async def test_scan_shows_forming_cross_without_recording_it(scan_env, fake_redi
 
 
 @pytest.mark.asyncio
+async def test_scan_reports_symbols_whose_candles_failed(scan_env, fake_redis, monkeypatch):
+    monkeypatch.setattr(
+        main, "fetch_klines", lambda client, sym, tf, limit: None if sym == "ETHUSDT" else _Frame([sym, sym])
+    )
+
+    resp, _ = await _run_scan("BTCUSDT,ETHUSDT")
+
+    assert resp.failed_symbols == ["ETHUSDT"]
+    assert [s.symbol for s in resp.signals] == ["BTCUSDT"]
+
+
+@pytest.mark.asyncio
 async def test_scan_evaluates_and_notifies_in_background(scan_env, fake_redis, monkeypatch):
     sent = []
 

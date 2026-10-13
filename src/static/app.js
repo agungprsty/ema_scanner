@@ -2,6 +2,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const TZ = 'Asia/Jakarta';
   const API_KEY_STORAGE = 'crossline_api_key';
   const LEGACY_API_KEY_STORAGE = 'tokyo_api_key';
+  const CANDLE_MS = 2 * 60 * 60 * 1000;
+
+  // Defaults until /api/info answers
+  const config = { signal_expiry_candles: 48, round_trip_fee_percent: 0.1 };
 
   let activeTab = 'scan';
   let liveSignals = null;
@@ -9,9 +13,12 @@ document.addEventListener('DOMContentLoaded', () => {
   let liveGeneration = 0;
   let listRequest = 0;
   let shownSignals = [];
+  let shownTrades = [];
+  let shownJournal = [];
   let watchlist = [];
   let chart = null;
   let chartRequest = 0;
+  let currentSignal = null;
 
   const $ = (id) => document.getElementById(id);
 
@@ -24,18 +31,22 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnEval = $('btn-eval');
   const caption = $('caption');
   const actionNotice = $('action-notice');
+  const toast = $('toast');
 
   // Tabs & views
   const tabs = Array.from(document.querySelectorAll('.tab'));
-  const viewSignals = $('view-signals');
-  const viewProfitLoss = $('view-profitloss');
-  const viewWatchlist = $('view-watchlist');
+  const views = {
+    signals: $('view-signals'),
+    profitloss: $('view-profitloss'),
+    journal: $('view-journal'),
+    watchlist: $('view-watchlist'),
+  };
 
-  // Closed trades
+  // Closed trades & journal
   const pnlTbody = $('pnl-tbody');
   const pnlCards = $('pnl-cards');
-  const statTotalPnl = $('stat-total-pnl');
-  const statPnlSub = $('stat-pnl-sub');
+  const journalTbody = $('journal-tbody');
+  const journalCards = $('journal-cards');
 
   // Filters
   const filters = $('filters');
@@ -43,6 +54,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const filterDate = $('filter-date');
   const filterSide = $('filter-side');
   const filterResult = $('filter-result');
+  const filterJournal = $('filter-journal');
   const pendingOption = filterResult.querySelector('option[value="PENDING"]');
 
   // Watchlist
@@ -56,10 +68,26 @@ document.addEventListener('DOMContentLoaded', () => {
   const modal = $('signal-modal');
   const modalClose = $('modal-close');
   const chartViewport = $('chart-viewport');
+  const journalForm = $('journal-form');
+  const journalFields = $('journal-fields');
+  const journalHelp = $('journal-help');
+  const journalEntry = $('journal-entry');
+  const journalExit = $('journal-exit');
+  const journalNotes = $('journal-notes');
+  const journalResult = $('journal-result');
+  const journalSave = $('journal-save');
 
   function showNotice(message) {
     actionNotice.textContent = message || '';
     actionNotice.hidden = !message;
+  }
+
+  let toastTimer = null;
+  function showToast(message) {
+    toast.textContent = message;
+    toast.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { toast.hidden = true; }, 2500);
   }
 
   // Formatting
@@ -88,22 +116,29 @@ document.addEventListener('DOMContentLoaded', () => {
     hourCycle: 'h23',
   });
 
-  function formatWIB(isoStr) {
-    if (!isoStr) return '–';
-    const dt = new Date(isoStr);
-    if (isNaN(dt.getTime())) return String(isoStr);
+  // Older rows store UTC times without a zone ("2026-10-13 12:00:00"); read them as UTC
+  function parseTime(value) {
+    if (!value) return null;
+    let str = String(value);
+    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$/.test(str)) str = `${str.replace(' ', 'T')}Z`;
+    const dt = new Date(str);
+    return isNaN(dt.getTime()) ? null : dt;
+  }
+
+  function formatWIB(value) {
+    const dt = value instanceof Date ? value : parseTime(value);
+    if (!dt) return value ? String(value) : '–';
     const p = Object.fromEntries(dateTimeFmt.formatToParts(dt).map(x => [x.type, x.value]));
     return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
   }
 
-  function formatTimeOnlyWIB(isoStr) {
-    if (!isoStr) return '--:--';
-    const dt = new Date(isoStr);
-    return isNaN(dt.getTime()) ? '--:--' : hourFmt.format(dt);
+  function formatTimeOnlyWIB(value) {
+    const dt = parseTime(value);
+    return dt ? hourFmt.format(dt) : '--:--';
   }
 
   function formatPrice(val) {
-    if (val == null || isNaN(val)) return '–';
+    if (val == null || val === '' || isNaN(val)) return '–';
     const num = Number(val);
     if (num >= 1000) return num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     if (num >= 1) return num.toFixed(4);
@@ -113,6 +148,21 @@ document.addEventListener('DOMContentLoaded', () => {
   function formatPct(val) {
     const num = Number(val) || 0;
     return `${num > 0 ? '+' : ''}${num.toFixed(2)}%`;
+  }
+
+  function formatR(val, digits = 2) {
+    if (val == null || isNaN(val)) return '–';
+    const num = Number(val);
+    return `${num > 0 ? '+' : num < 0 ? '−' : ''}${Math.abs(num).toFixed(digits)}R`;
+  }
+
+  function signClass(val) {
+    if (val == null || isNaN(val)) return '';
+    return val > 0 ? 'is-long' : val < 0 ? 'is-short' : '';
+  }
+
+  function plural(n, word) {
+    return `${n} ${word}${n === 1 ? '' : 's'}`;
   }
 
   function escapeHtml(value) {
@@ -134,12 +184,28 @@ document.addEventListener('DOMContentLoaded', () => {
   function outcomeOf(status) {
     if (status === 'TP1_HIT' || status === 'PROFIT') return { cls: 'win', label: 'Target hit' };
     if (status === 'SL_HIT' || status === 'LOSS') return { cls: 'loss', label: 'Stopped out' };
+    if (status === 'EXPIRED') return { cls: 'expired', label: 'Expired' };
     return { cls: '', label: 'Open' };
   }
 
   function outcomeHtml(status) {
     const o = outcomeOf(status);
     return `<span class="outcome ${o.cls}">${o.label}</span>`;
+  }
+
+  function journalTagHtml(status) {
+    if (status === 'TAKEN') return '<span class="tag">taken</span>';
+    if (status === 'SKIPPED') return '<span class="tag">skipped</span>';
+    return '';
+  }
+
+  // Same formula as the server: PnL after fees, and R against the signal's stop
+  function tradeReturn(side, entry, stop, exit) {
+    if (!(entry > 0) || !(exit > 0)) return null;
+    const dir = side === 'LONG' ? 1 : -1;
+    const pnl = dir * (exit - entry) / entry * 100 - config.round_trip_fee_percent;
+    const risk = Math.abs(entry - stop) / entry * 100;
+    return { pnl, r: risk > 0 ? pnl / risk : null };
   }
 
   // API helpers
@@ -213,17 +279,25 @@ document.addEventListener('DOMContentLoaded', () => {
     return `<div class="empty${isError ? ' err' : ''}">${escapeHtml(message)}</div>`;
   }
 
-  function setSignalsMessage(message, isError = false) {
+  function setListMessage(tbodyEl, cardsEl, columns, message, isError = false) {
     const html = emptyHtml(message, isError);
-    tbody.innerHTML = `<tr><td colspan="7">${html}</td></tr>`;
-    signalCards.innerHTML = html;
+    tbodyEl.innerHTML = `<tr><td colspan="${columns}">${html}</td></tr>`;
+    cardsEl.innerHTML = html;
+  }
+
+  function setSignalsMessage(message, isError = false) {
+    setListMessage(tbody, signalCards, 7, message, isError);
     shownSignals = [];
   }
 
   function setPnlMessage(message, isError = false) {
-    const html = emptyHtml(message, isError);
-    pnlTbody.innerHTML = `<tr><td colspan="8">${html}</td></tr>`;
-    pnlCards.innerHTML = html;
+    setListMessage(pnlTbody, pnlCards, 8, message, isError);
+    shownTrades = [];
+  }
+
+  function setJournalMessage(message, isError = false) {
+    setListMessage(journalTbody, journalCards, 8, message, isError);
+    shownJournal = [];
   }
 
   function setCaption(text) {
@@ -237,7 +311,7 @@ document.addEventListener('DOMContentLoaded', () => {
   tickClock();
   setInterval(tickClock, 1000);
 
-  // Health & cron
+  // Health, cron & config
   async function checkHealth() {
     const dot = $('health-dot');
     const text = $('health-text');
@@ -260,33 +334,47 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Summary
-  function setNetPnl(value, closedCount) {
-    const pnl = Number(value) || 0;
-    statTotalPnl.textContent = formatPct(pnl);
-    statTotalPnl.className = `stat-value num ${pnl > 0 ? 'is-long' : pnl < 0 ? 'is-short' : ''}`;
-    statPnlSub.textContent = `${closedCount} closed ${closedCount === 1 ? 'trade' : 'trades'}`;
+  async function loadConfig() {
+    try {
+      const info = await getJson('/api/info');
+      if (info.signal_expiry_candles != null) config.signal_expiry_candles = info.signal_expiry_candles;
+      if (info.round_trip_fee_percent != null) config.round_trip_fee_percent = info.round_trip_fee_percent;
+    } catch {
+      // keep defaults
+    }
   }
 
+  // Summary
   async function loadSummary() {
     try {
       const data = await getJson('/api/summary');
       const wins = data.tp1_hit_count || 0;
       const losses = data.sl_hit_count || 0;
-      const decided = wins + losses;
+      const expired = data.expired_count || 0;
+      const closed = wins + losses + expired;
 
-      $('stat-winrate').textContent = decided ? `${Number(data.winrate || 0).toFixed(1)}%` : '–';
-      $('bar-wins').style.width = decided ? `${(wins / decided) * 100}%` : '0';
-      $('bar-losses').style.width = decided ? `${(losses / decided) * 100}%` : '0';
-      $('stat-win-ratio').textContent = `${wins} won, ${losses} lost`;
+      $('stat-winrate').textContent = closed ? `${Number(data.winrate || 0).toFixed(1)}%` : '–';
+      $('bar-wins').style.width = closed ? `${(wins / closed) * 100}%` : '0';
+      $('bar-losses').style.width = closed ? `${(losses / closed) * 100}%` : '0';
+      $('bar-expired').style.width = closed ? `${(expired / closed) * 100}%` : '0';
+      $('stat-win-ratio').textContent = closed
+        ? `${wins} hit target, ${losses} stopped, ${expired} expired`
+        : 'No closed trades yet';
 
-      $('stat-total-signals').textContent = data.total_signals || 0;
-      $('stat-active-pending').textContent = `${data.pending_count || 0} still open`;
-      $('stat-long').textContent = data.long_signals || 0;
-      $('stat-short').textContent = data.short_signals || 0;
-      if (data.avg_rr) $('stat-rr').textContent = `Target at ${Number(data.avg_rr).toFixed(1)}× risk`;
+      const netR = $('stat-net-r');
+      const trades = data.closed_trades || 0;
+      netR.textContent = trades ? formatR(data.total_r, 1) : '–';
+      netR.className = `stat-value num ${trades ? signClass(data.total_r) : ''}`;
+      $('stat-net-sub').textContent = trades
+        ? `${formatPct(data.total_net_pnl)} after fees, ${plural(trades, 'trade')}`
+        : 'After fees';
 
-      setNetPnl(data.total_net_pnl, data.closed_trades ?? decided);
+      const dd = $('stat-drawdown');
+      dd.textContent = trades ? formatR(-(data.max_drawdown_r || 0), 1) : '–';
+      dd.className = `stat-value num ${data.max_drawdown_r ? 'is-short' : ''}`;
+
+      $('stat-open').textContent = data.pending_count || 0;
+      $('stat-open-sub').textContent = `${data.total_signals || 0} recorded, ${data.long_signals || 0} long / ${data.short_signals || 0} short`;
     } catch (e) {
       console.warn('Summary load failed', e);
     }
@@ -298,31 +386,35 @@ document.addEventListener('DOMContentLoaded', () => {
     const side = filterSide.value;
     const result = filterResult.value;
     const dateVal = filterDate.value;
+    const statusFor = { PROFIT: 'TP1_HIT', LOSS: 'SL_HIT', EXPIRED: 'EXPIRED', PENDING: 'PENDING' };
 
     return list.filter(s => {
       if (search && !s.symbol.includes(search)) return false;
       if (side && s.side !== side) return false;
-      if (result === 'PROFIT' && s.win_status !== 'TP1_HIT') return false;
-      if (result === 'LOSS' && s.win_status !== 'SL_HIT') return false;
-      if (result === 'PENDING' && s.win_status !== 'PENDING') return false;
+      if (result && s.win_status !== statusFor[result]) return false;
       if (dateVal && !(s.cross_time && s.cross_time.startsWith(dateVal))) return false;
       return true;
     });
   }
 
-  function renderSignals(list) {
-    shownSignals = filterSignals(list);
+  function signalTags(s) {
+    if (s.confirmed === false) return '<span class="tag tag-forming">forming</span>';
+    if (activeTab === 'scan' && s.is_new) return '<span class="tag tag-new">new</span>';
+    return journalTagHtml(s.journal_status);
+  }
 
-    if (shownSignals.length === 0) {
+  function renderSignals(list) {
+    const filtered = filterSignals(list);
+
+    if (filtered.length === 0) {
       setSignalsMessage(list.length ? 'No signals match these filters.' : 'No crossovers found.');
       return;
     }
+    shownSignals = filtered;
 
-    const showNew = activeTab === 'scan';
-
-    tbody.innerHTML = shownSignals.map((s, i) => `
+    tbody.innerHTML = filtered.map((s, i) => `
       <tr data-index="${i}" tabindex="0">
-        <td><span class="sym">${escapeHtml(s.symbol)}</span>${showNew && s.is_new ? '<span class="tag-new">new</span>' : ''}</td>
+        <td><span class="sym">${escapeHtml(s.symbol)}</span>${signalTags(s)}</td>
         <td>${sideHtml(s.side)}</td>
         <td class="r num">${formatPrice(s.entry_price || s.cross_price)}</td>
         <td class="r num">${formatPrice(s.stop_loss)}</td>
@@ -332,10 +424,10 @@ document.addEventListener('DOMContentLoaded', () => {
       </tr>
     `).join('');
 
-    signalCards.innerHTML = shownSignals.map((s, i) => `
+    signalCards.innerHTML = filtered.map((s, i) => `
       <div class="card" data-index="${i}" tabindex="0">
         <div class="card-top">
-          <div><span class="sym">${escapeHtml(s.symbol)}</span> &nbsp;${sideHtml(s.side)}${showNew && s.is_new ? '<span class="tag-new">new</span>' : ''}</div>
+          <div><span class="sym">${escapeHtml(s.symbol)}</span> &nbsp;${sideHtml(s.side)}${signalTags(s)}</div>
           ${outcomeHtml(s.win_status)}
         </div>
         <dl class="card-levels">
@@ -348,24 +440,36 @@ document.addEventListener('DOMContentLoaded', () => {
     `).join('');
   }
 
-  function onSignalActivate(e) {
-    if (e.type === 'keydown' && e.key !== 'Enter') return;
-    const el = e.target.closest('[data-index]');
-    if (!el) return;
-    const sig = shownSignals[Number(el.dataset.index)];
-    if (sig) openChartModal(sig);
+  function bindRowOpen(containers, pick) {
+    const handler = (e) => {
+      if (e.type === 'keydown' && e.key !== 'Enter') return;
+      const el = e.target.closest('[data-index]');
+      if (!el) return;
+      const item = pick(Number(el.dataset.index));
+      if (item) openSignal(item);
+    };
+    containers.forEach(el => {
+      el.addEventListener('click', handler);
+      el.addEventListener('keydown', handler);
+    });
   }
 
-  [tbody, signalCards].forEach(el => {
-    el.addEventListener('click', onSignalActivate);
-    el.addEventListener('keydown', onSignalActivate);
+  bindRowOpen([tbody, signalCards], i => shownSignals[i]);
+  bindRowOpen([journalTbody, journalCards], i => shownJournal[i]);
+  bindRowOpen([pnlTbody, pnlCards], i => {
+    const trade = shownTrades[i];
+    return trade && trade.signal_id ? { id: trade.signal_id, symbol: trade.symbol, side: trade.direction } : null;
   });
 
   function scanCaption() {
     if (!liveMeta) return 'No scan has run in this session. The scheduled scan runs every 2 hours; use Run scan to check now.';
     const count = liveSignals.length;
-    return `Scanned ${liveMeta.total_scanned} symbols in ${liveMeta.execution_time} at ${liveMeta.at} WIB. `
-      + `${count} ${count === 1 ? 'crossover' : 'crossovers'} in the last ${liveMeta.lookback} bars, ${liveMeta.new_signals_count} new.`;
+    const forming = liveSignals.filter(s => s.confirmed === false).length;
+    const scanned = liveMeta.total_scanned - liveMeta.failed.length;
+    if (scanned === 0) return 'The last scan could not load any candles.';
+    return `Scanned ${scanned} of ${liveMeta.total_scanned} symbols in ${liveMeta.execution_time} at ${liveMeta.at} WIB. `
+      + `${plural(count, 'crossover')} in the last ${liveMeta.lookback} bars, ${liveMeta.new_signals_count} new.`
+      + (forming ? ' Crosses on the forming candle are shown but not recorded until it closes.' : '');
   }
 
   function renderScanView() {
@@ -373,6 +477,10 @@ document.addEventListener('DOMContentLoaded', () => {
     setCaption(scanCaption());
     if (liveSignals === null) {
       setSignalsMessage('Results from your next scan will appear here.');
+      return;
+    }
+    if (liveMeta && liveMeta.failed.length === liveMeta.total_scanned) {
+      setSignalsMessage('No results: candles could not be loaded from Binance.', true);
       return;
     }
     renderSignals(liveSignals);
@@ -393,7 +501,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }));
     if (generation !== liveGeneration) return false;
     updates.forEach((row, idx) => {
-      if (row && row.win_status) tracked[idx].win_status = row.win_status;
+      if (!row) return;
+      if (row.win_status) tracked[idx].win_status = row.win_status;
+      tracked[idx].journal_status = row.journal ? row.journal.status : null;
     });
     return true;
   }
@@ -441,8 +551,15 @@ document.addEventListener('DOMContentLoaded', () => {
         execution_time: data.execution_time,
         lookback: data.lookback,
         new_signals_count: data.new_signals_count,
+        failed: data.failed_symbols || [],
         at: hourFmt.format(new Date()),
       };
+      if (liveMeta.failed.length) {
+        const all = liveMeta.failed.length === liveMeta.total_scanned;
+        showNotice(all
+          ? 'Could not load candles for any symbol. Check the server connection to Binance.'
+          : `Could not load candles for ${liveMeta.failed.join(', ')}. Results exclude them.`);
+      }
       selectTab('scan');
       scheduleLiveRefresh();
       await loadSummary();
@@ -478,7 +595,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const signals = data.signals || [];
       setCaption(data.total > signals.length
         ? `Showing the latest ${signals.length} of ${data.total} signals.`
-        : `${data.total} ${data.total === 1 ? 'signal' : 'signals'}.`);
+        : `${plural(data.total, 'signal')}.`);
       renderSignals(signals);
     } catch (e) {
       if (request !== listRequest || activeTab !== 'history') return;
@@ -493,17 +610,12 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const data = await getJson(`/api/profitloss-history?${filterParams({ limit: '100' })}`);
       if (request !== listRequest || activeTab !== 'profitloss') return;
-      const history = data.history || [];
       const sum = data.summary || {};
-
-      if (!hasFilters() && sum.total_pnl_percent !== undefined) {
-        setNetPnl(sum.total_pnl_percent, sum.total_trades || 0);
-      }
-
       setCaption(sum.total_trades
-        ? `${sum.total_trades} trades, ${sum.profit_count} won and ${sum.loss_count} lost. Net ${formatPct(sum.total_pnl_percent)}.`
+        ? `${plural(sum.total_trades, 'trade')}: ${sum.profit_count} hit target, ${sum.loss_count} stopped, `
+          + `${sum.expired_count || 0} expired. Net ${formatR(sum.total_r)} (${formatPct(sum.total_pnl_percent)} after fees).`
         : '');
-      renderProfitLossHistory(history);
+      renderProfitLossHistory(data.history || []);
     } catch (e) {
       if (request !== listRequest || activeTab !== 'profitloss') return;
       setCaption('');
@@ -515,37 +627,113 @@ document.addEventListener('DOMContentLoaded', () => {
     if (list.length === 0) {
       setPnlMessage(hasFilters()
         ? 'No closed trades match these filters.'
-        : 'No trades have closed yet. A trade closes when price reaches its target or stop.');
+        : 'No trades have closed yet. A trade closes at its target, its stop, or when it expires.');
       return;
     }
+    shownTrades = list;
 
-    const pnlCls = (item) => item.pnl_percent > 0 ? 'is-long' : item.pnl_percent < 0 ? 'is-short' : '';
-
-    pnlTbody.innerHTML = list.map(item => `
-      <tr>
+    pnlTbody.innerHTML = list.map((item, i) => `
+      <tr ${item.signal_id ? `data-index="${i}" tabindex="0"` : ''}>
         <td><span class="sym">${escapeHtml(item.symbol)}</span></td>
         <td>${sideHtml(item.direction)}</td>
         <td class="r num">${formatPrice(item.entry_price)}</td>
         <td class="r num">${formatPrice(item.exit_price)}</td>
         <td>${outcomeHtml(item.result)}</td>
-        <td class="r num ${pnlCls(item)}">${formatPct(item.pnl_percent)}</td>
-        <td class="num muted">${escapeHtml(formatWIB(item.cross_time))}</td>
+        <td class="r num ${signClass(item.r_multiple)}">${formatR(item.r_multiple)}</td>
+        <td class="r num ${signClass(item.pnl_percent)}">${formatPct(item.pnl_percent)}</td>
         <td class="num muted">${escapeHtml(formatWIB(item.exit_time))}</td>
       </tr>
     `).join('');
 
-    pnlCards.innerHTML = list.map(item => `
-      <div class="card">
+    pnlCards.innerHTML = list.map((item, i) => `
+      <div class="card" ${item.signal_id ? `data-index="${i}" tabindex="0"` : ''}>
         <div class="card-top">
           <div><span class="sym">${escapeHtml(item.symbol)}</span> &nbsp;${sideHtml(item.direction)}</div>
-          <span class="num ${pnlCls(item)}">${formatPct(item.pnl_percent)}</span>
+          ${outcomeHtml(item.result)}
         </div>
         <dl class="card-levels">
           <div><dt>Entry</dt><dd class="num">${formatPrice(item.entry_price)}</dd></div>
           <div><dt>Exit</dt><dd class="num">${formatPrice(item.exit_price)}</dd></div>
-          <div><dt>Result</dt><dd>${outcomeHtml(item.result)}</dd></div>
+          <div><dt>Result</dt><dd class="num ${signClass(item.r_multiple)}">${formatR(item.r_multiple)}</dd></div>
         </dl>
-        <div class="card-time num">Closed ${escapeHtml(formatWIB(item.exit_time))} WIB</div>
+        <div class="card-time num">Closed ${escapeHtml(formatWIB(item.exit_time))} WIB, ${formatPct(item.pnl_percent)}</div>
+      </div>
+    `).join('');
+  }
+
+  // Journal
+  async function loadJournal() {
+    const request = ++listRequest;
+    const params = new URLSearchParams({ limit: '100' });
+    const search = filterSymbol.value.toUpperCase().trim();
+    if (search) params.append('symbol', search);
+    if (filterJournal.value) params.append('status', filterJournal.value);
+    try {
+      const data = await getJson(`/api/journal?${params}`);
+      if (request !== listRequest || activeTab !== 'journal') return;
+      setCaption(journalCaption(data.summary || {}));
+      renderJournal(data.entries || [], Boolean(search || filterJournal.value));
+    } catch (e) {
+      if (request !== listRequest || activeTab !== 'journal') return;
+      setCaption('');
+      setJournalMessage(`Could not load the journal: ${e.message}`, true);
+    }
+  }
+
+  function journalCaption(sum) {
+    if (!sum.taken && !sum.skipped) return '';
+    let text = `${sum.taken} taken, ${sum.skipped} skipped.`;
+    if (sum.closed_taken) {
+      text += ` Your ${plural(sum.closed_taken, 'closed trade')}: ${formatR(sum.your_total_r)} (${formatPct(sum.your_total_pnl_percent)} after fees).`;
+    }
+    text += ` Tracked result of the signals you took: ${formatR(sum.signal_r_taken)}; of those you skipped: ${formatR(sum.signal_r_skipped)}.`;
+    return text;
+  }
+
+  function journalResultHtml(j) {
+    if (!j || j.status !== 'TAKEN') return '<span class="muted">–</span>';
+    if (j.r_multiple == null) return '<span class="muted">open</span>';
+    return `<span class="${signClass(j.r_multiple)}">${formatR(j.r_multiple)}</span> <span class="muted">${formatPct(j.pnl_percent)}</span>`;
+  }
+
+  function decisionLabel(j) {
+    return j && j.status === 'TAKEN' ? 'Taken' : 'Skipped';
+  }
+
+  function renderJournal(list, filtered) {
+    if (list.length === 0) {
+      setJournalMessage(filtered
+        ? 'No journal entries match these filters.'
+        : 'Nothing recorded yet. Open a signal and use "Your trade" to note whether you took it.');
+      return;
+    }
+    shownJournal = list;
+
+    journalTbody.innerHTML = list.map((s, i) => `
+      <tr data-index="${i}" tabindex="0">
+        <td><span class="sym">${escapeHtml(s.symbol)}</span></td>
+        <td>${sideHtml(s.side)}</td>
+        <td>${decisionLabel(s.journal)}</td>
+        <td class="r num">${formatPrice(s.journal && s.journal.entry_fill)}</td>
+        <td class="r num">${formatPrice(s.journal && s.journal.exit_fill)}</td>
+        <td class="r num">${journalResultHtml(s.journal)}</td>
+        <td>${outcomeHtml(s.win_status)}</td>
+        <td class="num muted">${escapeHtml(formatWIB(s.cross_time))}</td>
+      </tr>
+    `).join('');
+
+    journalCards.innerHTML = list.map((s, i) => `
+      <div class="card" data-index="${i}" tabindex="0">
+        <div class="card-top">
+          <div><span class="sym">${escapeHtml(s.symbol)}</span> &nbsp;${sideHtml(s.side)}<span class="tag">${decisionLabel(s.journal).toLowerCase()}</span></div>
+          ${outcomeHtml(s.win_status)}
+        </div>
+        <dl class="card-levels">
+          <div><dt>Entry fill</dt><dd class="num">${formatPrice(s.journal && s.journal.entry_fill)}</dd></div>
+          <div><dt>Exit fill</dt><dd class="num">${formatPrice(s.journal && s.journal.exit_fill)}</dd></div>
+          <div><dt>Your result</dt><dd class="num">${journalResultHtml(s.journal)}</dd></div>
+        </dl>
+        <div class="card-time num">${escapeHtml(formatWIB(s.cross_time))} WIB</div>
       </div>
     `).join('');
   }
@@ -630,6 +818,7 @@ document.addEventListener('DOMContentLoaded', () => {
       showNotice(`Could not remove ${sym}: ${err.message}`);
       return;
     }
+    showToast(`${sym} removed`);
     await loadWatchlist();
     await loadSummary();
   });
@@ -648,6 +837,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!res.ok) throw new Error(await responseError(res));
       inputNewSymbol.value = '';
       showNotice('');
+      showToast(`${sym} added`);
       await loadWatchlist();
       await loadSummary();
     } catch (err) {
@@ -664,15 +854,12 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const res = await authFetch('/api/evaluate', { method: 'POST' });
       if (!res.ok) throw new Error(await responseError(res));
+      const data = await res.json();
       showNotice('');
+      const n = (data.evaluated && data.evaluated.evaluated_count) || 0;
+      showToast(n ? `${plural(n, 'trade')} closed` : 'No open trade reached its target, stop or expiry');
       await loadSummary();
-      if (activeTab === 'history') {
-        await loadHistory();
-      } else if (activeTab === 'profitloss') {
-        await loadProfitLossHistory();
-      } else {
-        await refreshLiveView();
-      }
+      await reloadActiveList();
     } catch (e) {
       showNotice(`Evaluation failed: ${e.message}`);
     } finally {
@@ -682,14 +869,27 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Tabs
+  function reloadActiveList() {
+    if (activeTab === 'history') return loadHistory();
+    if (activeTab === 'profitloss') return loadProfitLossHistory();
+    if (activeTab === 'journal') return loadJournal();
+    if (activeTab === 'scan') return refreshLiveView();
+    return loadWatchlist();
+  }
+
   function selectTab(tab) {
     activeTab = tab;
     tabs.forEach(t => t.setAttribute('aria-selected', String(t.dataset.tab === tab)));
 
-    viewSignals.hidden = !(tab === 'scan' || tab === 'history');
-    viewProfitLoss.hidden = tab !== 'profitloss';
-    viewWatchlist.hidden = tab !== 'watchlist';
+    views.signals.hidden = !(tab === 'scan' || tab === 'history');
+    views.profitloss.hidden = tab !== 'profitloss';
+    views.journal.hidden = tab !== 'journal';
+    views.watchlist.hidden = tab !== 'watchlist';
+
     filters.hidden = tab === 'watchlist';
+    filters.querySelectorAll('[data-tabs]').forEach(el => {
+      el.hidden = !el.dataset.tabs.split(' ').includes(tab);
+    });
 
     pendingOption.disabled = tab === 'profitloss';
     if (tab === 'profitloss' && filterResult.value === 'PENDING') filterResult.value = '';
@@ -703,6 +903,9 @@ document.addEventListener('DOMContentLoaded', () => {
     } else if (tab === 'profitloss') {
       setPnlMessage('Loading…');
       loadProfitLossHistory();
+    } else if (tab === 'journal') {
+      setJournalMessage('Loading…');
+      loadJournal();
     } else {
       renderWatchlist();
       loadWatchlist();
@@ -712,23 +915,20 @@ document.addEventListener('DOMContentLoaded', () => {
   tabs.forEach(t => t.addEventListener('click', async () => {
     if (t.dataset.tab === activeTab) return;
     selectTab(t.dataset.tab);
+    t.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     if (t.dataset.tab === 'scan') await refreshLiveView();
   }));
 
   function onFilterChanged() {
     if (activeTab === 'scan') {
       renderScanView();
-    } else if (activeTab === 'history') {
-      loadHistory();
-    } else if (activeTab === 'profitloss') {
-      loadProfitLossHistory();
+    } else {
+      reloadActiveList();
     }
   }
 
   filterSymbol.addEventListener('input', debounce(onFilterChanged, 250));
-  filterDate.addEventListener('change', onFilterChanged);
-  filterSide.addEventListener('change', onFilterChanged);
-  filterResult.addEventListener('change', onFilterChanged);
+  [filterDate, filterSide, filterResult, filterJournal].forEach(el => el.addEventListener('change', onFilterChanged));
 
   // Signal detail
   function pctFrom(entry, level) {
@@ -736,16 +936,30 @@ document.addEventListener('DOMContentLoaded', () => {
     return `<small>${formatPct(((level - entry) / entry) * 100)}</small>`;
   }
 
-  function openChartModal(sig) {
-    const entry = sig.entry_price || sig.cross_price;
-    const title = $('modal-title');
-    title.innerHTML = `${escapeHtml(sig.symbol)} ${sideHtml(sig.side)}`;
-    $('modal-time').textContent = `Crossed ${formatWIB(sig.cross_time)} WIB on the 2H chart, ${sig.confirmed === false ? 'candle still forming' : 'closed candle'}`;
+  function detailSubtitle(sig) {
+    const crossed = parseTime(sig.cross_time);
+    if (!crossed) return '';
+    let text = `Crossed ${formatWIB(crossed)} WIB on the 2H chart`;
+    if (sig.confirmed === false) return `${text}. The candle is still forming, so this cross is not recorded yet.`;
+    if (sig.win_status === 'PENDING') {
+      const expires = new Date(crossed.getTime() + (config.signal_expiry_candles + 1) * CANDLE_MS);
+      text += `. Expires ${formatWIB(expires)} WIB if neither level is hit.`;
+    }
+    return text;
+  }
 
-    $('detail-entry').textContent = formatPrice(entry);
+  function fillDetail(sig) {
+    const entry = sig.entry_price || sig.cross_price;
+    $('modal-title').innerHTML = `${escapeHtml(sig.symbol)} ${sideHtml(sig.side)}`;
+    $('modal-time').textContent = detailSubtitle(sig);
+
+    const showCross = sig.cross_price && entry && Math.abs(sig.cross_price - entry) / entry > 1e-6;
+    $('detail-entry').innerHTML = formatPrice(entry)
+      + (showCross ? `<span class="hint">cross at ${formatPrice(sig.cross_price)}</span>` : '');
     $('detail-sl').innerHTML = formatPrice(sig.stop_loss) + pctFrom(entry, sig.stop_loss);
     $('detail-tp').innerHTML = formatPrice(sig.tp1) + pctFrom(entry, sig.tp1);
-    $('detail-rr').textContent = `1:${sig.risk_reward_ratio || 1.5}`;
+    $('detail-rr').textContent = sig.risk_reward_ratio ? `1:${sig.risk_reward_ratio}` : '–';
+    $('detail-outcome').innerHTML = sig.win_status ? outcomeHtml(sig.win_status) : '–';
 
     const fmt4 = (v) => (v != null ? Number(v).toFixed(4) : '–');
     $('detail-macd').textContent = fmt4(sig.macd);
@@ -753,12 +967,142 @@ document.addEventListener('DOMContentLoaded', () => {
     const hist = $('detail-hist');
     hist.textContent = fmt4(sig.histogram);
     hist.className = `num ${sig.histogram == null ? '' : sig.histogram >= 0 ? 'is-long' : 'is-short'}`;
-    $('detail-outcome').innerHTML = outcomeHtml(sig.win_status);
-
-    if (!modal.open) modal.showModal();
-    renderChart(sig);
   }
 
+  async function openSignal(sig) {
+    currentSignal = sig;
+    destroyChart();
+    showChartMessage('<span class="spinner on"></span> Loading candles…');
+    fillDetail(sig);
+    renderJournalForm(sig);
+    if (!modal.open) modal.showModal();
+    if (!sig.id) {
+      renderChart(sig);
+      return;
+    }
+    try {
+      const fresh = await getJson(`/api/signals/${encodeURIComponent(sig.id)}`);
+      if (currentSignal !== sig) return;
+      currentSignal = { ...sig, ...fresh };
+      fillDetail(currentSignal);
+      renderJournalForm(currentSignal);
+      renderChart(currentSignal);
+    } catch (e) {
+      if (currentSignal !== sig) return;
+      if (sig.entry_price) renderChart(sig);
+      else showChartMessage(escapeHtml(`Could not load this signal: ${e.message}`), true);
+    }
+  }
+
+  // Journal form
+  function selectedJournalStatus() {
+    const checked = journalForm.querySelector('input[name="journal-status"]:checked');
+    return checked ? checked.value : '';
+  }
+
+  function parseFill(input) {
+    const raw = input.value.trim().replace(',', '.');
+    if (!raw) return null;
+    const num = Number(raw);
+    return Number.isFinite(num) && num > 0 ? num : NaN;
+  }
+
+  function updateJournalPreview() {
+    const status = selectedJournalStatus();
+    journalForm.querySelectorAll('[data-taken]').forEach(el => { el.hidden = status !== 'TAKEN'; });
+    if (status !== 'TAKEN' || !currentSignal) {
+      journalResult.textContent = '';
+      return;
+    }
+    const entry = parseFill(journalEntry);
+    const exit = parseFill(journalExit);
+    if (Number.isNaN(entry) || Number.isNaN(exit)) {
+      journalResult.innerHTML = '<span class="is-short">Prices must be positive numbers</span>';
+      return;
+    }
+    const res = entry && exit ? tradeReturn(currentSignal.side, entry, currentSignal.stop_loss, exit) : null;
+    if (res) {
+      journalResult.innerHTML = `Your result: <span class="${signClass(res.pnl)}">${formatR(res.r)}</span> (${formatPct(res.pnl)} after fees)`;
+    } else {
+      journalResult.textContent = entry ? 'Add the exit fill once the trade is closed.' : '';
+    }
+  }
+
+  function renderJournalForm(sig) {
+    const canRecord = Boolean(sig.id);
+    journalFields.hidden = !canRecord;
+    journalHelp.textContent = canRecord
+      ? "Record whether you took this signal and at what prices, to compare your results with the signal's."
+      : 'Only recorded signals can be journaled. Crosses on a forming candle are recorded once the candle closes.';
+    if (!canRecord) return;
+
+    const j = sig.journal || null;
+    const status = j ? j.status : '';
+    journalForm.querySelectorAll('input[name="journal-status"]').forEach(r => { r.checked = r.value === status; });
+    journalEntry.value = j && j.entry_fill != null ? j.entry_fill : '';
+    journalExit.value = j && j.exit_fill != null ? j.exit_fill : '';
+    journalNotes.value = j ? j.notes || '' : '';
+    journalEntry.placeholder = sig.entry_price ? `Signal entry ${formatPrice(sig.entry_price)}` : '';
+    updateJournalPreview();
+  }
+
+  journalForm.addEventListener('input', updateJournalPreview);
+  journalForm.addEventListener('change', updateJournalPreview);
+
+  async function saveJournal(sig, status, entry, exit) {
+    const url = `/api/signals/${encodeURIComponent(sig.id)}/journal`;
+    if (!status) return authFetch(url, { method: 'DELETE' });
+    return authFetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status,
+        entry_fill: status === 'TAKEN' ? entry : null,
+        exit_fill: status === 'TAKEN' ? exit : null,
+        notes: journalNotes.value.trim(),
+      }),
+    });
+  }
+
+  journalForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const sig = currentSignal;
+    if (!sig || !sig.id) return;
+    const status = selectedJournalStatus();
+    const entry = parseFill(journalEntry);
+    const exit = parseFill(journalExit);
+    if (status === 'TAKEN' && (Number.isNaN(entry) || Number.isNaN(exit))) return;
+    if (status === 'TAKEN' && exit && !entry) {
+      journalResult.innerHTML = '<span class="is-short">Add the entry fill first</span>';
+      return;
+    }
+    if (!status && !sig.journal) {
+      showToast('Nothing to save');
+      return;
+    }
+
+    journalSave.disabled = true;
+    try {
+      const res = await saveJournal(sig, status, entry, exit);
+      if (!res.ok) throw new Error(await responseError(res));
+      const saved = status ? await res.json() : null;
+      sig.journal = saved ? saved.journal : null;
+      sig.journal_status = sig.journal ? sig.journal.status : null;
+      [liveSignals || [], shownSignals].forEach(list => list.forEach(s => {
+        if (s.id === sig.id) s.journal_status = sig.journal_status;
+      }));
+      renderJournalForm(sig);
+      showToast(status ? 'Saved to your journal' : 'Removed from your journal');
+      if (activeTab === 'scan') renderScanView();
+      else if (activeTab !== 'watchlist') reloadActiveList();
+    } catch (err) {
+      journalResult.innerHTML = `<span class="is-short">${escapeHtml(`Could not save: ${err.message}`)}</span>`;
+    } finally {
+      journalSave.disabled = false;
+    }
+  });
+
+  // Chart
   function destroyChart() {
     chartRequest += 1;
     if (chart) {
@@ -835,8 +1179,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const candles = payload.candles.map(c => ({ ...c, time: c.time + UTC7_OFFSET_SEC }));
       candleSeries.setData(candles);
 
-      const crossDate = sig.cross_time ? new Date(sig.cross_time) : null;
-      if (crossDate && !isNaN(crossDate.getTime())) {
+      const crossDate = parseTime(sig.cross_time);
+      if (crossDate) {
         const crossTsSec = Math.floor(crossDate.getTime() / 1000) + UTC7_OFFSET_SEC;
         const matchingCandle = candles.find(c => Math.abs(c.time - crossTsSec) < 3600);
         if (matchingCandle) {
@@ -878,14 +1222,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
   modalClose.addEventListener('click', () => modal.close());
   modal.addEventListener('click', (e) => { if (e.target === modal) modal.close(); });
-  modal.addEventListener('close', destroyChart);
+  modal.addEventListener('close', () => {
+    destroyChart();
+    currentSignal = null;
+  });
 
   // Initialization
   btnScan.addEventListener('click', runScan);
   checkHealth();
   setInterval(checkHealth, 60000);
+  loadConfig();
   loadSummary();
   loadWatchlist();
-  if (location.pathname === '/history') selectTab('history');
+  selectTab(location.pathname === '/history' ? 'history' : 'scan');
   renderScanView();
 });
