@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import secrets
 import time
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -68,8 +69,23 @@ def _get_client():
     return _client
 
 
+_API_KEY_MIN_LENGTH = 16
+_API_KEY_PLACEHOLDERS = frozenset({"your_secret_api_key_here", "changeme", "change_me", "secret", "password"})
+
+
+def _api_key_configured() -> bool:
+    key = API_SECRET_KEY or ""
+    return len(key) >= _API_KEY_MIN_LENGTH and key.lower() not in _API_KEY_PLACEHOLDERS
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if not _api_key_configured():
+        logger.warning(
+            "API_SECRET_KEY is unset, a placeholder, or shorter than %d characters; "
+            "protected endpoints are disabled and will return 503",
+            _API_KEY_MIN_LENGTH,
+        )
     await init_db()
     await init_redis()
     cron_scheduler.start(_get_client)
@@ -100,8 +116,8 @@ async def verify_api_key(
     x_api_key: Annotated[str | None, Header(alias="X-API-KEY")] = None,
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
 ) -> bool:
-    if not API_SECRET_KEY:
-        return True
+    if not _api_key_configured():
+        raise HTTPException(status_code=503, detail="API key not configured on server")
 
     token = None
     if x_api_key:
@@ -109,7 +125,7 @@ async def verify_api_key(
     elif authorization and authorization.lower().startswith("bearer "):
         token = authorization[7:].strip()
 
-    if token != API_SECRET_KEY:
+    if not token or not secrets.compare_digest(token.encode("utf-8"), API_SECRET_KEY.encode("utf-8")):
         raise HTTPException(
             status_code=401,
             detail="Unauthorized: Invalid or missing API Key",
