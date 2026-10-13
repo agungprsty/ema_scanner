@@ -3,13 +3,13 @@ import logging
 import secrets
 import time
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
 
 from src.config.settings import (
     API_SECRET_KEY,
@@ -49,10 +49,12 @@ from src.services.db import (
 from src.services.redis_client import (
     claim_cross,
     close_redis,
+    get_cached_json,
     init_redis,
     is_cross_detected,
     is_redis_connected,
     release_cross,
+    set_cached_json,
 )
 from src.services.telegram import send_alert
 from src.strategy.macd import compute_macd, detect_macd_cross
@@ -312,22 +314,142 @@ async def toggle_symbol_status(symbol: str, body: WatchlistToggleRequest):
 
 
 # Chart Klines Endpoint
+KLINES_CACHE_TTL = 60
+KLINES_MISS_TTL = 120
+KLINES_FETCH_LIMIT = 499
+KLINES_UPSTREAM_BUDGET = 60
+KLINES_BUDGET_WINDOW = 60
+_klines_budget = {"window": 0, "count": 0}
+
+
+def _consume_klines_budget() -> bool:
+    window = int(time.time() // KLINES_BUDGET_WINDOW)
+    if _klines_budget["window"] != window:
+        _klines_budget["window"] = window
+        _klines_budget["count"] = 0
+    if _klines_budget["count"] >= KLINES_UPSTREAM_BUDGET:
+        return False
+    _klines_budget["count"] += 1
+    return True
+
+
+def _slice_klines(payload: dict, limit: int) -> dict:
+    return {**payload, "candles": payload["candles"][-limit:], "macd": payload["macd"][-limit:]}
+
+
+KLINES_SYMBOLS_KEY = "klines:symbols"
+KLINES_SYMBOLS_TTL = 3600
+KLINES_SYMBOLS_RETRY = 60
+_klines_symbols: dict = {"symbols": None, "expires": 0.0, "retry_at": 0.0}
+_klines_inflight: dict[tuple, asyncio.Future] = {}
+
+
+async def _single_flight(key: tuple, factory):
+    fut = _klines_inflight.get(key)
+    if fut is None:
+        fut = asyncio.ensure_future(factory())
+        _klines_inflight[key] = fut
+
+        def _cleanup(done: asyncio.Future) -> None:
+            if _klines_inflight.get(key) is done:
+                del _klines_inflight[key]
+
+        fut.add_done_callback(_cleanup)
+    return await asyncio.shield(fut)
+
+
+def _normalize_symbol(value: str) -> str:
+    sym = value.strip().upper()
+    if not (2 <= len(sym) <= 30 and sym.isalnum()):
+        raise ValueError("symbol must be 2-30 letters or digits")
+    return sym
+
+
+async def _refresh_valid_symbols() -> dict[str, str] | None:
+    now = time.time()
+    cached = await get_cached_json(KLINES_SYMBOLS_KEY)
+    symbols = cached.get("symbols") if cached else None
+    fetched_at = cached.get("fetched_at", now) if cached else now
+    if not symbols:
+        try:
+            info = await asyncio.to_thread(_get_client().exchange_info)
+            symbols = [s["symbol"] for s in info.get("symbols", []) if s.get("symbol")]
+        except Exception:
+            logger.exception("Failed to load exchange info for symbol validation")
+            symbols = None
+        if symbols:
+            fetched_at = now
+            await set_cached_json(
+                KLINES_SYMBOLS_KEY, {"symbols": symbols, "fetched_at": now}, ttl=KLINES_SYMBOLS_TTL
+            )
+    if symbols:
+        _klines_symbols["symbols"] = {s.upper(): s for s in symbols}
+        _klines_symbols["expires"] = max(fetched_at + KLINES_SYMBOLS_TTL, now + KLINES_SYMBOLS_RETRY)
+    else:
+        _klines_symbols["retry_at"] = now + KLINES_SYMBOLS_RETRY
+    return _klines_symbols["symbols"]
+
+
+async def _get_valid_symbols() -> dict[str, str] | None:
+    now = time.time()
+    if now < _klines_symbols["expires"] or now < _klines_symbols["retry_at"]:
+        return _klines_symbols["symbols"]
+    try:
+        return await _single_flight(("symbols",), _refresh_valid_symbols)
+    except Exception:
+        logger.exception("Symbol list refresh failed")
+        return _klines_symbols["symbols"]
+
+
+async def _load_klines(sym: str, interval: str) -> dict:
+    cache_key = f"klines:{interval}:{sym}"
+    miss_key = f"{cache_key}:miss"
+    cached = await get_cached_json(cache_key)
+    if cached:
+        return cached
+
+    if await get_cached_json(miss_key):
+        raise HTTPException(status_code=502, detail="Failed to load candle data from upstream")
+
+    if not _consume_klines_budget():
+        raise HTTPException(status_code=503, detail="Chart data temporarily unavailable, retry later")
+
+    try:
+        client = _get_client()
+        payload = await asyncio.to_thread(
+            fetch_candles_payload,
+            client=client,
+            symbol=sym,
+            timeframe=interval,
+            limit=KLINES_FETCH_LIMIT,
+        )
+    except Exception:
+        logger.exception("Klines fetch failed for %s %s", sym, interval)
+        payload = None
+
+    if not payload:
+        await set_cached_json(miss_key, {"miss": True}, ttl=KLINES_MISS_TTL)
+        raise HTTPException(status_code=502, detail="Failed to load candle data from upstream")
+
+    await set_cached_json(cache_key, payload, ttl=KLINES_CACHE_TTL)
+    return payload
+
+
 @app.get("/api/klines")
 async def get_klines_chart(
-    symbol: Annotated[str, Query(description="Symbol name e.g. BTCUSDT")],
-    limit: Annotated[int, Query(ge=35, le=500, description="Candles count")] = 100,
+    symbol: Annotated[
+        str, Query(max_length=64, description="Symbol name e.g. BTCUSDT"), AfterValidator(_normalize_symbol)
+    ],
+    interval: Annotated[Literal["2h"], Query(description="Candle interval")] = "2h",
+    limit: Annotated[int, Query(ge=50, le=500, description="Candles count")] = 100,
 ):
-    client = _get_client()
-    payload = await asyncio.to_thread(
-        fetch_candles_payload,
-        client=client,
-        symbol=symbol.upper().strip(),
-        timeframe="2h",
-        limit=limit,
-    )
-    if not payload:
-        raise HTTPException(status_code=404, detail="Failed to load candle data from Binance")
-    return payload
+    valid = await _get_valid_symbols()
+    if valid is not None:
+        if symbol not in valid:
+            raise HTTPException(status_code=404, detail="Unknown symbol")
+        symbol = valid[symbol]
+    payload = await _single_flight(("klines", interval, symbol), lambda: _load_klines(symbol, interval))
+    return _slice_klines(payload, limit)
 
 
 # Single Signal Detail
