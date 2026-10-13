@@ -4,7 +4,7 @@ services:
     container_name: macd_scanner_app
     restart: unless-stopped
     ports:
-      - "${PORT:-7860}:7860"
+      - "${APP_BIND_ADDR:-127.0.0.1}:${PORT:-7860}:7860"
     env_file:
       - .env
     environment:
@@ -38,8 +38,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-macd_scanner}
-    ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -61,8 +59,6 @@ services:
     image: redis:7-alpine
     container_name: macd_scanner_redis
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
