@@ -73,21 +73,6 @@ async def is_cross_detected(
         return False
 
 
-async def mark_cross_detected(
-    side: str,
-    symbol: str,
-    candle_ms: int,
-    timeframe: str = "2h",
-    ttl: int = CROSS_TTL,
-) -> None:
-    if _redis is None:
-        return
-    try:
-        await _redis.setex(_dedup_key(side, symbol, candle_ms, timeframe), ttl, "1")
-    except Exception as e:
-        logger.warning("Redis mark cross error: %s", e)
-
-
 async def claim_cross(
     side: str,
     symbol: str,

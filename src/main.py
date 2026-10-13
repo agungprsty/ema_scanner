@@ -23,6 +23,8 @@ from src.config.settings import (
     MACD_SLOW,
     MACD_TIMEFRAME,
     SCAN_CONCURRENCY,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID,
     VOLUME_THRESHOLD_USD,
 )
 from src.data_feed.binance_client import create_futures_client
@@ -45,11 +47,12 @@ from src.services.db import (
     toggle_watchlist_symbol,
 )
 from src.services.redis_client import (
+    claim_cross,
     close_redis,
     init_redis,
     is_cross_detected,
     is_redis_connected,
-    mark_cross_detected,
+    release_cross,
 )
 from src.services.telegram import send_alert
 from src.strategy.macd import compute_macd, detect_macd_cross
@@ -507,23 +510,47 @@ async def run_macd_scan(
     telegram_parts = []
     new_signals_count = 0
 
+    preview = not save_db and not send_telegram
+    alert_enabled = send_telegram and bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
+
     for sig in detected:
-        is_dup = await is_cross_detected(
-            sig.side, sig.symbol, sig.cross_candle_ms, timeframe=timeframe
-        )
-        is_new = not is_dup
+        if preview:
+            is_new = not await is_cross_detected(
+                sig.side, sig.symbol, sig.cross_candle_ms, timeframe=timeframe
+            )
+        else:
+            is_new = await claim_cross(
+                sig.side, sig.symbol, sig.cross_candle_ms, timeframe=timeframe
+            )
         db_id = None
+
+        if is_new and save_db:
+            saved = await save_macd_signal(sig, timeframe=timeframe)
+            if saved and "id" in saved:
+                db_id = saved["id"]
+                if saved.get("inserted") is False:
+                    is_new = False
+            elif alert_enabled:
+                logger.warning(
+                    "Failed to save MACD signal %s %s @ %s; alerting without persistence",
+                    sig.side,
+                    sig.symbol,
+                    sig.cross_candle_ms,
+                )
+            else:
+                is_new = False
+                await release_cross(
+                    sig.side, sig.symbol, sig.cross_candle_ms, timeframe=timeframe
+                )
+                logger.warning(
+                    "Failed to save MACD signal %s %s @ %s; dedup claim released",
+                    sig.side,
+                    sig.symbol,
+                    sig.cross_candle_ms,
+                )
 
         if is_new:
             new_signals_count += 1
-            await mark_cross_detected(
-                sig.side, sig.symbol, sig.cross_candle_ms, timeframe=timeframe
-            )
-            if save_db:
-                saved = await save_macd_signal(sig, timeframe=timeframe)
-                if saved and "id" in saved:
-                    db_id = saved["id"]
-
             emoji = "🟢" if sig.side == "LONG" else "🔴"
             status_tag = "✅ Confirmed" if sig.is_confirmed else "⏳ In Progress"
             telegram_parts.append(

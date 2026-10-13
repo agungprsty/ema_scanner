@@ -13,6 +13,8 @@ from src.config.settings import (
     MACD_SLOW,
     MACD_TIMEFRAME,
     SCAN_CONCURRENCY,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID,
 )
 from src.data_feed.ohlcv import fetch_klines
 from src.services.db import (
@@ -22,8 +24,8 @@ from src.services.db import (
 )
 from src.services.redis_client import (
     acquire_lock,
-    is_cross_detected,
-    mark_cross_detected,
+    claim_cross,
+    release_cross,
     release_lock,
 )
 from src.services.telegram import send_alert
@@ -189,18 +191,37 @@ class MacdCronScheduler:
                 tasks = [_detect_symbol(s) for s in symbols]
                 results = await asyncio.gather(*tasks)
                 detected = [r for r in results if r is not None]
+                alert_enabled = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 
                 for sig in detected:
-                    is_dup = await is_cross_detected(
+                    claimed = await claim_cross(
                         sig.side, sig.symbol, sig.cross_candle_ms, timeframe=MACD_TIMEFRAME
                     )
-                    if not is_dup:
-                        new_signals_found += 1
-                        await mark_cross_detected(
-                            sig.side, sig.symbol, sig.cross_candle_ms, timeframe=MACD_TIMEFRAME
-                        )
-                        await save_macd_signal(sig, timeframe=MACD_TIMEFRAME)
+                    if claimed:
+                        saved = await save_macd_signal(sig, timeframe=MACD_TIMEFRAME)
+                        if saved and "id" in saved:
+                            if saved.get("inserted") is False:
+                                continue
+                        elif alert_enabled:
+                            logger.warning(
+                                "[CRON] Failed to save MACD signal %s %s @ %s; alerting without persistence",
+                                sig.side,
+                                sig.symbol,
+                                sig.cross_candle_ms,
+                            )
+                        else:
+                            await release_cross(
+                                sig.side, sig.symbol, sig.cross_candle_ms, timeframe=MACD_TIMEFRAME
+                            )
+                            logger.warning(
+                                "[CRON] Failed to save MACD signal %s %s @ %s; dedup claim released",
+                                sig.side,
+                                sig.symbol,
+                                sig.cross_candle_ms,
+                            )
+                            continue
 
+                        new_signals_found += 1
                         emoji = "🟢" if sig.side == "LONG" else "🔴"
                         telegram_parts.append(
                             f"{emoji} <b>[CRON 2H] {sig.side}</b> #${sig.symbol}\n"
