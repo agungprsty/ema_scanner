@@ -88,6 +88,34 @@ async def mark_cross_detected(
         logger.warning("Redis mark cross error: %s", e)
 
 
+async def claim_cross(
+    side: str,
+    symbol: str,
+    candle_ms: int,
+    timeframe: str = "2h",
+    ttl: int = CROSS_TTL,
+) -> bool:
+    if _redis is None:
+        return True
+    try:
+        res = await _redis.set(_dedup_key(side, symbol, candle_ms, timeframe), "1", nx=True, ex=ttl)
+        return bool(res)
+    except Exception as e:
+        logger.warning("Redis claim cross error: %s", e)
+        return True
+
+
+async def release_cross(
+    side: str, symbol: str, candle_ms: int, timeframe: str = "2h"
+) -> None:
+    if _redis is None:
+        return
+    try:
+        await _redis.delete(_dedup_key(side, symbol, candle_ms, timeframe))
+    except Exception as e:
+        logger.warning("Redis release cross error: %s", e)
+
+
 async def get_cached_json(key: str) -> dict | None:
     if _redis is None:
         return None
