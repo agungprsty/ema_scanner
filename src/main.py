@@ -348,6 +348,8 @@ async def get_cron_scheduler_status():
 @app.post("/api/cron/trigger", dependencies=[Depends(verify_api_key)])
 async def trigger_cron_execution():
     res = await cron_scheduler.trigger_now()
+    if res.get("status") in ("skipped", "busy"):
+        raise HTTPException(status_code=409, detail=res.get("message", "Cron job is busy"))
     summary = await get_macd_signals_summary()
     return {"status": "success", "result": res, "summary": summary}
 

@@ -136,24 +136,32 @@ class MacdCronScheduler:
 
     async def _execute_job(self, is_manual: bool = False) -> dict:
         lock_name = "cron:2h_execution"
-        acquired = await acquire_lock(lock_name, timeout_seconds=180)
-        if not acquired and not is_manual:
-            logger.info("[CRON] Job skipped: already acquired/executed by another worker")
-            return {"status": "skipped", "message": "Already executed by another worker"}
+        if is_manual and self._lock.locked():
+            logger.info("[CRON] Manual trigger rejected: a job is already running")
+            return {"status": "busy", "message": "A cron job is already running, try again later"}
 
+        await self._lock.acquire()
+        token = None
         try:
-            async with self._lock:
-                client = self._client_getter() if self._client_getter else None
-                if client is None:
-                    logger.warning("Cron job execution skipped: Binance client not initialized")
-                    return {"status": "error", "message": "Client not initialized"}
+            token = await acquire_lock(lock_name, timeout_seconds=180)
+            if token is None:
+                if is_manual:
+                    logger.info("[CRON] Manual trigger rejected: lock held by another job")
+                    return {"status": "busy", "message": "A cron job is already running or just ran, try again later"}
+                logger.info("[CRON] Job skipped: already acquired/executed by another worker")
+                return {"status": "skipped", "message": "Already executed by another worker"}
 
-                start_time = time.perf_counter()
-                exec_iso = datetime.now(UTC).isoformat()
-                self._last_run = exec_iso
-                self._total_runs += 1
+            client = self._client_getter() if self._client_getter else None
+            if client is None:
+                logger.warning("Cron job execution skipped: Binance client not initialized")
+                return {"status": "error", "message": "Client not initialized"}
 
-                logger.info(">>> [CRON] Starting 2H Scheduled Job (Manual: %s) <<<", is_manual)
+            start_time = time.perf_counter()
+            exec_iso = datetime.now(UTC).isoformat()
+            self._last_run = exec_iso
+            self._total_runs += 1
+
+            logger.info(">>> [CRON] Starting 2H Scheduled Job (Manual: %s) <<<", is_manual)
 
             # Step 1: Evaluate existing pending signals in database
             eval_res = await evaluate_pending_signals(client)
@@ -248,8 +256,11 @@ class MacdCronScheduler:
                 "symbols_scanned": len(symbols),
             }
         finally:
-            if is_manual:
-                await release_lock(lock_name)
+            try:
+                if is_manual and token is not None:
+                    await release_lock(lock_name, token)
+            finally:
+                self._lock.release()
 
 
 cron_scheduler = MacdCronScheduler()
