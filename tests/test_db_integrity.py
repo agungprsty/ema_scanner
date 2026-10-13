@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -223,5 +224,74 @@ async def test_backfill_skips_signals_with_existing_profitloss(monkeypatch):
     select_sql = _compile(session.statements[0])
     assert "NOT (EXISTS" in select_sql
     insert_sql = _compile(session.statements[1])
+    assert "ON CONFLICT (signal_id) DO NOTHING" in insert_sql
+    assert session.commits == 1
+
+
+async def test_evaluate_pending_signals_is_serialized(monkeypatch):
+    state = {"active": 0, "max_active": 0, "calls": 0}
+
+    async def fake_unlocked(client):
+        state["active"] += 1
+        state["calls"] += 1
+        state["max_active"] = max(state["max_active"], state["active"])
+        await asyncio.sleep(0.01)
+        state["active"] -= 1
+        return {"evaluated_count": 1, "profit_count": 1, "loss_count": 0}
+
+    monkeypatch.setattr(db, "_session_maker", object())
+    monkeypatch.setattr(db, "_evaluation_lock", asyncio.Lock())
+    monkeypatch.setattr(db, "_evaluate_pending_signals_unlocked", fake_unlocked)
+
+    results = await asyncio.gather(*(db.evaluate_pending_signals(object()) for _ in range(4)))
+
+    assert state["calls"] == 4
+    assert state["max_active"] == 1
+    assert all(r == {"evaluated_count": 1, "profit_count": 1, "loss_count": 0} for r in results)
+
+
+async def test_evaluate_pending_signals_without_db_skips_lock(monkeypatch):
+    lock = asyncio.Lock()
+    await lock.acquire()
+    monkeypatch.setattr(db, "_session_maker", None)
+    monkeypatch.setattr(db, "_evaluation_lock", lock)
+
+    result = await asyncio.wait_for(db.evaluate_pending_signals(object()), timeout=1)
+
+    assert result == {"evaluated_count": 0, "profit_count": 0, "loss_count": 0}
+    lock.release()
+
+
+async def test_evaluate_pending_signals_inserts_profitloss_with_on_conflict(monkeypatch):
+    rec = SimpleNamespace(
+        id=21,
+        symbol="BTCUSDT",
+        side="LONG",
+        timeframe="2h",
+        win_status="PENDING",
+        cross_candle_ms=1_700_000_000_000,
+        entry_price=100.0,
+        cross_price=100.0,
+        stop_loss=95.0,
+        tp1=107.5,
+        risk_reward_ratio=1.5,
+        cross_time="2026-10-11 00:00:00",
+    )
+    session = FakeSession([FakeResult(rows=[rec])])
+    client = SimpleNamespace(
+        klines=lambda **kwargs: [
+            [1_700_000_000_000, "100", "101", "99", "100"],
+            [1_700_007_200_000, "100", "108", "99", "107"],
+        ]
+    )
+    monkeypatch.setattr(db, "_session_maker", lambda: session)
+    monkeypatch.setattr(db, "_evaluation_lock", asyncio.Lock())
+
+    result = await db.evaluate_pending_signals(client)
+
+    assert result == {"evaluated_count": 1, "profit_count": 1, "loss_count": 0}
+    assert rec.win_status == "TP1_HIT"
+    insert_sql = _compile(session.statements[1])
+    assert "INSERT INTO profitloss_history" in insert_sql
     assert "ON CONFLICT (signal_id) DO NOTHING" in insert_sql
     assert session.commits == 1

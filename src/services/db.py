@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 _engine: AsyncEngine | None = None
 _session_maker: async_sessionmaker[AsyncSession] | None = None
+_evaluation_lock = asyncio.Lock()
 
 DEFAULT_WATCHLIST = [
     "BTCUSDT",
@@ -615,7 +616,7 @@ async def get_signal_by_id(signal_id: int) -> dict | None:
         return None
 
 
-async def evaluate_pending_signals(client) -> dict:
+async def _evaluate_pending_signals_unlocked(client) -> dict:
     if _session_maker is None or client is None:
         return {"evaluated_count": 0, "profit_count": 0, "loss_count": 0}
 
@@ -724,6 +725,14 @@ async def evaluate_pending_signals(client) -> dict:
     except Exception as e:
         logger.error("evaluate_pending_signals error: %s", e)
         return {"evaluated_count": 0, "profit_count": 0, "loss_count": 0}
+
+
+async def evaluate_pending_signals(client) -> dict:
+    if _session_maker is None or client is None:
+        return {"evaluated_count": 0, "profit_count": 0, "loss_count": 0}
+
+    async with _evaluation_lock:
+        return await _evaluate_pending_signals_unlocked(client)
 
 
 # Profit/Loss History Operations
