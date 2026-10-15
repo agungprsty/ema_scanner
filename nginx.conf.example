@@ -6,6 +6,8 @@
 
 # Rate limiting zone (10 requests per second per IP with burst)
 limit_req_zone $binary_remote_addr zone=scanner_limit:10m rate=10r/s;
+# Dashboard sign-in: a handful of attempts per minute per IP is plenty for the owner
+limit_req_zone $binary_remote_addr zone=login_limit:1m rate=10r/m;
 
 # HTTP - Redirect to HTTPS
 server {
@@ -37,10 +39,22 @@ server {
     ssl_prefer_server_ciphers on;
 
     # Security Headers
+    # These live only in nginx, not in the app: after editing this file, mirror the change into the
+    # live config on the server (/etc/nginx/sites-available/macd_scanner), then `nginx -t && systemctl reload nginx`.
+    # nginx drops server-level add_header lines in any location that sets its own, so keep them here only.
     add_header X-Content-Type-Options nosniff always;
-    add_header X-Frame-Options SAMEORIGIN always;
-    add_header X-XSS-Protection "1; mode=block" always;
+    # Matches frame-ancestors 'none' in the CSP below, for browsers that predate it
+    add_header X-Frame-Options DENY always;
+    # The legacy XSS auditor is off on purpose: it is gone from current browsers and could be abused in old ones
+    add_header X-XSS-Protection "0" always;
     add_header Referrer-Policy "no-referrer-when-downgrade" always;
+    # HTTPS only for a year. Add "; preload" only once every subdomain serves HTTPS
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    # Scripts come only from this origin (app.js and the self-hosted chart library in /static/vendor/).
+    # style-src needs 'unsafe-inline' for the <style> block and style attributes in index.html; fonts are
+    # Google Fonts; img-src allows data: for the inline SVG select arrow. No inline or third-party script.
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
+    add_header Permissions-Policy "accelerometer=(), autoplay=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()" always;
 
     # Gzip Compression
     gzip on;
@@ -48,6 +62,19 @@ server {
     gzip_proxied any;
     gzip_comp_level 6;
     gzip_types text/plain text/css text/xml application/json application/javascript application/rss+xml image/svg+xml;
+
+    # Sign-in, rate limited separately from the rest of the API
+    location = /api/auth/login {
+        limit_req zone=login_limit burst=5 nodelay;
+        limit_req_status 429;
+
+        proxy_pass http://127.0.0.1:7860;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
 
     # Proxy to FastAPI App
     location / {

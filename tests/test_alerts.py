@@ -31,20 +31,39 @@ def test_outcome_alert_lists_each_trade():
     text = alerts.format_outcome_alert(CLOSED)
     assert "<b>BTCUSDT Long</b> target hit" in text
     assert "Entry 112,340.50 → exit 114,362.63" in text
-    assert "+1.42R, +1.70% after fees" in text
+    assert "+1.42R, +1.70% after fees and modelled slippage" in text
     assert "<b>SOL&lt;b&gt; Short</b> expired" in text
-    assert "+0.56% after fees" in text
+    assert "+0.56% after fees and modelled slippage" in text
 
 
-def test_signal_alert_mentions_late_crosses():
-    sig = MacdSignal(
+def _signal(bars_ago: int) -> MacdSignal:
+    return MacdSignal(
         symbol="ETHUSDT", side="LONG", reason="macd_golden_cross", cross_candle_ms=1, cross_time="t",
         cross_price=1.0, entry_price=4120.11, stop_loss=4070.67, tp1=4194.27, risk_reward_ratio=1.5,
-        macd=0.1, signal=0.05, histogram=0.05, close=1.0, bars_ago=2,
+        macd=0.1, signal=0.05, histogram=0.05, close=1.0, bars_ago=bars_ago,
     )
-    assert "(crossed 4h before the latest close)" in alerts.format_signal_alert(sig)
-    sig.bars_ago = 0
-    assert "crossed" not in alerts.format_signal_alert(sig)
+
+
+def test_signal_alert_flags_catch_up_crosses_as_late():
+    text = alerts.format_signal_alert(_signal(2))
+    assert text.startswith("<b>LATE signal</b>: crossed 4h before the latest close.")
+    assert "do not chase" in text
+    assert "Not counted in the track record" in text
+    assert "<b>LONG</b> #$ETHUSDT (2h)\nEntry: 4,120.11" in text
+
+
+def test_signal_alert_on_time_has_no_warning():
+    text = alerts.format_signal_alert(_signal(0))
+    assert text.startswith("<b>LONG</b> #$ETHUSDT (2h)")
+    assert "LATE" not in text
+    assert "crossed" not in text
+
+
+def test_signal_alert_late_by_clock_without_older_cross():
+    text = alerts.format_signal_alert(_signal(0), late=True)
+    assert text.startswith("<b>LATE signal</b>: found well after its entry candle opened.")
+    assert "do not chase" in text
+    assert "LATE" not in alerts.format_signal_alert(_signal(0), late=False)
 
 
 @pytest.mark.asyncio

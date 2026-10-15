@@ -6,16 +6,20 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import AfterValidator, BaseModel, Field, model_validator
+from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
 from src.config.settings import (
     API_SECRET_KEY,
+    APP_MODE,
+    COOKIE_SECURE,
     CORS_ORIGINS,
-    DRY_RUN,
+    COST_MODEL_VERSION,
+    ENABLE_API_DOCS,
+    HEALTH_PROBE_TIMEOUT_SECONDS,
     MACD_CANDLES,
     MACD_CROSS_LOOKBACK_CANDLES,
     MACD_FAST,
@@ -24,10 +28,17 @@ from src.config.settings import (
     MACD_SIGNAL,
     MACD_SLOW,
     MACD_TIMEFRAME,
+    REQUIRE_CRON,
     RISK_REWARD_RATIO,
     ROUND_TRIP_FEE_PERCENT,
     SCAN_CONCURRENCY,
+    SESSION_TTL_SECONDS,
     SIGNAL_EXPIRY_CANDLES,
+    SLIPPAGE_BPS_BY_SYMBOL,
+    SLIPPAGE_BPS_DEFAULT,
+    STOP_SLIPPAGE_MULTIPLIER,
+    STRATEGY_KEY,
+    STRATEGY_VERSION,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
     VOLUME_THRESHOLD_USD,
@@ -35,8 +46,11 @@ from src.config.settings import (
 from src.data_feed.binance_client import create_futures_client
 from src.data_feed.ohlcv import fetch_candles_payload, fetch_candles_range, fetch_klines
 from src.services.alerts import format_signal_alert, notify_closed_trades
+from src.services.auth import issue_session_token, verify_session_token
+from src.services.background import run_in_background
 from src.services.cron_scheduler import cron_scheduler
 from src.services.db import (
+    SignalTradeConflict,
     add_watchlist_symbol,
     close_db,
     delete_journal_entry,
@@ -45,6 +59,7 @@ from src.services.db import (
     get_journal,
     get_macd_signals,
     get_macd_signals_summary,
+    get_performance,
     get_profitloss_history,
     get_signal_by_id,
     get_signals_by_keys,
@@ -76,6 +91,8 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+
+APP_VERSION = "2.2.0"
 
 _client = None
 
@@ -116,8 +133,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Crossline",
     description="Automated Binance Futures 2H MACD crossover scanner with PostgreSQL, Redis, Cron Scheduler, and Profit/Loss History",
-    version="2.2.0",
+    version=APP_VERSION,
     lifespan=lifespan,
+    # The API surface is not advertised publicly; ENABLE_API_DOCS=true turns the docs back on
+    docs_url="/docs" if ENABLE_API_DOCS else None,
+    redoc_url="/redoc" if ENABLE_API_DOCS else None,
+    openapi_url="/openapi.json" if ENABLE_API_DOCS else None,
 )
 
 _is_wildcard = CORS_ORIGINS == ["*"]
@@ -130,28 +151,78 @@ app.add_middleware(
 )
 
 
+# Dashboard sessions. The browser signs in once with the API key and then holds an HttpOnly cookie, so
+# the key never sits in page-readable storage. Scripts keep sending X-API-KEY (or a Bearer token)
+SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+CSRF_HEADER = "X-Requested-With"
+CSRF_HEADER_VALUE = "crossline"
+
+
+def _session_cookie_name() -> str:
+    # The __Host- prefix makes browsers refuse the cookie unless it is Secure, host-only and path=/
+    return "__Host-crossline_session" if COOKIE_SECURE else "crossline_session"
+
+
+def _key_matches(token: str | None) -> bool:
+    return bool(token) and secrets.compare_digest(token.encode("utf-8"), API_SECRET_KEY.encode("utf-8"))
+
+
+def _header_token(x_api_key: str | None, authorization: str | None) -> str | None:
+    if x_api_key:
+        return x_api_key
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return None
+
+
+def _has_valid_session(request: Request) -> bool:
+    return verify_session_token(request.cookies.get(_session_cookie_name()), API_SECRET_KEY)
+
+
+def is_authenticated(request: Request) -> bool:
+    """Non-raising check, for public endpoints that show more to a signed-in owner."""
+    if not _api_key_configured():
+        return False
+    token = _header_token(request.headers.get("X-API-KEY"), request.headers.get("Authorization"))
+    if token is not None:
+        return _key_matches(token)
+    return _has_valid_session(request)
+
+
 async def verify_api_key(
+    request: Request,
     x_api_key: Annotated[str | None, Header(alias="X-API-KEY")] = None,
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
 ) -> bool:
     if not _api_key_configured():
         raise HTTPException(status_code=503, detail="API key not configured on server")
 
-    token = None
-    if x_api_key:
-        token = x_api_key
-    elif authorization and authorization.lower().startswith("bearer "):
-        token = authorization[7:].strip()
+    unauthorized = HTTPException(
+        status_code=401,
+        detail="Unauthorized: Invalid or missing API Key",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    token = _header_token(x_api_key, authorization)
+    if token is not None:
+        # An explicit credential is judged on its own, never rescued by a cookie
+        if not _key_matches(token):
+            raise unauthorized
+        return True
 
-    if not token or not secrets.compare_digest(token.encode("utf-8"), API_SECRET_KEY.encode("utf-8")):
-        raise HTTPException(
-            status_code=401,
-            detail="Unauthorized: Invalid or missing API Key",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    if not _has_valid_session(request):
+        raise unauthorized
+    # Cookies ride along on cross-site requests; a custom header cannot be added without a CORS
+    # preflight, so requiring it on writes backs up SameSite=Strict against CSRF
+    if request.method not in SAFE_METHODS and request.headers.get(CSRF_HEADER) != CSRF_HEADER_VALUE:
+        raise HTTPException(status_code=403, detail=f"Missing {CSRF_HEADER}: {CSRF_HEADER_VALUE} header")
     return True
 
+
 app.mount("/static", StaticFiles(directory="src/static"), name="static")
+
+
+class LoginRequest(BaseModel):
+    api_key: str = Field(min_length=1, max_length=256)
 
 
 class WatchlistAddRequest(BaseModel):
@@ -176,14 +247,20 @@ class JournalRequest(BaseModel):
         return self
 
 
+def _upper(value):
+    return value.strip().upper() if isinstance(value, str) else value
+
+
 class ProfitLossRecordRequest(BaseModel):
+    """A hand-entered trade: stored as booked_by="manual" and never counted in the track record."""
+
     symbol: str
-    direction: str
+    direction: Annotated[Literal["LONG", "SHORT"], BeforeValidator(_upper)]
     entry_price: float
     stop_loss: float
     tp1: float
     exit_price: float
-    result: str
+    result: Annotated[Literal["PROFIT", "LOSS", "EXPIRED"], BeforeValidator(_upper)]
     timeframe: str = "2h"
     signal_id: int | None = None
     pnl_percent: float = 0.0
@@ -211,6 +288,10 @@ class SignalItem(BaseModel):
     bars_ago: int
     confirmed: bool
     is_new: bool = True
+    entry_basis: str = "next_open"
+    # Set once the signal is stored; a manual scan stores signals as "manual", never eligible
+    source: str | None = None
+    is_eligible: bool = False
 
 
 class ScanResponse(BaseModel):
@@ -226,19 +307,64 @@ class ScanResponse(BaseModel):
     signals: list[SignalItem]
 
 
+def _as_booked(description: str):
+    return Field(None, description=f"Deprecated: {description}", json_schema_extra={"deprecated": True})
+
+
+class SignalsSummary(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    open_count: int = 0
+    profit_count: int = 0
+    loss_count: int = 0
+    expired_count: int = 0
+    closed_count: int = 0
+    total_r: float | None = _as_booked(
+        "booked R summed over every closed row, legacy fee-free rows included. Use eligible_net_r."
+    )
+    total_pnl_percent: float | None = _as_booked("booked percent summed over every closed row.")
+    strategy_version: str | None = None
+    eligible_closed_count: int = 0
+    eligible_net_r: float = 0.0
+    excluded_count: int = 0
+
+
 class SignalsHistoryResponse(BaseModel):
     total: int
     limit: int
     offset: int
-    summary: dict = {}
+    summary: SignalsSummary = SignalsSummary()
     signals: list[dict]
+
+
+class ProfitLossSummary(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    total_trades: int = 0
+    profit_count: int = 0
+    loss_count: int = 0
+    expired_count: int = 0
+    winrate: float | None = _as_booked(
+        "percent of every listed row booked as PROFIT, legacy and hand-entered rows included. Use eligible_win_rate."
+    )
+    total_pnl_percent: float | None = _as_booked("booked percent summed over every listed row.")
+    total_r: float | None = _as_booked(
+        "booked R summed over every listed row; fees only for rows closed before the cost model. Use eligible_net_r."
+    )
+    avg_r: float | None = _as_booked("mean booked R over every listed row.")
+    strategy_version: str | None = None
+    eligible_closed_count: int = 0
+    eligible_win_count: int = 0
+    eligible_win_rate: float | None = None
+    eligible_net_r: float = 0.0
+    note: str = ""
 
 
 class ProfitLossHistoryResponse(BaseModel):
     total: int
     limit: int
     offset: int
-    summary: dict
+    summary: ProfitLossSummary
     history: list[dict]
 
 
@@ -252,23 +378,90 @@ class SummaryResponse(BaseModel):
     pending_count: int
     expired_count: int = 0
     winrate: float
-    avg_rr: float
+    # The planned reward-to-risk of every signal, not a realised result
+    target_rr: float
     watchlist_count: int
     latest_signal_time: str | None = None
-    total_net_pnl: float = 0.0
+    total_net_pnl: float = Field(
+        0.0,
+        description="Deprecated: booked percent results of the eligible trades, summed across different stop "
+        "distances (fees only for trades closed before the cost model). Use total_r.",
+        json_schema_extra={"deprecated": True},
+    )
     closed_trades: int = 0
     total_r: float = 0.0
     avg_r: float = 0.0
     max_drawdown_r: float = 0.0
+    eligible_only: bool = True
+    strategy_version: str | None = None
+    note: str = ""
+
+
+class ExcludedCounts(BaseModel):
+    legacy: int = 0
+    catchup: int = 0
+    manual: int = 0
+    other_version: int = 0
+    other: int = 0
+
+
+class PerformanceResponse(BaseModel):
+    strategy_key: str
+    strategy_version: str
+    cost_model_version: str
+    filters: dict
+    n_closed: int
+    wins: int
+    losses: int
+    expired: int
+    win_rate: float | None
+    win_rate_ci95: list[float] | None
+    mean_net_r: float | None
+    mean_net_r_ci95: list[float] | None
+    total_net_r: float
+    mean_gross_r: float | None
+    mean_cost_r: float | None
+    profit_factor: float | None
+    max_drawdown_r: float
+    break_even_win_rate: float | None
+    target_rr: float
+    open_count: int
+    excluded: ExcludedCounts
+    sample_size_warning: str | None
+    min_sample: int
+    min_sample_for_totals: int
+    first_exit_time: str | None
+    last_exit_time: str | None
+    definitions: dict[str, str]
 
 
 class HealthResponse(BaseModel):
-    status: str
-    database: bool
+    # "healthy", "degraded" (Redis down, the scheduled scan overdue, or switched off while REQUIRE_CRON
+    # is set) or "down" (the database is down or does not answer in time)
+    status: Literal["healthy", "degraded", "down"]
+    db: bool
     redis: bool
-    cron: dict
-    timeframe: str = "2h"
-    version: str = "2.2.0"
+    # None when the scheduler is disabled
+    cron_fresh: bool | None
+    version: str = APP_VERSION
+
+
+async def _health_checks() -> tuple[bool, bool, bool | None]:
+    """Database, Redis and cron freshness, checked at once within HEALTH_PROBE_TIMEOUT_SECONDS.
+
+    A check still running at the deadline counts as failed and is cancelled in the background, so the
+    cleanup of a hung connection never delays the answer.
+    """
+    checks = [(is_db_connected(), False), (is_redis_connected(), False), (cron_scheduler.is_fresh(), False)]
+    tasks = [run_in_background(check, name="health-check") for check, _ in checks]
+    done, pending = await asyncio.wait(tasks, timeout=HEALTH_PROBE_TIMEOUT_SECONDS)
+    for task in pending:
+        task.cancel()
+    results = []
+    for task, (_, failed) in zip(tasks, checks, strict=True):
+        ok = task in done and not task.cancelled() and task.exception() is None
+        results.append(task.result() if ok else failed)
+    return results[0], results[1], results[2]
 
 
 @app.get("/")
@@ -287,32 +480,77 @@ async def get_info():
     return {
         "status": "running",
         "app": "Crossline",
-        "version": "2.2.0",
-        "mode": "DRY_RUN" if DRY_RUN else "PRODUCTION",
+        "version": APP_VERSION,
+        # Signals only: there is no order code, and no edge has been validated out of sample
+        "mode": APP_MODE,
+        "edge_validated": False,
         "strategy": f"MACD ({MACD_FAST}, {MACD_SLOW}, {MACD_SIGNAL}) Overcross with Dynamic Swing SL/TP1",
+        "strategy_key": STRATEGY_KEY,
+        "strategy_version": STRATEGY_VERSION,
         "enforced_timeframe": "2h",
         "default_lookback": MACD_CROSS_LOOKBACK_CANDLES,
         "risk_reward_ratio": RISK_REWARD_RATIO,
         "signal_expiry_candles": SIGNAL_EXPIRY_CANDLES,
         "round_trip_fee_percent": ROUND_TRIP_FEE_PERCENT,
+        "cost_model": {
+            "version": COST_MODEL_VERSION,
+            "round_trip_fee_percent": ROUND_TRIP_FEE_PERCENT,
+            "slippage_bps_default": SLIPPAGE_BPS_DEFAULT,
+            "slippage_bps_by_symbol": SLIPPAGE_BPS_BY_SYMBOL,
+            "stop_slippage_multiplier": STOP_SLIPPAGE_MULTIPLIER,
+        },
         "max_symbols": MACD_MAX_SYMBOLS,
         "cron": cron_scheduler.get_status(),
     }
 
 
 @app.get("/api/health", response_model=HealthResponse)
-async def health():
-    db_ok = await is_db_connected()
-    redis_ok = await is_redis_connected()
-    cron_info = cron_scheduler.get_status()
-    status_str = "healthy" if (db_ok and redis_ok) else "degraded"
-    return HealthResponse(
-        status=status_str,
-        database=db_ok,
-        redis=redis_ok,
-        cron=cron_info,
-        timeframe="2h",
+async def health(response: Response):
+    """Public liveness summary: booleans only, no error text. 503 only when the database is down or
+    does not answer in time, so the container healthcheck fails on that and nothing else. Every check
+    runs at once with its own short timeout, so the answer comes well inside the healthcheck's 5s."""
+    db_ok, redis_ok, cron_fresh = await _health_checks()
+    if not db_ok:
+        status_str = "down"
+        response.status_code = 503
+    elif not redis_ok or cron_fresh is False or (REQUIRE_CRON and cron_fresh is None):
+        status_str = "degraded"
+    else:
+        status_str = "healthy"
+    return HealthResponse(status=status_str, db=db_ok, redis=redis_ok, cron_fresh=cron_fresh)
+
+
+# Dashboard sign-in
+@app.post("/api/auth/login")
+async def login(body: LoginRequest, response: Response):
+    if not _api_key_configured():
+        raise HTTPException(status_code=503, detail="API key not configured on server")
+    if not _key_matches(body.api_key):
+        raise HTTPException(status_code=401, detail="Wrong API key")
+    token, expires = issue_session_token(API_SECRET_KEY, SESSION_TTL_SECONDS)
+    response.set_cookie(
+        _session_cookie_name(),
+        token,
+        max_age=SESSION_TTL_SECONDS,
+        path="/",
+        secure=COOKIE_SECURE,
+        httponly=True,
+        samesite="strict",
     )
+    return {"authenticated": True, "expires_at": datetime.fromtimestamp(expires, UTC).isoformat()}
+
+
+@app.post("/api/auth/logout")
+async def logout(response: Response):
+    # Tokens are stateless: this ends the session in this browser; rotate API_SECRET_KEY to end all
+    response.delete_cookie(_session_cookie_name(), path="/", secure=COOKIE_SECURE, httponly=True, samesite="strict")
+    return {"authenticated": False}
+
+
+@app.get("/api/auth/session")
+async def auth_session(request: Request, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    return {"authenticated": is_authenticated(request), "configured": _api_key_configured()}
 
 
 # Watchlist Endpoints
@@ -490,15 +728,18 @@ async def get_klines_chart(
 
 # Single Signal Detail
 @app.get("/api/signals/{signal_id}")
-async def get_single_signal(signal_id: int):
+async def get_single_signal(signal_id: int, request: Request):
     sig = await get_signal_by_id(signal_id)
     if not sig:
         raise HTTPException(status_code=404, detail="Signal not found")
+    # The ledger is public, the owner's journal is not
+    if not is_authenticated(request):
+        sig.pop("journal", None)
     return sig
 
 
 # Trade Journal Endpoints
-@app.get("/api/journal")
+@app.get("/api/journal", dependencies=[Depends(verify_api_key)])
 async def list_journal(
     status: Annotated[Literal["TAKEN", "SKIPPED"] | None, Query(description="TAKEN or SKIPPED")] = None,
     symbol: Annotated[str | None, Query(max_length=30, description="Filter by symbol")] = None,
@@ -616,8 +857,8 @@ async def get_signal_candles(signal_id: int, response: Response):
 
 # Cron Scheduler Management Endpoints
 @app.get("/api/cron/status")
-async def get_cron_scheduler_status():
-    return cron_scheduler.get_status()
+async def get_cron_scheduler_status(request: Request):
+    return cron_scheduler.get_status(include_error=is_authenticated(request))
 
 
 @app.post("/api/cron/trigger", dependencies=[Depends(verify_api_key)])
@@ -654,23 +895,26 @@ async def list_profit_loss_history(
     timeframe: Annotated[str | None, Query(description="Filter by timeframe (e.g. 2h)")] = None,
     result: Annotated[str | None, Query(description="Filter by result (PROFIT/LOSS)")] = None,
     date: Annotated[str | None, Query(description="Filter by date (YYYY-MM-DD)")] = None,
-    start_date: Annotated[str | None, Query(description="Start date")] = None,
-    end_date: Annotated[str | None, Query(description="End date")] = None,
+    start_date: Annotated[str | None, Query(description="First UTC day, YYYY-MM-DD (inclusive)")] = None,
+    end_date: Annotated[str | None, Query(description="Last UTC day, YYYY-MM-DD (inclusive: the range ends at the next midnight UTC)")] = None,
     limit: Annotated[int, Query(ge=1, le=100, description="Items per page")] = 50,
     offset: Annotated[int, Query(ge=0, description="Page offset")] = 0,
 ):
     target_dir = direction or side
-    records, total, summary = await get_profitloss_history(
-        symbol=symbol,
-        direction=target_dir,
-        timeframe=timeframe,
-        result=result,
-        date=date,
-        start_date=start_date,
-        end_date=end_date,
-        limit=limit,
-        offset=offset,
-    )
+    try:
+        records, total, summary = await get_profitloss_history(
+            symbol=symbol,
+            direction=target_dir,
+            timeframe=timeframe,
+            result=result,
+            date=date,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from None
     return ProfitLossHistoryResponse(
         total=total,
         limit=limit,
@@ -682,29 +926,35 @@ async def list_profit_loss_history(
 
 @app.post("/api/profitloss-history", dependencies=[Depends(verify_api_key)])
 async def add_profit_loss_record(body: ProfitLossRecordRequest):
-    item = await record_profit_loss(
-        symbol=body.symbol,
-        direction=body.direction,
-        entry_price=body.entry_price,
-        stop_loss=body.stop_loss,
-        tp1=body.tp1,
-        exit_price=body.exit_price,
-        result=body.result,
-        timeframe=body.timeframe,
-        signal_id=body.signal_id,
-        pnl_percent=body.pnl_percent,
-        risk_reward_ratio=body.risk_reward_ratio,
-        cross_time=body.cross_time,
-        exit_time=body.exit_time,
-    )
+    """Record a hand-entered trade. It is listed but never counted in the track record, and it cannot
+    point at a stored signal (409), whose outcome only the evaluator books."""
+    try:
+        item = await record_profit_loss(
+            symbol=body.symbol,
+            direction=body.direction,
+            entry_price=body.entry_price,
+            stop_loss=body.stop_loss,
+            tp1=body.tp1,
+            exit_price=body.exit_price,
+            result=body.result,
+            timeframe=body.timeframe,
+            signal_id=body.signal_id,
+            pnl_percent=body.pnl_percent,
+            risk_reward_ratio=body.risk_reward_ratio,
+            cross_time=body.cross_time,
+            exit_time=body.exit_time,
+        )
+    except SignalTradeConflict as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
     if not item:
         raise HTTPException(status_code=400, detail="Failed to record profit/loss item")
     return {"status": "success", "item": item}
 
 
-# Scanner Endpoints (Strict 2h timeframe)
-@app.get("/api/macd-scan", response_model=ScanResponse, dependencies=[Depends(verify_api_key)])
-@app.get("/api/scan", response_model=ScanResponse, dependencies=[Depends(verify_api_key)])
+# Scanner Endpoints (Strict 2h timeframe). A manual scan is a preview by default: it neither stores
+# nor alerts unless asked, and what it stores is labelled "manual" and kept out of the track record
+@app.post("/api/scan", response_model=ScanResponse, dependencies=[Depends(verify_api_key)])
+@app.post("/api/macd-scan", response_model=ScanResponse, dependencies=[Depends(verify_api_key)])
 async def run_macd_scan(
     background_tasks: BackgroundTasks,
     symbols: Annotated[
@@ -725,10 +975,10 @@ async def run_macd_scan(
     ] = None,
     send_telegram: Annotated[
         bool, Query(description="Send Telegram alerts")
-    ] = True,
+    ] = False,
     save_db: Annotated[
-        bool, Query(description="Save to PostgreSQL")
-    ] = True,
+        bool, Query(description="Save to PostgreSQL as manual signals, excluded from the track record")
+    ] = False,
 ):
     start = time.perf_counter()
     client = _get_client()
@@ -813,7 +1063,7 @@ async def run_macd_scan(
         db_id = None
 
         if is_new and save_db:
-            saved = await save_macd_signal(sig, timeframe=timeframe)
+            saved = await save_macd_signal(sig, timeframe=timeframe, source="manual")
             if saved and "id" in saved:
                 db_id = saved["id"]
                 if saved.get("inserted") is False:
@@ -861,6 +1111,7 @@ async def run_macd_scan(
                 bars_ago=sig.bars_ago,
                 confirmed=sig.is_confirmed,
                 is_new=is_new,
+                entry_basis=sig.entry_basis,
             )
         )
 
@@ -880,12 +1131,16 @@ async def run_macd_scan(
             item.tp1 = record["tp1"]
             item.risk_reward_ratio = record["risk_reward_ratio"]
             item.confirmed = record["is_confirmed"]
+            item.entry_basis = record.get("entry_basis") or item.entry_basis
+            item.source = record.get("source")
+            item.is_eligible = bool(record.get("is_eligible"))
 
-    # Trigger outcome evaluation asynchronously
-    background_tasks.add_task(_evaluate_and_notify, client)
+    # Only a scan that stored something has anything new to evaluate
+    if save_db:
+        background_tasks.add_task(_evaluate_and_notify, client)
 
     if send_telegram and telegram_parts:
-        header = "<b>Crossline: MACD 2H signals</b>\n\n"
+        header = "<b>Crossline: manual 2H scan</b>\n\n"
         alert_body = header + "\n\n".join(telegram_parts)
         background_tasks.add_task(send_alert, alert_body)
 
@@ -906,6 +1161,7 @@ async def run_macd_scan(
 
 @app.get("/api/signals", response_model=SignalsHistoryResponse)
 async def list_signals(
+    request: Request,
     symbol: Annotated[str | None, Query(description="Filter by symbol")] = None,
     side: Annotated[str | None, Query(description="Filter by side (LONG/SHORT)")] = None,
     direction: Annotated[str | None, Query(description="Alias for side")] = None,
@@ -913,24 +1169,40 @@ async def list_signals(
     win_status: Annotated[str | None, Query(description="Filter by win_status (TP1_HIT, SL_HIT, PENDING)")] = None,
     result: Annotated[str | None, Query(description="Filter by result (PROFIT, LOSS, PENDING)")] = None,
     date: Annotated[str | None, Query(description="Filter by date (YYYY-MM-DD)")] = None,
-    start_date: Annotated[str | None, Query(description="Start date")] = None,
-    end_date: Annotated[str | None, Query(description="End date")] = None,
+    start_date: Annotated[str | None, Query(description="First UTC day, YYYY-MM-DD (inclusive)")] = None,
+    end_date: Annotated[str | None, Query(description="Last UTC day, YYYY-MM-DD (inclusive: the range ends at the next midnight UTC)")] = None,
     limit: Annotated[int, Query(ge=1, le=100, description="Items per page")] = 50,
     offset: Annotated[int, Query(ge=0, description="Page offset")] = 0,
+    tz_offset_minutes: Annotated[
+        int,
+        Query(
+            ge=-720,
+            le=840,
+            description="Read date, start_date and end_date as local days this many minutes east of UTC "
+            "(420 for WIB); 0 means UTC days",
+        ),
+    ] = 0,
 ):
     target_side = direction or side
-    records, total, summary = await get_macd_signals(
-        symbol=symbol,
-        side=target_side,
-        timeframe=timeframe,
-        win_status=win_status,
-        result=result,
-        date=date,
-        start_date=start_date,
-        end_date=end_date,
-        limit=limit,
-        offset=offset,
-    )
+    try:
+        records, total, summary = await get_macd_signals(
+            symbol=symbol,
+            side=target_side,
+            timeframe=timeframe,
+            win_status=win_status,
+            result=result,
+            date=date,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+            offset=offset,
+            tz_offset_minutes=tz_offset_minutes,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from None
+    if not is_authenticated(request):
+        for record in records:
+            record.pop("journal_status", None)
     return SignalsHistoryResponse(
         total=total,
         limit=limit,
@@ -944,3 +1216,16 @@ async def list_signals(
 async def signals_summary():
     data = await get_macd_signals_summary()
     return SummaryResponse(**data)
+
+
+@app.get("/api/performance", response_model=PerformanceResponse)
+async def performance(
+    strategy_version: Annotated[
+        str | None, Query(max_length=20, description="Strategy version; defaults to the version running now")
+    ] = None,
+    symbol: Annotated[str | None, Query(max_length=20, description="Filter by symbol")] = None,
+    side: Annotated[Literal["LONG", "SHORT", "long", "short"] | None, Query(description="Filter by side")] = None,
+):
+    """Track record of one strategy version: eligible closed trades only, each figure with its sample
+    size and a 95% interval where one applies. `definitions` in the payload states every formula."""
+    return await get_performance(strategy_version=strategy_version, symbol=symbol, side=side)

@@ -34,6 +34,9 @@ class MacdSignal:
     bars_ago: int
     is_confirmed: bool = True
     win_status: str = "PENDING"
+    # How entry_price was priced: "next_open" (open of the candle after a closed cross) or
+    # "forming_close" (latest close of the still-forming cross candle, unconfirmed)
+    entry_basis: str = "next_open"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -86,6 +89,11 @@ def calculate_trade_levels(
     lookback_candles: int = SWING_LOOKBACK_CANDLES,
     rr_ratio: float = RISK_REWARD_RATIO,
 ) -> tuple[float, float]:
+    """(stop_loss, tp1) for a cross at `idx`.
+
+    The swing window spans `lookback_candles + 1` candles: the cross candle and the
+    `lookback_candles` before it.
+    """
     start_idx = max(0, idx - lookback_candles)
     window = df.iloc[start_idx : idx + 1]
 
@@ -178,6 +186,7 @@ def detect_macd_cross(
             bars_ago=last_closed - i if is_confirmed else 0,
             is_confirmed=is_confirmed,
             win_status="PENDING",
+            entry_basis="next_open" if is_confirmed else "forming_close",
         )
 
     return None

@@ -85,6 +85,7 @@ def test_confirmed_cross_enters_at_next_candle_open():
     assert sig is not None
     assert sig.is_confirmed is True
     assert sig.bars_ago == 0
+    assert sig.entry_basis == "next_open"
     assert sig.entry_price == pytest.approx(df.iloc[i + 1]["open"])
     assert sig.cross_price != sig.entry_price
     assert sig.tp1 - sig.entry_price == pytest.approx((sig.entry_price - sig.stop_loss) * sig.risk_reward_ratio, rel=1e-4)
@@ -99,6 +100,7 @@ def test_cross_on_forming_candle_needs_include_current():
     sig = detect_macd_cross(df, "BTCUSDT", lookback_candles=1, include_current=True)
     assert sig is not None
     assert sig.is_confirmed is False
+    assert sig.entry_basis == "forming_close"
     assert sig.entry_price == pytest.approx(df.iloc[i]["close"])
 
 
@@ -111,3 +113,4 @@ def test_lookback_reports_age_of_older_cross():
     sig = detect_macd_cross(df, "BTCUSDT", lookback_candles=3)
     assert sig is not None
     assert sig.bars_ago == 2
+    assert sig.entry_basis == "next_open"

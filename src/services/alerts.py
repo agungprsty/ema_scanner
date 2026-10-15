@@ -14,13 +14,26 @@ def _price(value: float) -> str:
     return f"{value:,.2f}" if value >= 1000 else f"{value:.6g}"
 
 
-def format_signal_alert(sig) -> str:
-    """One paragraph per new signal; `sig` is a MacdSignal."""
-    age = ""
-    if sig.bars_ago:
-        age = f" (crossed {sig.bars_ago * CANDLE_HOURS}h before the latest close)"
+def format_signal_alert(sig, late: bool | None = None) -> str:
+    """One paragraph per new signal; `sig` is a MacdSignal.
+
+    A late signal (by default, one whose cross is older than the latest closed candle) leads with
+    a warning: its entry is a past price, so following it now means chasing.
+    """
+    if late is None:
+        late = sig.bars_ago > 0
+    warning = ""
+    if late:
+        if sig.bars_ago:
+            age = f"crossed {sig.bars_ago * CANDLE_HOURS}h before the latest close"
+        else:
+            age = "found well after its entry candle opened"
+        warning = (
+            f"<b>LATE signal</b>: {age}. The entry below is a past price, so do not chase it. "
+            "Not counted in the track record.\n"
+        )
     return (
-        f"<b>{sig.side}</b> #${html.escape(sig.symbol)} (2h){age}\n"
+        f"{warning}<b>{sig.side}</b> #${html.escape(sig.symbol)} (2h)\n"
         f"Entry: {_price(sig.entry_price)}\n"
         f"Stop loss: {_price(sig.stop_loss)}\n"
         f"TP1: {_price(sig.tp1)} (R:R 1:{sig.risk_reward_ratio:.1f})\n"
@@ -39,7 +52,7 @@ def format_outcome_alert(closed: list[dict]) -> str:
         lines.append(
             f"<b>{html.escape(t['symbol'])} {side}</b> {label}\n"
             f"Entry {_price(t['entry_price'])} → exit {_price(t['exit_price'])}\n"
-            f"{r_text}{t['pnl_percent']:+.2f}% after fees"
+            f"{r_text}{t['pnl_percent']:+.2f}% after fees and modelled slippage"
         )
     return "\n\n".join(lines)
 

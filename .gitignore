@@ -20,6 +20,9 @@ venv*
 backtest*.html
 turnament*.json
 
+# Market data downloaded by scripts/fetch_klines.py (backtest input, never committed)
+/data/
+
 # AI agents and coding assistants
 .opencode/
 opencode.json

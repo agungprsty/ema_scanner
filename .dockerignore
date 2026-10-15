@@ -35,3 +35,6 @@ venv/
 .ruff_cache/
 .binance_api/
 tests/
+
+# Backtest data downloaded by scripts/fetch_klines.py
+data/

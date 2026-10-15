@@ -1,0 +1,68 @@
+{
+  "harness_version": 1,
+  "dataset": {
+    "symbols": [
+      "BTCUSDT"
+    ],
+    "start": null,
+    "end": null,
+    "oos_start": "2025-02-01",
+    "warmup_candles": 498,
+    "sha256": {
+      "BTCUSDT": "e4f4a29eb3bbba5f53cf94b4c33e731433c8d15aec8d47e5581fe41770f7b245"
+    }
+  },
+  "params": {
+    "timeframe": "2h",
+    "macd_fast": 12,
+    "macd_slow": 26,
+    "macd_signal": 9,
+    "macd_candles": 500,
+    "risk_reward_ratio": 1.5,
+    "swing_lookback_candles": 5,
+    "signal_expiry_candles": 48
+  },
+  "costs": {
+    "cost_model_version": "cm1",
+    "scenarios": {
+      "prod": {
+        "fee_percent": 0.1,
+        "slippage_bps": {
+          "BTCUSDT": 2.0
+        },
+        "stop_slippage_multiplier": 1.5
+      },
+      "fee_only": {
+        "fee_percent": 0.1,
+        "slippage_bps": {
+          "BTCUSDT": 0.0
+        },
+        "stop_slippage_multiplier": 0.0
+      },
+      "gross": {
+        "fee_percent": 0.0,
+        "slippage_bps": {
+          "BTCUSDT": 0.0
+        },
+        "stop_slippage_multiplier": 0.0
+      }
+    }
+  },
+  "metrics": {
+    "prod": {
+      "n": 114,
+      "mean_net_r": 0.012,
+      "total_net_r": 1.3655
+    },
+    "fee_only": {
+      "n": 114,
+      "mean_net_r": 0.0299,
+      "total_net_r": 3.4106
+    },
+    "gross": {
+      "n": 114,
+      "mean_net_r": 0.0786,
+      "total_net_r": 8.9575
+    }
+  }
+}

@@ -88,11 +88,18 @@ async def test_unknown_signal_returns_404(journal_store):
 
 @pytest.mark.asyncio
 async def test_list_journal_passes_filters(journal_store):
-    resp = await _request("GET", "/api/journal?status=TAKEN&symbol=BTCUSDT&limit=10", auth=False)
+    resp = await _request("GET", "/api/journal?status=TAKEN&symbol=BTCUSDT&limit=10")
     assert resp.status_code == 200
     assert resp.json()["summary"]["taken"] == 0
     assert journal_store["query"] == ("TAKEN", "BTCUSDT", 10, 0)
-    assert (await _request("GET", "/api/journal?status=OPEN", auth=False)).status_code == 422
+    assert (await _request("GET", "/api/journal?status=OPEN")).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_list_journal_is_private(journal_store):
+    resp = await _request("GET", "/api/journal?status=TAKEN", auth=False)
+    assert resp.status_code == 401
+    assert "query" not in journal_store
 
 
 def _sig(side="LONG", stop_loss=95.0):

@@ -60,3 +60,49 @@ def trade_return(
     risk_percent = abs(entry - stop_loss) / entry * 100
     r_multiple = pnl_percent / risk_percent if risk_percent > 0 else None
     return pnl_percent, r_multiple
+
+
+@dataclass(frozen=True)
+class TradeCosts:
+    gross_r: float | None
+    cost_r: float | None
+    net_r: float | None
+    pnl_percent_gross: float
+    pnl_percent_net: float
+
+
+def cost_adjusted_return(
+    side: str,
+    entry: float,
+    stop_loss: float,
+    exit_price: float,
+    result: str,
+    fee_percent: float,
+    slippage_bps: float,
+    stop_slippage_multiplier: float,
+) -> TradeCosts:
+    """Gross and net result of a trade booked at its planned levels, under the cost model.
+
+    The entry fills at market `slippage_bps` worse than planned. A stop (LOSS) fills at market
+    `slippage_bps * stop_slippage_multiplier` worse than the stop, an EXPIRED close
+    `slippage_bps` worse than the close, and a target (PROFIT) at its limit price. `fee_percent`
+    is the round-trip fee as a percent of notional. Percentages are of the planned entry and R is
+    measured against the planned risk |entry - stop| / entry, so net_r = gross_r - cost_r exactly.
+    """
+    if entry <= 0:
+        return TradeCosts(None, None, None, 0.0, 0.0)
+    direction = 1 if side == "LONG" else -1
+    slip = slippage_bps / 10_000
+    exit_slip = {"PROFIT": 0.0, "LOSS": slip * stop_slippage_multiplier}.get(result, slip)
+    # Adverse fills: a long buys higher and sells lower, a short the other way round
+    entry_fill = entry * (1 + direction * slip)
+    exit_fill = exit_price * (1 - direction * exit_slip)
+
+    gross_percent = direction * (exit_price - entry) / entry * 100
+    net_percent = direction * (exit_fill - entry_fill) / entry * 100 - fee_percent
+    risk_percent = abs(entry - stop_loss) / entry * 100
+    if risk_percent <= 0:
+        return TradeCosts(None, None, None, gross_percent, net_percent)
+    gross_r = gross_percent / risk_percent
+    cost_r = (gross_percent - net_percent) / risk_percent
+    return TradeCosts(gross_r, cost_r, gross_r - cost_r, gross_percent, net_percent)

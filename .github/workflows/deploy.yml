@@ -6,6 +6,22 @@ on:
     paths:
       - 'src/**'
       - 'tests/**'
+      - 'scripts/**'
+      - 'backtest/**'
+      - 'Dockerfile'
+      - 'docker-compose.prod.yml'
+      - 'requirements.txt'
+      - 'pyproject.toml'
+      - '.github/workflows/deploy.yml'
+  # Pull requests run the tests and the backtest gate only, so a strategy change that drifts from the
+  # baseline fails on the PR instead of blocking master's deploy after merge
+  pull_request:
+    branches: [ "master", "main" ]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'backtest/**'
       - 'Dockerfile'
       - 'docker-compose.prod.yml'
       - 'requirements.txt'
@@ -20,6 +36,24 @@ jobs:
   test:
     name: Lint & Unit Tests
     runs-on: ubuntu-latest
+    # Throwaway database for the opt-in PostgreSQL tests (boot migration on the production snapshot,
+    # cron_runs), which skip without TEST_DATABASE_URL
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ledger_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ledger_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/ledger_test
 
     steps:
       - name: Checkout repository
@@ -42,9 +76,58 @@ jobs:
       - name: Run Pytest
         run: PYTHONPATH=. pytest tests/
 
+  backtest-gate:
+    name: Backtest Regression Gate
+    runs-on: ubuntu-latest
+    env:
+      # Fixed dataset: crosses in 2025, with Nov-Dec 2024 as indicator warm-up and Jan 2026 so
+      # every 2025 trade can settle. Changing it means regenerating backtest/baseline.json.
+      GATE_SYMBOLS: BTCUSDT ETHUSDT
+      GATE_MONTHS_FROM: "2024-11"
+      GATE_MONTHS_TO: "2026-01"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Cache Binance klines
+        uses: actions/cache@v4
+        with:
+          path: data/klines_zip
+          key: klines-2h-${{ env.GATE_MONTHS_FROM }}-${{ env.GATE_MONTHS_TO }}-btc-eth-v1
+
+      - name: Fetch gate dataset from data.binance.vision
+        run: python scripts/fetch_klines.py --symbols $GATE_SYMBOLS --start $GATE_MONTHS_FROM --end $GATE_MONTHS_TO --out data/klines
+
+      - name: Replay strategy and compare with baseline
+        run: |
+          PYTHONPATH=. python -m src.backtest --data data/klines --symbols $GATE_SYMBOLS \
+            --start 2025-01-01 --end 2026-01-01 --oos-start 2025-07-01 \
+            --out backtest-report.json --baseline backtest/baseline.json
+
+      - name: Upload backtest report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-report
+          path: backtest-report.json
+          if-no-files-found: ignore
+
   build-and-push:
     name: Build & Push Image
-    needs: test
+    needs: [test, backtest-gate]
+    # Only a push to master/main (or a manual run) builds and deploys; pull requests stop at the checks
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -76,6 +159,7 @@ jobs:
   deploy:
     name: Deploy to VPS
     needs: build-and-push
+    if: github.event_name != 'pull_request'
     runs-on: self-hosted
 
     steps:

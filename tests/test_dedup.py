@@ -1,7 +1,9 @@
 import asyncio
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import BackgroundTasks
+from httpx import ASGITransport, AsyncClient
 
 from src import main
 from src.services import cron_scheduler as cron_module
@@ -126,11 +128,12 @@ class _Frame(list):
 
 @pytest.fixture
 def scan_env(monkeypatch, fake_redis):
-    state = {"save_result": {"id": 42, "inserted": True}, "saved": []}
+    state = {"save_result": {"id": 42, "inserted": True}, "saved": [], "sources": [], "evaluated": 0}
     signals = {"BTCUSDT": _make_signal("BTCUSDT"), "ETHUSDT": _make_signal("ETHUSDT", side="SHORT")}
 
-    async def fake_save(sig, timeframe="2h"):
+    async def fake_save(sig, timeframe="2h", source="manual", detected_at=None):
         state["saved"].append(sig.symbol)
+        state["sources"].append(source)
         result = state["save_result"]
         return result(sig) if callable(result) else result
 
@@ -138,6 +141,7 @@ def scan_env(monkeypatch, fake_redis):
         return None
 
     async def fake_evaluate(client):
+        state["evaluated"] += 1
         return {}
 
     monkeypatch.setattr(main, "_get_client", lambda: object())
@@ -336,12 +340,84 @@ async def test_scan_preview_reports_existing_claim_as_duplicate(scan_env, fake_r
     assert scan_env["saved"] == []
 
 
+@pytest.mark.asyncio
+async def test_manual_scan_stores_signals_as_manual(scan_env, fake_redis):
+    await _run_scan("BTCUSDT,ETHUSDT")
+    assert scan_env["sources"] == ["manual", "manual"]
+
+
+@pytest.mark.asyncio
+async def test_scan_without_saving_does_not_evaluate(scan_env, fake_redis):
+    background = BackgroundTasks()
+    await main.run_macd_scan(
+        background, symbols="BTCUSDT", limit=100, lookback=3, include_current=False,
+        volume_min=None, send_telegram=True, save_db=False,
+    )
+    assert [t.func for t in background.tasks] == [main.send_alert]
+
+
+async def _post_scan(path: str, method: str = "POST", query: str = "symbols=BTCUSDT"):
+    main.app.dependency_overrides[main.verify_api_key] = lambda: True
+    try:
+        transport = ASGITransport(app=main.app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            return await ac.request(method, f"{path}?{query}")
+    finally:
+        main.app.dependency_overrides.pop(main.verify_api_key, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/scan", "/api/macd-scan"])
+async def test_scan_endpoint_defaults_to_preview(scan_env, fake_redis, path):
+    resp = await _post_scan(path)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["new_signals_count"] == 1
+    assert body["signals"][0]["entry_basis"] == "next_open"
+    assert body["signals"][0]["source"] is None
+    assert body["signals"][0]["is_eligible"] is False
+    assert scan_env["saved"] == []
+    assert scan_env["evaluated"] == 0
+    assert fake_redis.store == {}
+
+
+@pytest.mark.asyncio
+async def test_scan_endpoint_saves_only_when_asked(scan_env, fake_redis):
+    resp = await _post_scan("/api/scan", query="symbols=BTCUSDT&save_db=true")
+
+    assert resp.status_code == 200
+    assert scan_env["saved"] == ["BTCUSDT"]
+    assert scan_env["sources"] == ["manual"]
+    assert scan_env["evaluated"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/scan", "/api/macd-scan"])
+async def test_scan_endpoint_rejects_get(scan_env, fake_redis, path):
+    resp = await _post_scan(path, method="GET")
+    assert resp.status_code == 405
+    assert scan_env["saved"] == []
+
+
+@pytest.mark.asyncio
+async def test_scan_endpoint_still_requires_api_key(scan_env, monkeypatch):
+    monkeypatch.setattr(main, "API_SECRET_KEY", "a-long-enough-test-key")
+    transport = ASGITransport(app=main.app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.post("/api/scan?symbols=BTCUSDT")
+    assert resp.status_code == 401
+    assert scan_env["saved"] == []
+
+
 @pytest.fixture
 def cron_env(monkeypatch, fake_redis):
-    state = {"save_result": {"id": 1, "inserted": True}, "alerts": []}
+    state = {"save_result": {"id": 1, "inserted": True}, "alerts": [], "saved": []}
     signals = {"BTCUSDT": _make_signal("BTCUSDT")}
+    state["signals"] = signals
 
-    async def fake_save(sig, timeframe="2h"):
+    async def fake_save(sig, timeframe="2h", source="manual", detected_at=None):
+        state["saved"].append((sig.symbol, source, detected_at))
         return state["save_result"]
 
     async def fake_send_alert(body):
@@ -476,3 +552,57 @@ async def test_scan_reports_stored_outcome_for_known_signal(scan_env, fake_redis
 async def test_signals_by_keys_without_database_returns_empty(monkeypatch):
     monkeypatch.setattr(db, "_session_maker", None)
     assert await db.get_signals_by_keys([("BTCUSDT", "LONG", 1)]) == {}
+
+
+def _on_time_candle_ms(seconds_after_entry_open: int = 20) -> int:
+    """Cross candle open time whose following (entry) candle opened this many seconds ago."""
+    entry_open = datetime.now(UTC) - timedelta(seconds=seconds_after_entry_open)
+    return int(entry_open.timestamp() * 1000) - 2 * 3600 * 1000
+
+
+@pytest.mark.asyncio
+async def test_cron_stores_on_time_signal_as_cron(cron_env, fake_redis, monkeypatch):
+    monkeypatch.setattr(cron_module, "TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setattr(cron_module, "TELEGRAM_CHAT_ID", "chat")
+    cron_env["signals"]["BTCUSDT"] = _make_signal("BTCUSDT", candle_ms=_on_time_candle_ms())
+
+    res = await _make_scheduler().trigger_now()
+    await asyncio.sleep(0)
+
+    assert res["new_signals_count"] == 1
+    [(symbol, source, detected_at)] = cron_env["saved"]
+    assert (symbol, source) == ("BTCUSDT", "cron")
+    assert detected_at is not None and detected_at.tzinfo is not None
+    assert "LATE" not in cron_env["alerts"][0]
+
+
+@pytest.mark.asyncio
+async def test_cron_stores_older_cross_as_late_catchup(cron_env, fake_redis, monkeypatch):
+    monkeypatch.setattr(cron_module, "TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setattr(cron_module, "TELEGRAM_CHAT_ID", "chat")
+    late = _make_signal("BTCUSDT", candle_ms=_on_time_candle_ms() - 2 * 3600 * 1000)
+    late.bars_ago = 1
+    cron_env["signals"]["BTCUSDT"] = late
+
+    res = await _make_scheduler().trigger_now()
+    await asyncio.sleep(0)
+
+    assert res["new_signals_count"] == 1
+    assert [source for _, source, _ in cron_env["saved"]] == ["catchup"]
+    assert "<b>LATE signal</b>: crossed 2h before the latest close" in cron_env["alerts"][0]
+    assert "do not chase" in cron_env["alerts"][0]
+
+
+def test_late_signal_by_bars_ago_or_by_clock(monkeypatch):
+    monkeypatch.setattr(cron_module, "LATE_SIGNAL_GRACE_SECONDS", 600)
+    h2 = 2 * 3600 * 1000
+    cross_ms = 1_700_000_000_000
+    entry_open = datetime.fromtimestamp((cross_ms + h2) / 1000, tz=UTC)
+    sig = _make_signal(candle_ms=cross_ms)
+
+    assert cron_module.is_late_signal(sig, entry_open + timedelta(seconds=20)) is False
+    assert cron_module.is_late_signal(sig, entry_open + timedelta(seconds=600)) is False
+    # A manual cron trigger half-way through the entry candle
+    assert cron_module.is_late_signal(sig, entry_open + timedelta(seconds=601)) is True
+    sig.bars_ago = 1
+    assert cron_module.is_late_signal(sig, entry_open + timedelta(seconds=20)) is True

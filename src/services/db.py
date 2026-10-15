@@ -1,18 +1,24 @@
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Computed,
     DateTime,
     Float,
     Index,
     Integer,
     String,
+    Text,
+    and_,
+    case,
+    cast,
     desc,
     exists,
     func,
+    or_,
     select,
     text,
     tuple_,
@@ -27,13 +33,26 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from src.config.settings import (
+    COST_MODEL_VERSION,
     DATABASE_URL,
+    LATE_SIGNAL_GRACE_SECONDS,
     RISK_REWARD_RATIO,
     ROUND_TRIP_FEE_PERCENT,
     SIGNAL_EXPIRY_CANDLES,
+    STOP_SLIPPAGE_MULTIPLIER,
+    STRATEGY_KEY,
+    STRATEGY_VERSION,
+    slippage_bps_for,
 )
+from src.services.performance import DEFINITIONS, ClosedTrade, summarize_trades
 from src.strategy.macd import MacdSignal
-from src.strategy.outcome import CANDLE_INTERVAL_MS, resolve_outcome, trade_return
+from src.strategy.outcome import (
+    CANDLE_INTERVAL_MS,
+    TradeCosts,
+    cost_adjusted_return,
+    resolve_outcome,
+    trade_return,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +66,28 @@ DEFAULT_WATCHLIST = [
 ]
 
 
+# Where a stored signal came from. Only "cron" signals entered at the next open count as live
+# results: "catchup" was detected late, "manual" came from an ad-hoc scan, and "legacy" rows were
+# booked by earlier rules (interpolated entry or no fees)
+SIGNAL_SOURCES = ("cron", "catchup", "manual", "legacy")
+LEGACY_STRATEGY_VERSION = "legacy"
+# The rules that produced every non-legacy row stored before signals carried their own version
+BACKFILL_STRATEGY_VERSION = "2.2.0"
+IS_ELIGIBLE_SQL = "COALESCE(source = 'cron' AND entry_basis = 'next_open', FALSE)"
+
+# Who wrote a profitloss_history row. Only "evaluator" rows (the outcome the evaluator booked from
+# candles) can count; "manual" rows came in through POST /api/profitloss-history, and "legacy" rows
+# were booked without fees by the pre-v2.2 evaluator
+TRADE_BOOKERS = ("evaluator", "manual", "legacy")
+COUNTED_RESULTS = ("PROFIT", "LOSS", "EXPIRED")
+
+
 class Base(DeclarativeBase):
     pass
+
+
+def _round_or_none(value: float | None, digits: int) -> float | None:
+    return round(value, digits) if value is not None else None
 
 
 class WatchlistModel(Base):
@@ -110,6 +149,14 @@ class MacdSignalModel(Base):
         server_default=func.now(),
         index=True,
     )
+    # Provenance; nullable only until the boot backfill classifies rows stored before it existed
+    strategy_key: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    strategy_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    entry_basis: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # When the app saw the signal, from the application clock (created_at is the transaction start)
+    detected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_eligible: Mapped[bool | None] = mapped_column(Boolean, Computed(IS_ELIGIBLE_SQL, persisted=True))
 
     def to_dict(self) -> dict:
         return {
@@ -133,6 +180,12 @@ class MacdSignalModel(Base):
             "bars_ago": self.bars_ago,
             "is_confirmed": self.is_confirmed,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+            "strategy_key": self.strategy_key,
+            "strategy_version": self.strategy_version,
+            "source": self.source,
+            "entry_basis": self.entry_basis,
+            "detected_at": self.detected_at.isoformat() if self.detected_at else None,
+            "is_eligible": bool(self.is_eligible),
         }
 
 
@@ -163,6 +216,15 @@ class ProfitLossHistoryModel(Base):
         server_default=func.now(),
         index=True,
     )
+    # The trade restated under a versioned cost model; pnl_percent and r_multiple keep what was
+    # booked at the time (net of the same model for trades the evaluator closes from cm1 on)
+    gross_r: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cost_r: Mapped[float | None] = mapped_column(Float, nullable=True)
+    net_r: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cost_model_version: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    slippage_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    entry_basis: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    booked_by: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
     def to_dict(self) -> dict:
         return {
@@ -183,6 +245,13 @@ class ProfitLossHistoryModel(Base):
             "cross_time": self.cross_time,
             "exit_time": self.exit_time,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+            "gross_r": _round_or_none(self.gross_r, 3),
+            "cost_r": _round_or_none(self.cost_r, 3),
+            "net_r": _round_or_none(self.net_r, 3),
+            "cost_model_version": self.cost_model_version,
+            "slippage_bps": self.slippage_bps,
+            "entry_basis": self.entry_basis,
+            "booked_by": self.booked_by,
         }
 
 
@@ -210,6 +279,46 @@ class TradeJournalModel(Base):
             "notes": self.notes,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+
+class CronRunModel(Base):
+    """One scheduled scan: when it ran, for which 2H slot, and how it ended."""
+
+    __tablename__ = "cron_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Open time (UTC ms) of the 2H candle the run was due for, i.e. the candle boundary it followed
+    slot_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(10), nullable=False)
+    signals_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    evaluated_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (Index("ix_cron_runs_status_finished", "status", "finished_at"),)
+
+
+CRON_RUN_STATUSES = ("ok", "error", "skipped")
+CRON_RUN_ERROR_MAX_LENGTH = 1000
+
+# Same shape as the model, for databases created before the table existed; create_all already
+# covers fresh ones, so both statements are no-ops after the first boot
+CRON_RUNS_MIGRATIONS = (
+    """
+    CREATE TABLE IF NOT EXISTS cron_runs (
+        id SERIAL PRIMARY KEY,
+        slot_ms BIGINT NOT NULL,
+        started_at TIMESTAMP WITH TIME ZONE NOT NULL,
+        finished_at TIMESTAMP WITH TIME ZONE,
+        status VARCHAR(10) NOT NULL,
+        signals_count INTEGER NOT NULL DEFAULT 0,
+        evaluated_count INTEGER NOT NULL DEFAULT 0,
+        error TEXT
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_cron_runs_status_finished ON cron_runs (status, finished_at);",
+)
 
 
 SIGNAL_UNIQUE_COLUMNS = ("symbol", "side", "timeframe", "cross_candle_ms")
@@ -278,6 +387,85 @@ PROFITLOSS_R_MIGRATIONS = (
     """,
 )
 
+# An entry within this relative distance of the cross price was the interpolated cross itself,
+# not a fill anyone could get
+CROSS_PRICE_TOLERANCE = 1e-9
+
+# Candle length in ms for a stored row's timeframe, as SQL
+_INTERVAL_MS_SQL = (
+    "CASE m.timeframe "
+    + " ".join(f"WHEN '{tf}' THEN {ms}" for tf, ms in CANDLE_INTERVAL_MS.items())
+    + f" ELSE {CANDLE_INTERVAL_MS['2h']} END"
+)
+
+PROVENANCE_MIGRATIONS = (
+    "ALTER TABLE macd_signals ADD COLUMN IF NOT EXISTS strategy_key VARCHAR(40);",
+    "ALTER TABLE macd_signals ADD COLUMN IF NOT EXISTS strategy_version VARCHAR(20);",
+    "ALTER TABLE macd_signals ADD COLUMN IF NOT EXISTS source VARCHAR(10);",
+    "ALTER TABLE macd_signals ADD COLUMN IF NOT EXISTS entry_basis VARCHAR(20);",
+    "ALTER TABLE macd_signals ADD COLUMN IF NOT EXISTS detected_at TIMESTAMP WITH TIME ZONE;",
+    f"""
+    ALTER TABLE macd_signals ADD COLUMN IF NOT EXISTS is_eligible BOOLEAN
+    GENERATED ALWAYS AS ({IS_ELIGIBLE_SQL}) STORED;
+    """,
+    "ALTER TABLE profitloss_history ADD COLUMN IF NOT EXISTS gross_r DOUBLE PRECISION;",
+    "ALTER TABLE profitloss_history ADD COLUMN IF NOT EXISTS cost_r DOUBLE PRECISION;",
+    "ALTER TABLE profitloss_history ADD COLUMN IF NOT EXISTS net_r DOUBLE PRECISION;",
+    "ALTER TABLE profitloss_history ADD COLUMN IF NOT EXISTS cost_model_version VARCHAR(10);",
+    "ALTER TABLE profitloss_history ADD COLUMN IF NOT EXISTS slippage_bps DOUBLE PRECISION;",
+    "ALTER TABLE profitloss_history ADD COLUMN IF NOT EXISTS entry_basis VARCHAR(20);",
+    "ALTER TABLE profitloss_history ADD COLUMN IF NOT EXISTS booked_by VARCHAR(10);",
+    # Before this column only the evaluator charged fees, and POST /api/profitloss-history never
+    # did, so a row with fees is the evaluator's; a fee-free row is a legacy booking
+    """
+    UPDATE profitloss_history
+    SET booked_by = CASE WHEN fee_percent > 0 THEN 'evaluator' ELSE 'legacy' END
+    WHERE booked_by IS NULL;
+    """,
+    # Classify signals stored before provenance existed. Every statement only fills NULLs, so
+    # running them on each boot never rewrites a row twice. An entry equal to the cross price
+    # (or missing) was the interpolated cross, which pre-v2.2 code booked as the entry
+    f"""
+    UPDATE macd_signals
+    SET entry_basis = CASE
+        WHEN entry_price IS NULL OR entry_price <= 0
+             OR ABS(entry_price - cross_price) <= {CROSS_PRICE_TOLERANCE} * ABS(cross_price) THEN 'cross_interp'
+        WHEN is_confirmed IS FALSE THEN 'forming_close'
+        ELSE 'next_open'
+    END
+    WHERE entry_basis IS NULL;
+    """,
+    # Legacy: interpolated entry, or a result booked without fees by the pre-v2.2 evaluator.
+    # Catch-up: found after newer candles had already closed, or stored more than the grace period
+    # after its entry candle opened (the runtime rule in cron_scheduler.is_late_signal). Manual:
+    # entered at the forming candle's close, which only an ad-hoc scan of the forming candle does
+    f"""
+    UPDATE macd_signals AS m
+    SET source = CASE
+        WHEN m.entry_basis = 'cross_interp' OR EXISTS (
+            SELECT 1 FROM profitloss_history p
+            WHERE p.signal_id = m.id AND COALESCE(p.fee_percent, 0) = 0
+        ) THEN 'legacy'
+        WHEN m.bars_ago > 0 THEN 'catchup'
+        WHEN m.created_at > to_timestamp(
+            (m.cross_candle_ms + {_INTERVAL_MS_SQL}) / 1000.0
+        ) + interval '{LATE_SIGNAL_GRACE_SECONDS} seconds' THEN 'catchup'
+        WHEN m.entry_basis = 'forming_close' THEN 'manual'
+        ELSE 'cron'
+    END
+    WHERE m.source IS NULL;
+    """,
+    "UPDATE macd_signals SET strategy_key = 'macd_cross' WHERE strategy_key IS NULL;",
+    f"""
+    UPDATE macd_signals
+    SET strategy_version = CASE
+        WHEN source = 'legacy' THEN '{LEGACY_STRATEGY_VERSION}' ELSE '{BACKFILL_STRATEGY_VERSION}'
+    END
+    WHERE strategy_version IS NULL;
+    """,
+    "UPDATE macd_signals SET detected_at = created_at WHERE detected_at IS NULL;",
+)
+
 UTC_ISO = "%Y-%m-%dT%H:%M:%SZ"
 
 
@@ -285,7 +473,56 @@ def _ms_to_iso(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, tz=UTC).strftime(UTC_ISO)
 
 
-def build_signal_insert(signal: MacdSignal, timeframe: str):
+def _ms(dt: datetime) -> int:
+    return int(dt.timestamp() * 1000)
+
+
+def utc_day_bounds(
+    start_date: str | None, end_date: str | None, tz_offset_minutes: int = 0
+) -> tuple[datetime | None, datetime | None]:
+    """Half-open UTC range for YYYY-MM-DD filters: from start_date 00:00 up to, not including, the
+    day after end_date, so end_date covers its whole day. The days are local days at
+    `tz_offset_minutes` east of UTC (420 for WIB), returned as UTC. Raises ValueError for any other format."""
+    offset = timedelta(minutes=tz_offset_minutes)
+
+    def day_start(value: str, name: str) -> datetime:
+        try:
+            return datetime.combine(date.fromisoformat(value.strip()), time.min, tzinfo=UTC) - offset
+        except ValueError:
+            raise ValueError(f"{name} must be a date in YYYY-MM-DD format") from None
+
+    start = day_start(start_date, "start_date") if start_date else None
+    end = day_start(end_date, "end_date") + timedelta(days=1) if end_date else None
+    return start, end
+
+
+# Stored UTC time text, "2026-10-13T00:00:00Z" or the older "2026-10-13 00:00:00"
+_UTC_TEXT_PATTERN = r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?Z?$"
+
+
+def _utc_text_as_timestamp(column):
+    """A text time column as a UTC timestamp, so both stored formats compare by time rather than
+    as strings ("T" sorts after " "); NULL for text that is not a timestamp."""
+    normalized = func.replace(func.replace(column, "T", " "), "Z", "")
+    return case((column.regexp_match(_UTC_TEXT_PATTERN), cast(normalized, DateTime)), else_=None)
+
+
+def classify_entry_basis(entry_price: float | None, cross_price: float, is_confirmed: bool = True) -> str:
+    """Python twin of the entry_basis backfill, for rows that reach the evaluator unclassified."""
+    if (
+        entry_price is None
+        or entry_price <= 0
+        or abs(entry_price - cross_price) <= CROSS_PRICE_TOLERANCE * abs(cross_price)
+    ):
+        return "cross_interp"
+    return "forming_close" if is_confirmed is False else "next_open"
+
+
+def build_signal_insert(
+    signal: MacdSignal, timeframe: str, source: str = "manual", detected_at: datetime | None = None
+):
+    if source not in SIGNAL_SOURCES:
+        raise ValueError(f"unknown signal source {source!r}")
     return (
         pg_insert(MacdSignalModel)
         .values(
@@ -307,6 +544,11 @@ def build_signal_insert(signal: MacdSignal, timeframe: str):
             histogram=signal.histogram,
             bars_ago=signal.bars_ago,
             is_confirmed=signal.is_confirmed,
+            strategy_key=STRATEGY_KEY,
+            strategy_version=STRATEGY_VERSION,
+            source=source,
+            entry_basis=signal.entry_basis,
+            detected_at=detected_at or datetime.now(UTC),
         )
         .on_conflict_do_nothing(index_elements=list(SIGNAL_UNIQUE_COLUMNS))
         .returning(MacdSignalModel.id)
@@ -322,6 +564,29 @@ def build_profitloss_insert(**values):
     )
 
 
+def counted_signal(version: str = STRATEGY_VERSION):
+    """A signal that counts in the track record of `version`: on time, entered at the next open."""
+    sig = MacdSignalModel
+    return and_(sig.is_eligible.is_(True), sig.strategy_version == version)
+
+
+def not_counted_signal(version: str = STRATEGY_VERSION):
+    sig = MacdSignalModel
+    return or_(sig.is_eligible.is_not(True), sig.strategy_version.is_distinct_from(version))
+
+
+def counted_trade():
+    """A closed trade row that can count: booked by the evaluator from candles, with a known result and
+    a net R. Rows typed in through POST /api/profitloss-history never count."""
+    pl = ProfitLossHistoryModel
+    return and_(
+        pl.booked_by == "evaluator",
+        pl.result.in_(COUNTED_RESULTS),
+        pl.net_r.is_not(None),
+        MacdSignalModel.win_status != "PENDING",
+    )
+
+
 async def seed_default_watchlist(session: AsyncSession) -> None:
     res = await session.execute(select(func.count(WatchlistModel.id)))
     count = res.scalar_one() or 0
@@ -330,6 +595,69 @@ async def seed_default_watchlist(session: AsyncSession) -> None:
             session.add(WatchlistModel(symbol=sym, is_active=True, notes="Default Pair"))
         await session.commit()
         logger.info("Default watchlist seeded with %d symbols", len(DEFAULT_WATCHLIST))
+
+
+def booking_entry(rec) -> tuple[float, str]:
+    """Entry price a closing signal is booked at, and how that price was obtained.
+
+    A signal stored without a real entry, or with the interpolated cross as its entry, is still
+    booked so it leaves the open list, but it is labelled cross_interp and moved to the legacy
+    source, so it never counts as a live result.
+    """
+    if rec.entry_price is not None and rec.entry_price > 0:
+        entry = rec.entry_price
+        basis = rec.entry_basis or classify_entry_basis(rec.entry_price, rec.cross_price, rec.is_confirmed)
+    else:
+        entry, basis = rec.cross_price, "cross_interp"
+    if basis == "cross_interp":
+        rec.entry_basis = basis
+        rec.source = "legacy"
+        rec.strategy_version = LEGACY_STRATEGY_VERSION
+    return entry, basis
+
+
+def trade_costs(
+    symbol: str, side: str, entry: float, stop_loss: float, exit_price: float, result: str
+) -> tuple[TradeCosts, dict]:
+    """The trade under the current cost model, plus the profitloss_history columns that record it."""
+    slippage = slippage_bps_for(symbol)
+    costs = cost_adjusted_return(
+        side, entry, stop_loss, exit_price, result, ROUND_TRIP_FEE_PERCENT, slippage, STOP_SLIPPAGE_MULTIPLIER
+    )
+    columns = {
+        "gross_r": costs.gross_r,
+        "cost_r": costs.cost_r,
+        "net_r": costs.net_r,
+        "cost_model_version": COST_MODEL_VERSION,
+        "slippage_bps": slippage,
+    }
+    return costs, columns
+
+
+def booked_trade_values(rec, entry: float, entry_basis: str, exit_price: float, result: str, exit_time: str) -> dict:
+    """profitloss_history row for a signal closing now: pnl_percent and r_multiple are net of
+    the cost model (fees and modelled slippage), gross_r keeps the result at the planned levels."""
+    costs, columns = trade_costs(rec.symbol, rec.side, entry, rec.stop_loss, exit_price, result)
+    return {
+        "signal_id": rec.id,
+        "symbol": rec.symbol,
+        "timeframe": rec.timeframe,
+        "direction": rec.side,
+        "entry_price": entry,
+        "stop_loss": rec.stop_loss,
+        "tp1": rec.tp1,
+        "exit_price": exit_price,
+        "result": result,
+        "pnl_percent": costs.pnl_percent_net,
+        "r_multiple": costs.net_r,
+        "fee_percent": ROUND_TRIP_FEE_PERCENT,
+        "risk_reward_ratio": rec.risk_reward_ratio,
+        "cross_time": rec.cross_time,
+        "exit_time": exit_time,
+        "entry_basis": entry_basis,
+        "booked_by": "evaluator",
+        **columns,
+    }
 
 
 async def backfill_resolved_signals_to_profitloss_history(session: AsyncSession) -> None:
@@ -341,31 +669,54 @@ async def backfill_resolved_signals_to_profitloss_history(session: AsyncSession)
         resolved = (await session.execute(stmt)).scalars().all()
         for rec in resolved:
             is_win = rec.win_status == "TP1_HIT"
-            exit_price = rec.tp1 if is_win else rec.stop_loss
-            entry_val = rec.entry_price or rec.cross_price or exit_price
-            pnl, r_multiple = trade_return(rec.side, entry_val, rec.stop_loss, exit_price, 0.0)
-
-            await session.execute(
-                build_profitloss_insert(
-                    signal_id=rec.id,
-                    symbol=rec.symbol,
-                    timeframe=rec.timeframe,
-                    direction=rec.side,
-                    entry_price=entry_val,
-                    stop_loss=rec.stop_loss,
-                    tp1=rec.tp1,
-                    exit_price=exit_price,
-                    result="PROFIT" if is_win else "LOSS",
-                    pnl_percent=pnl,
-                    r_multiple=r_multiple,
-                    risk_reward_ratio=rec.risk_reward_ratio,
-                    cross_time=rec.cross_time,
-                    exit_time=rec.cross_time,
-                )
+            entry, basis = booking_entry(rec)
+            values = booked_trade_values(
+                rec,
+                entry,
+                basis,
+                exit_price=rec.tp1 if is_win else rec.stop_loss,
+                result="PROFIT" if is_win else "LOSS",
+                # The real exit time is unknown for these rows
+                exit_time=rec.cross_time,
             )
+            await session.execute(build_profitloss_insert(**values))
         await session.commit()
     except Exception as e:
-        logger.debug("Backfill profitloss_history error: %s", e)
+        logger.warning("Backfill profitloss_history error: %s", e)
+
+
+async def backfill_profitloss_costs(session: AsyncSession) -> None:
+    """Restate closed trades booked before the cost model with gross, cost and net R.
+
+    Runs on every boot but only touches rows that have no cost model version yet. The trade is
+    re-priced from its signal's levels when the signal has a real entry, else from the levels on
+    the row. Legacy rows get the same treatment, so their net R carries fees and slippage they were
+    originally booked without. Hand-entered rows are left alone: their exit is whatever was typed in.
+    pnl_percent and r_multiple are left as they were recorded.
+    """
+    pl, sig = ProfitLossHistoryModel, MacdSignalModel
+    try:
+        rows = (
+            await session.execute(
+                select(pl, sig)
+                .outerjoin(sig, sig.id == pl.signal_id)
+                .where(pl.cost_model_version.is_(None), pl.booked_by.is_distinct_from("manual"))
+            )
+        ).all()
+        for trade, signal in rows:
+            if signal is not None and signal.entry_price is not None and signal.entry_price > 0:
+                side, entry, stop_loss = signal.side, signal.entry_price, signal.stop_loss
+            else:
+                side, entry, stop_loss = trade.direction, trade.entry_price, trade.stop_loss
+            _, columns = trade_costs(trade.symbol, side, entry, stop_loss, trade.exit_price, trade.result)
+            for name, value in columns.items():
+                setattr(trade, name, value)
+            trade.entry_basis = signal.entry_basis if signal is not None else None
+        await session.commit()
+        if rows:
+            logger.info("Restated %d closed trades under cost model %s", len(rows), COST_MODEL_VERSION)
+    except Exception:
+        logger.exception("Backfill of profitloss_history costs failed")
 
 
 async def init_db(max_retries: int = 5, retry_interval: float = 2.0) -> bool:
@@ -417,12 +768,18 @@ async def init_db(max_retries: int = 5, retry_interval: float = 2.0) -> bool:
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                     );
                 """))
-                for migration in (*UNIQUE_INDEX_MIGRATIONS, *PROFITLOSS_R_MIGRATIONS):
+                for migration in (
+                    *UNIQUE_INDEX_MIGRATIONS,
+                    *PROFITLOSS_R_MIGRATIONS,
+                    *PROVENANCE_MIGRATIONS,
+                    *CRON_RUNS_MIGRATIONS,
+                ):
                     await conn.execute(text(migration))
 
             async with _session_maker() as session:
                 await seed_default_watchlist(session)
                 await backfill_resolved_signals_to_profitloss_history(session)
+                await backfill_profitloss_costs(session)
 
             logger.info("Database initialized successfully")
             return True
@@ -457,6 +814,56 @@ async def is_db_connected() -> bool:
         return True
     except Exception:
         return False
+
+
+# Cron run log
+async def record_cron_run(
+    slot_ms: int,
+    started_at: datetime,
+    finished_at: datetime,
+    status: str,
+    signals_count: int = 0,
+    evaluated_count: int = 0,
+    error: str | None = None,
+) -> bool:
+    """Store the outcome of one scheduled run. Never raises: losing this row must not fail the run."""
+    if status not in CRON_RUN_STATUSES:
+        raise ValueError(f"status must be one of {CRON_RUN_STATUSES}")
+    if _session_maker is None:
+        return False
+    try:
+        async with _session_maker() as session:
+            session.add(
+                CronRunModel(
+                    slot_ms=int(slot_ms),
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    status=status,
+                    signals_count=int(signals_count),
+                    evaluated_count=int(evaluated_count),
+                    error=error[:CRON_RUN_ERROR_MAX_LENGTH] if error else None,
+                )
+            )
+            await session.commit()
+        return True
+    except Exception as e:
+        logger.error("Failed to record cron run for slot %s: %s", slot_ms, e)
+        return False
+
+
+async def get_last_cron_success() -> datetime | None:
+    """Finish time of the newest successful scheduled run, or None (no run yet, or no database)."""
+    if _session_maker is None:
+        return None
+    try:
+        async with _session_maker() as session:
+            res = await session.execute(
+                select(func.max(CronRunModel.finished_at)).where(CronRunModel.status == "ok")
+            )
+            return res.scalar_one_or_none()
+    except Exception as e:
+        logger.error("Failed to read the last cron run: %s", e)
+        return None
 
 
 # Watchlist Operations
@@ -545,13 +952,18 @@ async def toggle_watchlist_symbol(symbol: str, is_active: bool) -> bool:
 
 
 # Signal Operations
-async def save_macd_signal(signal: MacdSignal, timeframe: str = "2h") -> dict | None:
+async def save_macd_signal(
+    signal: MacdSignal, timeframe: str = "2h", source: str = "manual", detected_at: datetime | None = None
+) -> dict | None:
+    """Store a signal unless it is already stored. `source` defaults to "manual", which never
+    counts in the track record; the scheduled scan passes "cron" or "catchup"."""
     if _session_maker is None:
         return None
 
     try:
         async with _session_maker() as session:
-            inserted_id = (await session.execute(build_signal_insert(signal, timeframe))).scalar_one_or_none()
+            stmt = build_signal_insert(signal, timeframe, source=source, detected_at=detected_at)
+            inserted_id = (await session.execute(stmt)).scalar_one_or_none()
             await session.commit()
 
             if inserted_id is not None:
@@ -581,18 +993,33 @@ def _empty_signals_summary() -> dict:
         "closed_count": 0,
         "total_r": 0.0,
         "total_pnl_percent": 0.0,
+        "strategy_version": STRATEGY_VERSION,
+        "eligible_closed_count": 0,
+        "eligible_net_r": 0.0,
+        "excluded_count": 0,
     }
 
 
 def _trade_result(pl) -> dict:
     """Result fields shown with a signal; all None while the signal is still open."""
     if pl is None:
-        return {"exit_price": None, "exit_time": None, "r_multiple": None, "pnl_percent": None}
+        return {
+            "exit_price": None,
+            "exit_time": None,
+            "r_multiple": None,
+            "pnl_percent": None,
+            "gross_r": None,
+            "cost_r": None,
+            "net_r": None,
+        }
     return {
         "exit_price": round(pl.exit_price, 6),
         "exit_time": pl.exit_time,
         "r_multiple": round(pl.r_multiple, 2) if pl.r_multiple is not None else None,
         "pnl_percent": round(pl.pnl_percent, 2),
+        "gross_r": _round_or_none(pl.gross_r, 3),
+        "cost_r": _round_or_none(pl.cost_r, 3),
+        "net_r": _round_or_none(pl.net_r, 3),
     }
 
 
@@ -617,9 +1044,10 @@ async def get_macd_signals(
     end_date: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    tz_offset_minutes: int = 0,
 ) -> tuple[list[dict], int, dict]:
-    """Signals newest first, each with its journal status and trade result, plus a summary of
-    every signal matching the filters."""
+    """Signals, newest cross first, each with its journal status and trade result, plus a summary of
+    every signal matching the filters. Date filters are days at `tz_offset_minutes` east of UTC."""
     if _session_maker is None:
         return [], 0, _empty_signals_summary()
 
@@ -641,13 +1069,18 @@ async def get_macd_signals(
         conditions.append(sig.timeframe == timeframe.strip().lower())
     if target_status:
         conditions.append(sig.win_status == target_status)
+    # Dates select by the cross candle's open time, half-open so end_date keeps its last day
+    day_ranges = [utc_day_bounds(start_date, end_date, tz_offset_minutes)]
     if date:
-        conditions.append(sig.cross_time.like(f"{date.strip()}%"))
-    if start_date:
-        conditions.append(sig.cross_time >= start_date.strip())
-    if end_date:
-        conditions.append(sig.cross_time <= f"{end_date.strip()} 23:59:59")
+        day_ranges.append(utc_day_bounds(date, date, tz_offset_minutes))
+    for start, end in day_ranges:
+        if start:
+            conditions.append(sig.cross_candle_ms >= _ms(start))
+        if end:
+            conditions.append(sig.cross_candle_ms < _ms(end))
 
+    # Only eligible trades of the current rules make up the headline; the rest is listed, not counted
+    counted = and_(counted_signal(), counted_trade())
     try:
         async with _session_maker() as session:
             agg = (
@@ -661,6 +1094,10 @@ async def get_macd_signals(
                         func.count(pl.id).label("closed"),
                         func.coalesce(func.sum(pl.r_multiple), 0.0).label("total_r"),
                         func.coalesce(func.sum(pl.pnl_percent), 0.0).label("pnl"),
+                        func.count(pl.id).filter(counted).label("eligible_closed"),
+                        func.coalesce(func.sum(pl.net_r).filter(counted), 0.0).label("eligible_net_r"),
+                        # Every signal outside the running version's stats, whatever the reason
+                        func.count().filter(not_counted_signal()).label("excluded"),
                     )
                     .select_from(sig)
                     .outerjoin(pl, pl.signal_id == sig.id)
@@ -668,7 +1105,13 @@ async def get_macd_signals(
                 )
             ).one()
 
-            query = select(sig).where(*conditions).order_by(desc(sig.id)).limit(limit).offset(offset)
+            query = (
+                select(sig)
+                .where(*conditions)
+                .order_by(desc(sig.cross_candle_ms), desc(sig.id))
+                .limit(limit)
+                .offset(offset)
+            )
             records = (await session.execute(query)).scalars().all()
             ids = [r.id for r in records]
             journal = await _journal_status_by_signal(session, ids)
@@ -683,8 +1126,13 @@ async def get_macd_signals(
                 "loss_count": agg.loss or 0,
                 "expired_count": agg.expired or 0,
                 "closed_count": agg.closed or 0,
+                # Deprecated: as booked, every row included (legacy fee-free rows too); use eligible_net_r
                 "total_r": round(float(agg.total_r or 0.0), 2),
                 "total_pnl_percent": round(float(agg.pnl or 0.0), 2),
+                "strategy_version": STRATEGY_VERSION,
+                "eligible_closed_count": agg.eligible_closed or 0,
+                "eligible_net_r": round(float(agg.eligible_net_r or 0.0), 2),
+                "excluded_count": agg.excluded or 0,
             }
             return items, agg.total or 0, summary
     except Exception as e:
@@ -747,7 +1195,9 @@ def _empty_evaluation() -> dict:
 async def _evaluate_pending_signals_unlocked(client) -> dict:
     """Close pending signals that reached their target, their stop, or their expiry.
 
-    Returns counts plus `closed`, the trades this run recorded, for outcome alerts.
+    The trade is booked under the cost model: pnl_percent and r_multiple are net of fees and
+    modelled slippage, with gross_r, cost_r and net_r stored alongside. Returns counts plus
+    `closed`, the trades this run recorded, for outcome alerts.
     """
     if _session_maker is None or client is None:
         return _empty_evaluation()
@@ -789,27 +1239,15 @@ async def _evaluate_pending_signals_unlocked(client) -> dict:
                     if outcome is None:
                         continue
 
-                    entry_val = rec.entry_price or rec.cross_price or outcome.exit_price
-                    pnl, r_multiple = trade_return(
-                        rec.side, entry_val, rec.stop_loss, outcome.exit_price, ROUND_TRIP_FEE_PERCENT
+                    entry, entry_basis = booking_entry(rec)
+                    values = booked_trade_values(
+                        rec,
+                        entry,
+                        entry_basis,
+                        exit_price=outcome.exit_price,
+                        result=outcome.result,
+                        exit_time=_ms_to_iso(outcome.exit_time_ms),
                     )
-                    values = {
-                        "signal_id": rec.id,
-                        "symbol": rec.symbol,
-                        "timeframe": rec.timeframe,
-                        "direction": rec.side,
-                        "entry_price": entry_val,
-                        "stop_loss": rec.stop_loss,
-                        "tp1": rec.tp1,
-                        "exit_price": outcome.exit_price,
-                        "result": outcome.result,
-                        "pnl_percent": pnl,
-                        "r_multiple": r_multiple,
-                        "fee_percent": ROUND_TRIP_FEE_PERCENT,
-                        "risk_reward_ratio": rec.risk_reward_ratio,
-                        "cross_time": rec.cross_time,
-                        "exit_time": _ms_to_iso(outcome.exit_time_ms),
-                    }
                     inserted = (await session.execute(build_profitloss_insert(**values))).scalar_one_or_none()
                     rec.win_status = outcome.win_status
 
@@ -837,6 +1275,10 @@ async def evaluate_pending_signals(client) -> dict:
 
 
 # Profit/Loss History Operations
+class SignalTradeConflict(Exception):
+    """A hand-entered trade pointed at a stored signal, whose outcome only the evaluator books."""
+
+
 async def record_profit_loss(
     symbol: str,
     direction: str,
@@ -852,8 +1294,19 @@ async def record_profit_loss(
     cross_time: str = "",
     exit_time: str = "",
 ) -> dict | None:
+    """Store a hand-entered trade. It is labelled booked_by="manual", never restated under the cost
+    model and never counted in the track record. Raises SignalTradeConflict when `signal_id` names a
+    stored signal: the evaluator books that signal's outcome, and a manual row would take its slot."""
     if _session_maker is None:
         return None
+
+    if signal_id is not None:
+        async with _session_maker() as session:
+            stored = (
+                await session.execute(select(MacdSignalModel.id).where(MacdSignalModel.id == signal_id))
+            ).scalar_one_or_none()
+        if stored is not None:
+            raise SignalTradeConflict(f"signal {signal_id} is a stored signal; its outcome is booked by the evaluator")
 
     try:
         async with _session_maker() as session:
@@ -871,6 +1324,7 @@ async def record_profit_loss(
                 risk_reward_ratio=risk_reward_ratio,
                 cross_time=cross_time,
                 exit_time=exit_time or cross_time,
+                booked_by="manual",
             )
             session.add(record)
             await session.commit()
@@ -879,6 +1333,13 @@ async def record_profit_loss(
     except Exception as e:
         logger.error("Failed to record profit/loss history: %s", e)
         return None
+
+
+PROFITLOSS_SUMMARY_NOTE = (
+    "winrate, total_r, avg_r and total_pnl_percent are as booked over every listed row, including legacy "
+    "fee-free rows and hand-entered ones, and are deprecated. The eligible_* fields count only trades the "
+    "evaluator booked for eligible signals of strategy_version, in net R, the same as /api/performance."
+)
 
 
 def _empty_profitloss_summary() -> dict:
@@ -891,17 +1352,13 @@ def _empty_profitloss_summary() -> dict:
         "total_pnl_percent": 0.0,
         "total_r": 0.0,
         "avg_r": 0.0,
+        "strategy_version": STRATEGY_VERSION,
+        "eligible_closed_count": 0,
+        "eligible_win_count": 0,
+        "eligible_win_rate": None,
+        "eligible_net_r": 0.0,
+        "note": PROFITLOSS_SUMMARY_NOTE,
     }
-
-
-def _max_drawdown(values: list[float]) -> float:
-    """Largest peak-to-trough fall of the running total, as a non-negative number."""
-    peak = total = worst = 0.0
-    for v in values:
-        total += v
-        peak = max(peak, total)
-        worst = max(worst, peak - total)
-    return worst
 
 
 async def get_profitloss_history(
@@ -918,7 +1375,7 @@ async def get_profitloss_history(
     if _session_maker is None:
         return [], 0, _empty_profitloss_summary()
 
-    pl = ProfitLossHistoryModel
+    pl, sig = ProfitLossHistoryModel, MacdSignalModel
     conditions = []
     if symbol:
         conditions.append(pl.symbol == symbol.strip().upper())
@@ -931,16 +1388,19 @@ async def get_profitloss_history(
     if date:
         clean_date = date.strip()
         conditions.append(pl.cross_time.like(f"{clean_date}%") | pl.exit_time.like(f"{clean_date}%"))
-    if start_date:
-        conditions.append(pl.cross_time >= start_date.strip())
-    if end_date:
-        conditions.append(pl.cross_time <= f"{end_date.strip()} 23:59:59")
+    # Half-open UTC range on the cross time read as a timestamp, so end_date keeps its last day
+    start, end = utc_day_bounds(start_date, end_date)
+    if start:
+        conditions.append(_utc_text_as_timestamp(pl.cross_time) >= start.replace(tzinfo=None))
+    if end:
+        conditions.append(_utc_text_as_timestamp(pl.cross_time) < end.replace(tzinfo=None))
 
     try:
         async with _session_maker() as session:
             records_query = select(pl).where(*conditions).order_by(desc(pl.id)).limit(limit).offset(offset)
             items = [r.to_dict() for r in (await session.execute(records_query)).scalars().all()]
 
+            counted = and_(counted_signal(), counted_trade())
             agg = (
                 await session.execute(
                     select(
@@ -951,11 +1411,19 @@ async def get_profitloss_history(
                         func.coalesce(func.sum(pl.pnl_percent), 0.0).label("pnl"),
                         func.coalesce(func.sum(pl.r_multiple), 0.0).label("total_r"),
                         func.avg(pl.r_multiple).label("avg_r"),
-                    ).where(*conditions)
+                        func.count(pl.id).filter(counted).label("eligible_closed"),
+                        func.count(pl.id).filter(counted, pl.result == "PROFIT").label("eligible_wins"),
+                        func.coalesce(func.sum(pl.net_r).filter(counted), 0.0).label("eligible_net_r"),
+                    )
+                    .select_from(pl)
+                    .outerjoin(sig, sig.id == pl.signal_id)
+                    .where(*conditions)
                 )
             ).one()
 
             total = agg.total or 0
+            eligible_closed = agg.eligible_closed or 0
+            eligible_wins = agg.eligible_wins or 0
             summary = {
                 "total_trades": total,
                 "profit_count": agg.profit or 0,
@@ -965,6 +1433,12 @@ async def get_profitloss_history(
                 "total_pnl_percent": round(float(agg.pnl or 0.0), 2),
                 "total_r": round(float(agg.total_r or 0.0), 2),
                 "avg_r": round(float(agg.avg_r or 0.0), 3),
+                "strategy_version": STRATEGY_VERSION,
+                "eligible_closed_count": eligible_closed,
+                "eligible_win_count": eligible_wins,
+                "eligible_win_rate": round(eligible_wins / eligible_closed * 100, 1) if eligible_closed else None,
+                "eligible_net_r": round(float(agg.eligible_net_r or 0.0), 2),
+                "note": PROFITLOSS_SUMMARY_NOTE,
             }
             return items, total, summary
     except Exception as e:
@@ -972,74 +1446,145 @@ async def get_profitloss_history(
         return [], 0, _empty_profitloss_summary()
 
 
-async def get_macd_signals_summary() -> dict:
+# Why a signal is kept out of a version's statistics: its source, a different strategy version, or
+# (a catch-all that should stay at zero) a scheduled signal not entered at the next open
+EXCLUSION_REASONS = ("legacy", "catchup", "manual", "other_version", "other")
+
+
+def _performance_payload(
+    version: str,
+    symbol: str | None,
+    side: str | None,
+    trades: list[ClosedTrade],
+    open_count: int = 0,
+    excluded: dict | None = None,
+) -> dict:
+    return {
+        "strategy_key": STRATEGY_KEY,
+        "strategy_version": version,
+        "cost_model_version": COST_MODEL_VERSION,
+        "filters": {"symbol": symbol, "side": side},
+        **summarize_trades(trades, RISK_REWARD_RATIO),
+        "open_count": open_count,
+        "excluded": {reason: (excluded or {}).get(reason, 0) for reason in EXCLUSION_REASONS},
+        "definitions": DEFINITIONS,
+    }
+
+
+async def _performance_report(
+    session: AsyncSession, version: str, symbol: str | None = None, side: str | None = None
+) -> dict:
+    """KPIs of the eligible closed trades of one strategy version, plus what was left out and why.
+
+    A trade counts only when its signal is eligible and of that version and the evaluator booked it
+    (counted_trade). Excluded counts cover every other signal, open or closed, in the symbol/side
+    scope, each under one reason, so counted plus excluded is every stored signal.
+    """
+    sig, pl = MacdSignalModel, ProfitLossHistoryModel
+    scope = []
+    if symbol:
+        scope.append(sig.symbol == symbol)
+    if side:
+        scope.append(sig.side == side)
+    eligible = [counted_signal(version), *scope]
+
+    rows = await session.execute(
+        select(pl.id, pl.result, pl.net_r, pl.gross_r, pl.cost_r, pl.exit_time)
+        .join(sig, sig.id == pl.signal_id)
+        .where(*eligible, counted_trade())
+    )
+    trades = [ClosedTrade(*row) for row in rows.all()]
+    open_count = (
+        await session.execute(select(func.count(sig.id)).where(*eligible, sig.win_status == "PENDING"))
+    ).scalar_one() or 0
+    reason = case(
+        (sig.source == "legacy", "legacy"),
+        (sig.strategy_version.is_distinct_from(version), "other_version"),
+        (sig.source.in_(("catchup", "manual")), sig.source),
+        else_="other",
+    )
+    excluded = await session.execute(
+        select(reason, func.count(sig.id)).where(not_counted_signal(version), *scope).group_by(reason)
+    )
+    return _performance_payload(version, symbol, side, trades, open_count, dict(excluded.all()))
+
+
+async def get_performance(
+    strategy_version: str | None = None, symbol: str | None = None, side: str | None = None
+) -> dict:
+    version = (strategy_version or "").strip() or STRATEGY_VERSION
+    symbol = (symbol or "").strip().upper() or None
+    side = (side or "").strip().upper() or None
     if _session_maker is None:
-        return {
-            "total_signals": 0,
-            "long_signals": 0,
-            "short_signals": 0,
-            "symbols_count": 0,
-            "tp1_hit_count": 0,
-            "sl_hit_count": 0,
-            "pending_count": 0,
-            "expired_count": 0,
-            "winrate": 0.0,
-            "avg_rr": 1.5,
-            "watchlist_count": len(DEFAULT_WATCHLIST),
-            "latest_signal_time": None,
-            "total_net_pnl": 0.0,
-            "closed_trades": 0,
-            "total_r": 0.0,
-            "avg_r": 0.0,
-            "max_drawdown_r": 0.0,
-        }
+        return _performance_payload(version, symbol, side, [])
 
     try:
         async with _session_maker() as session:
-            stmt = select(
-                func.count(MacdSignalModel.id).label("total"),
-                func.count().filter(MacdSignalModel.side == "LONG").label("long_cnt"),
-                func.count().filter(MacdSignalModel.side == "SHORT").label("short_cnt"),
-                func.count(func.distinct(MacdSignalModel.symbol)).label("symbols_cnt"),
-                func.count().filter(MacdSignalModel.win_status == "TP1_HIT").label("tp1_hits"),
-                func.count().filter(MacdSignalModel.win_status == "SL_HIT").label("sl_hits"),
-                func.count().filter(MacdSignalModel.win_status == "PENDING").label("pending"),
-                func.count().filter(MacdSignalModel.win_status == "EXPIRED").label("expired"),
-            )
-            row = (await session.execute(stmt)).one()
-            total = row.total or 0
-            long_cnt = row.long_cnt or 0
-            short_cnt = row.short_cnt or 0
-            symbols_cnt = row.symbols_cnt or 0
-            tp1_hits = row.tp1_hits or 0
-            sl_hits = row.sl_hits or 0
-            pending = row.pending or 0
-            expired = row.expired or 0
+            return await _performance_report(session, version, symbol, side)
+    except Exception:
+        logger.exception("Failed to calculate performance")
+        return _performance_payload(version, symbol, side, [])
 
-            resolved = tp1_hits + sl_hits + expired
-            winrate = round((tp1_hits / resolved) * 100, 1) if resolved > 0 else 0.0
 
-            # Only results tied to a recorded signal, so these totals match the signal list
-            linked = ProfitLossHistoryModel.signal_id.in_(select(MacdSignalModel.id))
-            pl_stmt = select(
-                func.coalesce(func.sum(ProfitLossHistoryModel.pnl_percent), 0.0).label("total_pnl"),
-                func.count(ProfitLossHistoryModel.id).label("closed_trades"),
-            ).where(linked)
-            pl_row = (await session.execute(pl_stmt)).one()
-            total_net_pnl = round(float(pl_row.total_pnl or 0.0), 2)
-            closed_trades = pl_row.closed_trades or resolved
+SUMMARY_NOTE = (
+    "Outcome fields (target, stop and expired counts, win rate, closed trades, R and drawdown) count only "
+    "eligible trades of strategy_version, the same as /api/performance. Signal counts cover every recorded signal."
+)
 
-            r_values = [
-                float(v)
-                for v in (
-                    await session.execute(
-                        select(ProfitLossHistoryModel.r_multiple)
-                        .where(ProfitLossHistoryModel.r_multiple.is_not(None), linked)
-                        .order_by(ProfitLossHistoryModel.exit_time, ProfitLossHistoryModel.id)
+
+def _signals_summary(
+    perf: dict, counts: dict | None = None, watchlist_count: int = 0, latest: str | None = None
+) -> dict:
+    counts = counts or {}
+    return {
+        "total_signals": counts.get("total") or 0,
+        "long_signals": counts.get("long_cnt") or 0,
+        "short_signals": counts.get("short_cnt") or 0,
+        "symbols_count": counts.get("symbols_cnt") or 0,
+        "pending_count": counts.get("pending") or 0,
+        "tp1_hit_count": perf["wins"],
+        "sl_hit_count": perf["losses"],
+        "expired_count": perf["expired"],
+        "winrate": perf["win_rate"] or 0.0,
+        "target_rr": RISK_REWARD_RATIO,
+        "watchlist_count": watchlist_count,
+        "latest_signal_time": latest,
+        "total_net_pnl": round(float(counts.get("eligible_pnl") or 0.0), 2),
+        "closed_trades": perf["n_closed"],
+        "total_r": round(perf["total_net_r"], 2),
+        "avg_r": perf["mean_net_r"] or 0.0,
+        "max_drawdown_r": round(perf["max_drawdown_r"], 2),
+        "eligible_only": True,
+        "strategy_version": perf["strategy_version"],
+        "note": SUMMARY_NOTE,
+    }
+
+
+async def get_macd_signals_summary() -> dict:
+    empty = _performance_payload(STRATEGY_VERSION, None, None, [])
+    if _session_maker is None:
+        return _signals_summary(empty, watchlist_count=len(DEFAULT_WATCHLIST))
+
+    sig, pl = MacdSignalModel, ProfitLossHistoryModel
+    try:
+        async with _session_maker() as session:
+            perf = await _performance_report(session, STRATEGY_VERSION)
+            counted = and_(counted_signal(), counted_trade())
+            counts = (
+                await session.execute(
+                    select(
+                        func.count(sig.id).label("total"),
+                        func.count().filter(sig.side == "LONG").label("long_cnt"),
+                        func.count().filter(sig.side == "SHORT").label("short_cnt"),
+                        func.count(func.distinct(sig.symbol)).label("symbols_cnt"),
+                        func.count().filter(sig.win_status == "PENDING").label("pending"),
+                        # Deprecated summed percent, kept for old clients; R is the comparable unit
+                        func.coalesce(func.sum(pl.pnl_percent).filter(counted), 0.0).label("eligible_pnl"),
                     )
-                ).scalars().all()
-            ]
-            total_r = sum(r_values)
+                    .select_from(sig)
+                    .outerjoin(pl, pl.signal_id == sig.id)
+                )
+            ).one()
 
             wl_count = (
                 await session.execute(
@@ -1049,50 +1594,14 @@ async def get_macd_signals_summary() -> dict:
 
             latest = (
                 await session.execute(
-                    select(MacdSignalModel.cross_time).order_by(desc(MacdSignalModel.id)).limit(1)
+                    select(sig.cross_time).order_by(desc(sig.cross_candle_ms), desc(sig.id)).limit(1)
                 )
             ).scalar_one_or_none()
 
-            return {
-                "total_signals": total,
-                "long_signals": long_cnt,
-                "short_signals": short_cnt,
-                "symbols_count": symbols_cnt,
-                "tp1_hit_count": tp1_hits,
-                "sl_hit_count": sl_hits,
-                "pending_count": pending,
-                "expired_count": expired,
-                "winrate": winrate,
-                "avg_rr": RISK_REWARD_RATIO,
-                "watchlist_count": wl_count,
-                "latest_signal_time": latest,
-                "total_net_pnl": total_net_pnl,
-                "closed_trades": closed_trades,
-                "total_r": round(total_r, 2),
-                "avg_r": round(total_r / len(r_values), 3) if r_values else 0.0,
-                "max_drawdown_r": round(_max_drawdown(r_values), 2),
-            }
+            return _signals_summary(perf, dict(counts._mapping), wl_count, latest)
     except Exception as e:
         logger.exception("Failed to calculate signals summary: %s", e)
-        return {
-            "total_signals": 0,
-            "long_signals": 0,
-            "short_signals": 0,
-            "symbols_count": 0,
-            "tp1_hit_count": 0,
-            "sl_hit_count": 0,
-            "pending_count": 0,
-            "expired_count": 0,
-            "winrate": 0.0,
-            "avg_rr": 1.5,
-            "watchlist_count": 0,
-            "latest_signal_time": None,
-            "total_net_pnl": 0.0,
-            "closed_trades": 0,
-            "total_r": 0.0,
-            "avg_r": 0.0,
-            "max_drawdown_r": 0.0,
-        }
+        return _signals_summary(empty)
 
 
 # Trade Journal Operations
@@ -1184,6 +1693,8 @@ def _empty_journal_summary() -> dict:
         "your_total_pnl_percent": 0.0,
         "signal_r_taken": 0.0,
         "signal_r_skipped": 0.0,
+        "signal_closed_taken": 0,
+        "signal_closed_skipped": 0,
     }
 
 
@@ -1215,13 +1726,16 @@ async def get_journal(
             rows = (await session.execute(base.order_by(desc(sig_m.id)).limit(limit).offset(offset))).all()
             items = [{**s.to_dict(), "journal": journal_view(s, e)} for s, e in rows]
 
-            # Summary across every entry, unfiltered, so the comparison is stable while browsing
+            # Summary across every entry, unfiltered, so the comparison is stable while browsing. The
+            # signals' own results are net R under the cost model, as on the Signals tab (booked R for
+            # rows never restated), and only closed signals add to them
             all_rows = (await session.execute(select(sig_m, j).join(j, j.signal_id == sig_m.id))).all()
             signal_r = dict(
                 (
                     await session.execute(
-                        select(pl.signal_id, pl.r_multiple).where(
-                            pl.signal_id.in_([s.id for s, _ in all_rows]), pl.r_multiple.is_not(None)
+                        select(pl.signal_id, func.coalesce(pl.net_r, pl.r_multiple)).where(
+                            pl.signal_id.in_([s.id for s, _ in all_rows]),
+                            func.coalesce(pl.net_r, pl.r_multiple).is_not(None),
                         )
                     )
                 ).all()
@@ -1231,8 +1745,9 @@ async def get_journal(
             for s, e in all_rows:
                 taken = e.status == "TAKEN"
                 summary["taken" if taken else "skipped"] += 1
-                key = "signal_r_taken" if taken else "signal_r_skipped"
-                summary[key] += signal_r.get(s.id, 0.0)
+                if s.id in signal_r:
+                    summary["signal_r_taken" if taken else "signal_r_skipped"] += signal_r[s.id]
+                    summary["signal_closed_taken" if taken else "signal_closed_skipped"] += 1
                 view = journal_view(s, e)
                 if taken and view["r_multiple"] is not None:
                     summary["closed_taken"] += 1

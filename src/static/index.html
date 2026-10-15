@@ -11,9 +11,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 
-  <!-- The chart library loads on demand (see app.js); warming the connection keeps the first chart quick -->
-  <link rel="preconnect" href="https://unpkg.com">
-
   <style>
     :root {
       --bg: #0f1012;
@@ -106,6 +103,20 @@
     .status div { display: flex; gap: 6px; align-items: center; }
     .status dt { color: var(--text-3); }
 
+    .link-btn {
+      background: none;
+      border: none;
+      padding: 0;
+      min-height: 24px;
+      font: inherit;
+      color: var(--text-2);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    .link-btn:hover { color: var(--text); }
+
     .dot {
       width: 7px;
       height: 7px;
@@ -116,6 +127,35 @@
     .dot.ok { background: var(--long); }
     .dot.warn { background: var(--warn); }
     .dot.err { background: var(--short); }
+
+    /* Research label and methodology */
+    .research { font-size: 12px; color: var(--text-2); }
+    .research summary {
+      display: inline-block;
+      list-style: none;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--warn);
+      background: var(--warn-bg);
+      border-radius: 4px;
+      padding: 1px 8px;
+      white-space: nowrap;
+    }
+    .research summary::-webkit-details-marker { display: none; }
+    .research summary::after { content: " ▾"; font-size: 10px; }
+    .research[open] summary::after { content: " ▴"; }
+    .research[open] { flex-basis: 100%; }
+    .research-body {
+      max-width: 720px;
+      margin-top: 8px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      line-height: 1.55;
+    }
+    .research-body p + p { margin-top: 6px; }
 
     /* Stats */
     .stats {
@@ -138,6 +178,11 @@
     .stat-value { font-size: 22px; font-weight: 500; letter-spacing: -0.01em; margin-top: 2px; white-space: nowrap; }
     .stat-value.num { font-family: var(--font-sans); }
     .stat-sub { font-size: 12px; color: var(--text-2); margin-top: 4px; }
+    .stat-n { font-size: 13px; font-weight: 400; color: var(--text-3); margin-left: 4px; }
+    .stat-warn { display: block; color: var(--warn); }
+
+    .stats-note { font-size: 12px; color: var(--text-3); margin: -12px 0 20px; }
+    .stats-note:empty { display: none; }
 
     @media (min-width: 600px) {
       .stat { padding: 16px 18px; }
@@ -176,11 +221,11 @@
 
     @media (max-width: 599px) {
       .params, .actions { width: 100%; }
-      .params .field { flex: 1; }
+      .params .field { flex: 1 1 140px; }
       .actions .btn { flex: 1; justify-content: center; }
     }
 
-    select, input[type="text"], input[type="date"], textarea {
+    select, input[type="text"], input[type="password"], input[type="date"], textarea {
       height: var(--control-h);
       background: var(--surface);
       border: 1px solid var(--line-strong);
@@ -195,7 +240,7 @@
 
     /* 16px stops iOS Safari from zooming into focused fields */
     @media (max-width: 599px) {
-      select, input[type="text"], input[type="date"], textarea { font-size: 16px; }
+      select, input[type="text"], input[type="password"], input[type="date"], textarea { font-size: 16px; }
     }
 
     select {
@@ -429,6 +474,31 @@
     .tag-new { color: var(--warn); }
     .tag-forming { color: var(--entry); }
 
+    /* Provenance chips; rows they mark are listed but not counted in the stats */
+    .chip {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      line-height: 16px;
+      padding: 0 5px;
+      margin-left: 6px;
+      border: 1px solid var(--line-strong);
+      border-radius: 3px;
+      color: var(--text-2);
+      vertical-align: 1px;
+    }
+    .chip-legacy { border-style: dashed; }
+    .chip-late { color: var(--warn); border-color: var(--warn); }
+
+    .is-excluded td, .card.is-excluded { color: var(--text-3); }
+    .is-excluded .sym, .is-excluded .is-long, .is-excluded .is-short { color: var(--text-2); }
+    .is-excluded .outcome, .is-excluded .outcome.win, .is-excluded .outcome.loss, .is-excluded .outcome.expired {
+      background: var(--surface-2);
+      color: var(--text-3);
+    }
+    .excl-note { font-size: 11px; color: var(--text-3); font-family: var(--font-sans); }
+
     .outcome {
       display: inline-block;
       font-size: 12px;
@@ -591,6 +661,17 @@
       .dlg-body { padding: 16px var(--gutter) calc(24px + env(safe-area-inset-bottom)); }
     }
 
+    /* Sign-in dialog: small and centred on every screen size */
+    dialog.dlg-small { width: min(400px, calc(100vw - 24px)); height: auto; max-height: calc(100vh - 24px); }
+    @media (max-width: 599px) {
+      dialog.dlg-small { border: 1px solid var(--line-strong); border-radius: 8px; height: auto; }
+      dialog.dlg-small .dlg-head { padding: 12px var(--gutter); }
+      dialog.dlg-small .dlg-body { padding: 16px var(--gutter); }
+    }
+    .login-help { font-size: 12px; color: var(--text-3); margin-bottom: 12px; }
+    .login-error { min-height: 18px; margin: 8px 0; font-size: 12px; color: var(--short); }
+    .login-foot { display: flex; justify-content: flex-end; gap: 8px; }
+
     .chart {
       height: 280px;
       border: 1px solid var(--line);
@@ -720,37 +801,47 @@
       <div class="brand">
         <span class="brand-name">Crossline</span>
         <span class="brand-meta">MACD crossover scanner, 2H, Binance USDⓈ-M futures</span>
+        <details class="research">
+          <summary title="How results are measured">Research · no validated edge</summary>
+          <div class="research-body">
+            <p>Crossline publishes every signal of one fixed MACD crossover rule and books each result in R, a multiple of the planned risk, after fees and modelled slippage. It has not shown an edge.</p>
+            <p>Backtest, Oct 2024 to Sep 2026, 12 symbols, n≈7,576 trades: gross +0.025R per trade; after production fees −0.014R; with realistic costs −0.043R to −0.057R.</p>
+            <p>Live stats count only signals the scheduled scan found on time, at the current strategy version. Legacy, late and manual signals stay in the list, marked, but are excluded from stats. Win rate counts expired trades as closed. Nothing here is investment advice.</p>
+          </div>
+        </details>
       </div>
       <dl class="status">
         <div><dt>API</dt><dd><span class="dot" id="health-dot"></span> <span id="health-text">Checking</span></dd></div>
         <div><dt>Next cron</dt><dd class="num" id="cron-text">--:--</dd></div>
         <div><dt>WIB</dt><dd class="num" id="clock">--:--:--</dd></div>
+        <div><dt>Owner</dt><dd><button class="link-btn" id="btn-auth" type="button">Sign in</button></dd></div>
       </dl>
     </header>
 
-    <section class="stats" aria-label="Summary">
+    <section class="stats" aria-label="Track record">
+      <div class="stat">
+        <div class="stat-label">Mean net R</div>
+        <div class="stat-value num" id="stat-mean-r">–</div>
+        <div class="stat-sub" id="stat-mean-sub">Per closed trade, 95% CI</div>
+      </div>
       <div class="stat">
         <div class="stat-label">Win rate</div>
         <div class="stat-value num" id="stat-winrate">–</div>
         <div class="split-bar" aria-hidden="true"><span class="w" id="bar-wins" style="width:0"></span><span class="l" id="bar-losses" style="width:0"></span><span class="x" id="bar-expired" style="width:0"></span></div>
-        <div class="stat-sub" id="stat-win-ratio">No closed trades yet</div>
+        <div class="stat-sub" id="stat-win-sub">No closed trades yet</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Net result</div>
+        <div class="stat-label">Net R</div>
         <div class="stat-value num" id="stat-net-r">–</div>
-        <div class="stat-sub" id="stat-net-sub">After fees</div>
+        <div class="stat-sub" id="stat-net-sub">After fees and slippage</div>
       </div>
       <div class="stat">
         <div class="stat-label">Max drawdown</div>
         <div class="stat-value num" id="stat-drawdown">–</div>
-        <div class="stat-sub">Largest fall from a peak</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Open signals</div>
-        <div class="stat-value num" id="stat-open">–</div>
-        <div class="stat-sub" id="stat-open-sub">0 recorded</div>
+        <div class="stat-sub">Peak to trough, in exit order</div>
       </div>
     </section>
+    <p class="stats-note" id="stats-note" aria-live="polite"></p>
 
     <section class="controls" aria-label="Scan">
       <div class="params">
@@ -768,6 +859,13 @@
           <select id="select-forming">
             <option value="false" selected>Closed only</option>
             <option value="true">Include forming</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">Results</span>
+          <select id="select-save">
+            <option value="false" selected>Preview only</option>
+            <option value="true">Save as manual</option>
           </select>
         </label>
       </div>
@@ -826,7 +924,7 @@
                 <th class="r">Stop</th>
                 <th class="r">Target</th>
                 <th>Outcome</th>
-                <th class="r">Result</th>
+                <th class="r">Net R</th>
                 <th>Crossed (WIB)</th>
               </tr>
             </thead>
@@ -897,6 +995,16 @@
         <div><dt>Target (TP1)</dt><dd class="num is-long" id="detail-tp">–</dd></div>
         <div><dt>Outcome</dt><dd id="detail-outcome">–</dd></div>
         <hr>
+        <div><dt>Gross R</dt><dd class="num" id="detail-gross">–</dd></div>
+        <div><dt>Cost R</dt><dd class="num" id="detail-cost">–</dd></div>
+        <div><dt>Net R</dt><dd class="num" id="detail-net">–</dd></div>
+        <div><dt>Stats</dt><dd id="detail-counted">–</dd></div>
+        <hr>
+        <div><dt>Strategy</dt><dd class="num" id="detail-version">–</dd></div>
+        <div><dt>Source</dt><dd id="detail-source">–</dd></div>
+        <div><dt>Entry basis</dt><dd id="detail-basis">–</dd></div>
+        <div><dt>Detected (WIB)</dt><dd class="num" id="detail-detected">–</dd></div>
+        <hr>
         <div><dt>MACD</dt><dd class="num" id="detail-macd">–</dd></div>
         <div><dt>Signal line</dt><dd class="num" id="detail-signal">–</dd></div>
         <div><dt>Histogram</dt><dd class="num" id="detail-hist">–</dd></div>
@@ -933,6 +1041,30 @@
         </div>
       </form>
     </div>
+  </dialog>
+
+  <dialog id="login-modal" class="dlg-small" aria-labelledby="login-title">
+    <form id="login-form" novalidate>
+      <div class="dlg-head">
+        <div>
+          <h2 class="dlg-title" id="login-title">Sign in</h2>
+          <p class="dlg-sub">Owner only</p>
+        </div>
+        <button class="dlg-close" id="login-close" type="button" aria-label="Close">&times;</button>
+      </div>
+      <div class="dlg-body">
+        <p class="login-help">Scans, evaluations, watchlist changes and your journal need the server API key (API_SECRET_KEY). The signal ledger stays public.</p>
+        <label class="field">
+          <span class="field-label">API key</span>
+          <input type="password" id="login-key" autocomplete="current-password" spellcheck="false" required>
+        </label>
+        <p class="login-error" id="login-error" aria-live="polite"></p>
+        <div class="login-foot">
+          <button class="btn" id="login-cancel" type="button">Cancel</button>
+          <button class="btn btn-primary" id="login-submit" type="submit">Sign in</button>
+        </div>
+      </div>
+    </form>
   </dialog>
 
   <output class="toast" id="toast" hidden></output>

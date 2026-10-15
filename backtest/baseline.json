@@ -1,0 +1,73 @@
+{
+  "harness_version": 1,
+  "dataset": {
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT"
+    ],
+    "start": "2025-01-01",
+    "end": "2026-01-01",
+    "oos_start": "2025-07-01",
+    "warmup_candles": 498,
+    "sha256": {
+      "BTCUSDT": "2ae19aee4eea7a14b1910f275a3e6ad96cd1ec38f14b654847182cefe064c9a9",
+      "ETHUSDT": "f3f0a4685635a9f9c0bb9477925c26dce9e148102c0a8169fc9f46dc8b71e6d3"
+    }
+  },
+  "params": {
+    "timeframe": "2h",
+    "macd_fast": 12,
+    "macd_slow": 26,
+    "macd_signal": 9,
+    "macd_candles": 500,
+    "risk_reward_ratio": 1.5,
+    "swing_lookback_candles": 5,
+    "signal_expiry_candles": 48
+  },
+  "costs": {
+    "cost_model_version": "cm1",
+    "scenarios": {
+      "prod": {
+        "fee_percent": 0.1,
+        "slippage_bps": {
+          "BTCUSDT": 2.0,
+          "ETHUSDT": 2.0
+        },
+        "stop_slippage_multiplier": 1.5
+      },
+      "fee_only": {
+        "fee_percent": 0.1,
+        "slippage_bps": {
+          "BTCUSDT": 0.0,
+          "ETHUSDT": 0.0
+        },
+        "stop_slippage_multiplier": 0.0
+      },
+      "gross": {
+        "fee_percent": 0.0,
+        "slippage_bps": {
+          "BTCUSDT": 0.0,
+          "ETHUSDT": 0.0
+        },
+        "stop_slippage_multiplier": 0.0
+      }
+    }
+  },
+  "metrics": {
+    "prod": {
+      "n": 657,
+      "mean_net_r": -0.0825,
+      "total_net_r": -54.2158
+    },
+    "fee_only": {
+      "n": 657,
+      "mean_net_r": -0.0626,
+      "total_net_r": -41.12
+    },
+    "gross": {
+      "n": 657,
+      "mean_net_r": -0.0108,
+      "total_net_r": -7.0786
+    }
+  }
+}
