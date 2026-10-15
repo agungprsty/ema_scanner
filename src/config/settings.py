@@ -23,6 +23,9 @@ ENABLE_API_DOCS = os.getenv("ENABLE_API_DOCS", "false").lower() in ("true", "1",
 # Keep COOKIE_SECURE on behind HTTPS; turn it off only for local plain-http development
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "true").lower() in ("true", "1", "yes")
 SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(12 * 3600)))
+# Public origin of the site (e.g. https://crossline.example), used for absolute og:url / canonical links on
+# shareable pages; when empty the origin of the request is used
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
 
 # Database (PostgreSQL)
 POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
@@ -31,14 +34,20 @@ POSTGRES_DB = os.getenv("POSTGRES_DB", "macd_scanner")
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "postgres")
 POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
 
+
+
+def normalize_database_url(url: str) -> str:
+    """The asyncpg form of a postgres:// or postgresql:// URL; other URLs are returned as given."""
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql+asyncpg://", 1)
+    if url.startswith("postgresql://") and "+asyncpg" not in url:
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return url
+
+
 _raw_db_url = os.getenv("DATABASE_URL")
 if _raw_db_url:
-    if _raw_db_url.startswith("postgres://"):
-        DATABASE_URL = _raw_db_url.replace("postgres://", "postgresql+asyncpg://", 1)
-    elif _raw_db_url.startswith("postgresql://") and "+asyncpg" not in _raw_db_url:
-        DATABASE_URL = _raw_db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    else:
-        DATABASE_URL = _raw_db_url
+    DATABASE_URL = normalize_database_url(_raw_db_url)
 else:
     DATABASE_URL = f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 
@@ -180,3 +189,10 @@ HEALTH_PROBE_TIMEOUT_SECONDS = float(os.getenv("HEALTH_PROBE_TIMEOUT_SECONDS", "
 
 # Telegram message when a tracked trade closes
 TELEGRAM_OUTCOME_ALERTS = os.getenv("TELEGRAM_OUTCOME_ALERTS", "true").lower() in ("true", "1", "yes")
+# Shadow strategies run beside the live one: their signals are stored, evaluated and shown, but sent
+# to Telegram (new signals and closed trades) only when this is on
+SHADOW_ALERTS = os.getenv("SHADOW_ALERTS", "false").lower() in ("true", "1", "yes")
+
+# Commit the running image was built from (Docker build arg GIT_SHA); stamped on every detected event
+# in the signal ledger when set
+GIT_SHA = os.getenv("GIT_SHA", "").strip() or None

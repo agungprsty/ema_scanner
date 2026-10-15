@@ -120,6 +120,8 @@ def detect_macd_cross(
     symbol: str,
     lookback_candles: int = 5,
     include_current: bool = False,
+    swing_lookback_candles: int = SWING_LOOKBACK_CANDLES,
+    rr_ratio: float = RISK_REWARD_RATIO,
 ) -> MacdSignal | None:
     """Find the most recent MACD cross in the last `lookback_candles` closed candles.
 
@@ -127,6 +129,8 @@ def detect_macd_cross(
     closed candle enters at the open of the next candle, the first price available once the
     cross is confirmed. With `include_current`, a cross on the forming candle is reported too,
     priced at its latest close and marked unconfirmed because it can still disappear.
+    `swing_lookback_candles` and `rr_ratio` default to the environment settings; a registered
+    strategy passes its own frozen parameters instead.
     """
     if df is None or len(df) < 3:
         return None
@@ -164,8 +168,8 @@ def detect_macd_cross(
             idx=i,
             side=side,
             entry_price=entry_price,
-            lookback_candles=SWING_LOOKBACK_CANDLES,
-            rr_ratio=RISK_REWARD_RATIO,
+            lookback_candles=swing_lookback_candles,
+            rr_ratio=rr_ratio,
         )
 
         return MacdSignal(
@@ -178,7 +182,7 @@ def detect_macd_cross(
             entry_price=round(entry_price, 6),
             stop_loss=stop_loss,
             tp1=tp1,
-            risk_reward_ratio=RISK_REWARD_RATIO,
+            risk_reward_ratio=rr_ratio,
             macd=float(macd_curr),
             signal=float(sig_curr),
             histogram=float(macd_curr - sig_curr),

@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
@@ -11,7 +12,10 @@ from src.config.settings import (
     MACD_TIMEFRAME,
     SIGNAL_EXPIRY_CANDLES,
 )
+from src.strategy.base import ResolveContext, Strategy
+from src.strategy.context import MarketContext, normalize_klines, timeframe_ms
 from src.strategy.macd import MacdSignal, compute_macd, detect_macd_cross
+from src.strategy.macd_cross import macd_cross_candidates
 from src.strategy.outcome import CANDLE_INTERVAL_MS, resolve_outcome
 
 # A scheduled scan fetches MACD_CANDLES klines, the last still forming, so the newest closed
@@ -42,13 +46,8 @@ class SymbolReplay:
 
 
 def cross_candidates(df: pd.DataFrame) -> np.ndarray:
-    """Positions in a compute_macd frame whose candle crosses, by the same comparisons as
-    detect_macd_cross. NaN compares false, which matches the scan skipping NaN rows."""
-    macd = df["MACD"].to_numpy(dtype=float)
-    sig = df["MACDs"].to_numpy(dtype=float)
-    up = (macd[:-1] <= sig[:-1]) & (macd[1:] > sig[1:])
-    down = (macd[:-1] >= sig[:-1]) & (macd[1:] < sig[1:])
-    return np.flatnonzero(up | down) + 1
+    """Positions in a compute_macd frame whose candle crosses (see macd_cross_candidates)."""
+    return macd_cross_candidates(df)
 
 
 def replay_signals(
@@ -81,6 +80,103 @@ def replay_signals(
     return signals
 
 
+def _resolve_context(
+    strategy: Strategy, symbol: str, base: pd.DataFrame, k: int, resolve_ctx: ResolveContext
+) -> ResolveContext:
+    """`resolve_ctx` plus, for a strategy whose exit reads indicator history, the candles the live
+    evaluator fetches up to the cross candle at position `k`: resolve_history_bars of them, then the cross."""
+    history = strategy.resolve_history_bars
+    if not history:
+        return resolve_ctx
+    window = base.iloc[max(0, k - history) : k + 1]
+    decision_ms = int(base["open_time_ms"].iat[k]) + resolve_ctx.interval_ms
+    return replace(resolve_ctx, history=MarketContext(symbol, decision_ms, strategy.timeframe, {strategy.timeframe: window}))
+
+
+def replay_strategy(
+    strategy: Strategy,
+    klines: pd.DataFrame,
+    symbol: str,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+    warmup: int | None = None,
+    context: Mapping[str, pd.DataFrame] | None = None,
+    candidates: bool = True,
+) -> SymbolReplay:
+    """Every trade `strategy` would have booked on `symbol`, through its own detect() and resolve().
+
+    After each closed candle k of the strategy's timeframe the strategy decides on a MarketContext as
+    of that close (closed candles of every timeframe only, the next candle's open as the entry
+    price), exactly as a scheduled scan would right after the close, re-checking that one candle.
+    A signal counts when its candle opens in [start_ms, end_ms) and has at least `warmup` candles
+    before it (default: the strategy's warmup_bars). resolve() then settles it from the candles
+    after it, up to max_hold_bars; one the data cannot settle yet is counted as unresolved.
+
+    With `candidates`, the strategy's candidate_bars() narrows the closes detect() runs after; it
+    must be a superset of where detect() fires (test_strategy_framework checks it for macd_cross).
+    `context` holds normalized klines of the strategy's context timeframes, e.g. 1d resampled from
+    the 2h series; MarketContext never lets a decision see a candle closing after it.
+    """
+    interval_ms = timeframe_ms(strategy.timeframe)
+    warmup = strategy.warmup_bars if warmup is None else warmup
+    base = normalize_klines(klines)
+    if len(base) < 3:
+        return SymbolReplay(symbol, [], 0)
+    frames = {strategy.timeframe: base, **(context or {})}
+    missing = [tf for tf in strategy.context_timeframes if tf not in frames]
+    if missing:
+        raise ValueError(f"{strategy.ref} needs {missing} context klines for {symbol}")
+    open_ms = base["open_time_ms"].to_numpy()
+    rows = base[["open_time_ms", "open", "high", "low", "close"]].to_numpy(dtype=object).tolist()
+    # Historical candles have all closed; the last one closes one interval after it opens
+    base_resolve_ctx = ResolveContext(now_ms=int(rows[-1][0]) + interval_ms, interval_ms=interval_ms)
+    positions = strategy.candidate_bars(base) if candidates else None
+    if positions is None:
+        positions = range(len(base))
+
+    trades: list[BacktestTrade] = []
+    unresolved = 0
+    for k in positions:
+        k = int(k)
+        # The entry candle must exist: it is the one opening as the decision is made
+        if k + 1 >= len(base) or k < warmup:
+            continue
+        bar_ms = int(open_ms[k])
+        if (start_ms is not None and bar_ms < start_ms) or (end_ms is not None and bar_ms >= end_ms):
+            continue
+        ctx = MarketContext(
+            symbol=symbol,
+            decision_ms=bar_ms + interval_ms,
+            base_timeframe=strategy.timeframe,
+            frames=frames,
+            next_open=float(rows[k + 1][1]),
+            catchup_bars=1,
+        )
+        for sig in strategy.detect(ctx):
+            if sig.cross_candle_ms != bar_ms:
+                continue
+            resolve_ctx = _resolve_context(strategy, symbol, base, k, base_resolve_ctx)
+            outcome = strategy.resolve(sig, rows[k + 1 : k + 1 + strategy.max_hold_bars], resolve_ctx)
+            if outcome is None:
+                unresolved += 1
+                continue
+            trades.append(
+                BacktestTrade(
+                    symbol=symbol,
+                    side=sig.side,
+                    cross_candle_ms=sig.cross_candle_ms,
+                    entry_time_ms=int(rows[k + 1][0]),
+                    entry_price=sig.entry_price,
+                    stop_loss=sig.stop_loss,
+                    tp1=sig.tp1,
+                    result=outcome.result,
+                    exit_price=outcome.exit_price,
+                    exit_time_ms=outcome.exit_time_ms,
+                )
+            )
+    return SymbolReplay(symbol, trades, unresolved)
+
+
 def replay_symbol(
     klines: pd.DataFrame,
     symbol: str,
@@ -89,6 +185,9 @@ def replay_symbol(
     warmup: int = PRODUCTION_WARMUP,
 ) -> SymbolReplay:
     """Every trade production would have booked on `symbol`, one per closed-candle cross.
+
+    The Phase 0 replay of the MACD rules with the environment's parameters, kept as the reference
+    that replay_strategy(macd_cross@2.2.0) is proven against (test_strategy_framework).
 
     MACD is computed once over the whole series. With PRODUCTION_WARMUP candles of history the
     seed of each EMA has decayed below float precision, so the values equal what a scan over the

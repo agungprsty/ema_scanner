@@ -12,6 +12,7 @@ from src.config.settings import (
     STOP_SLIPPAGE_MULTIPLIER,
     slippage_bps_for,
 )
+from src.strategy.exits import cost_result
 from src.strategy.outcome import cost_adjusted_return
 
 DAY_MS = 24 * 60 * 60 * 1000
@@ -63,7 +64,7 @@ def book_trades(trades: Iterable[BacktestTrade], scenario: CostScenario) -> list
             t.entry_price,
             t.stop_loss,
             t.exit_price,
-            t.result,
+            cost_result(t.result),
             scenario.fee_percent,
             scenario.slippage_bps(t.symbol),
             scenario.stop_slippage_multiplier,
@@ -112,7 +113,8 @@ def _num(x: float | None) -> float | None:
 def summarize(booked: list[BookedTrade]) -> dict:
     n = len(booked)
     results = [b.trade.result for b in booked]
-    outcomes = {k: results.count(k) for k in ("PROFIT", "LOSS", "EXPIRED")}
+    # The fixed-target results always, plus the exit labels of strategies without a target
+    outcomes = {k: results.count(k) for k in ("PROFIT", "LOSS", "EXPIRED", *sorted(set(results)))}
     if n == 0:
         return {"n": 0, "outcomes": outcomes}
     net = np.array([b.net_r for b in booked])
@@ -126,6 +128,8 @@ def summarize(booked: list[BookedTrade]) -> dict:
         # Win rate is targets hit over closed trades; expiries are reported apart, never as wins
         "win_rate": outcomes["PROFIT"] / n,
         "expired_rate": outcomes["EXPIRED"] / n,
+        # Trades that made money after costs, whatever their exit: the win rate of a strategy without a target
+        "positive_net_rate": float((net > 0).mean()),
         "mean_gross_r": float(gross.mean()),
         "mean_cost_r": float(cost.mean()),
         "mean_net_r": float(net.mean()),

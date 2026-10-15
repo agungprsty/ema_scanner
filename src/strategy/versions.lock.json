@@ -1,0 +1,47 @@
+{
+  "macd_cross@2.2.0": {
+    "params": {
+      "macd_fast": 12,
+      "macd_slow": 26,
+      "macd_signal": 9,
+      "macd_candles": 500,
+      "risk_reward_ratio": 1.5,
+      "swing_lookback_candles": 5,
+      "signal_expiry_candles": 48
+    },
+    "params_hash": "a87bf51a4d837d831ab41608248c18ef508e8d32485c00ada1d4feb4b77a2d12",
+    "code_hash": "9d2cde07330a237b69c6296678cd244878bdbcfa951a9a91dbf2b76dc9861b89",
+    "code_modules": [
+      "src.strategy.macd_cross",
+      "src.strategy.macd",
+      "src.strategy.outcome"
+    ],
+    "frozen_at": "2026-10-15T02:04:41Z",
+    "notes": "Production rules since v2.2 (next-open entry, swing stop, fixed 1.5R target, stop first on an ambiguous candle, expiry after 48 candles), ported onto the Strategy interface unchanged. Signals stored as 2.2.0 before the registry existed were produced by these rules."
+  },
+  "macd_cross_ema50d_oppexit@1.0.0": {
+    "params": {
+      "macd_fast": 12,
+      "macd_slow": 26,
+      "macd_signal": 9,
+      "macd_candles": 500,
+      "swing_lookback_candles": 5,
+      "trend_ema_period": 50,
+      "trend_ema_bars": 200,
+      "max_hold_candles": 96
+    },
+    "params_hash": "3088c6678f741e4007d0dd3e4563211e3925784fc90782b559f8c3698da98d64",
+    "code_hash": "dfc880b5e79bef9e710076dde64c7f54c5a801603cdf154c8e350f958dd87160",
+    "code_modules": [
+      "src.strategy.macd_cross_ema50d_oppexit",
+      "src.strategy.base",
+      "src.strategy.context",
+      "src.strategy.exits",
+      "src.strategy.macd",
+      "src.strategy.macd_cross",
+      "src.strategy.outcome"
+    ],
+    "frozen_at": "2026-10-15T03:12:04Z",
+    "notes": "Pre-registered shadow candidate from the institutional review (P1): MACD(12,26,9) 2h cross with the last closed UTC daily close vs EMA50 (200-day window, SMA seed), next-open entry, production swing stop, no target; exit at the open after the first opposite cross, at the stop (checked first) or at the close of the 96th candle. Rules, hashes, holdout dataset and pass criteria: docs/research/preregistration-macd_cross_ema50d_oppexit-1.0.0.md. Selected after ~40 configurations were tried on 2024-10..2026-09; only the 2020-01..2024-09 holdout and forward shadow evidence count."
+  }
+}

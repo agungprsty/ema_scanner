@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
-from src.backtest.data import file_sha256, kline_csv_path, load_klines_csv
+from src.backtest.data import file_sha256, kline_csv_path, load_context_klines, load_klines_csv
 from src.backtest.metrics import (
     BOOTSTRAP_SAMPLES,
     BOOTSTRAP_SEED,
@@ -10,17 +10,9 @@ from src.backtest.metrics import (
     cost_model_description,
     scenario_report,
 )
-from src.backtest.replay import PRODUCTION_WARMUP, BacktestTrade, replay_symbol
-from src.config.settings import (
-    MACD_CANDLES,
-    MACD_FAST,
-    MACD_SIGNAL,
-    MACD_SLOW,
-    MACD_TIMEFRAME,
-    RISK_REWARD_RATIO,
-    SIGNAL_EXPIRY_CANDLES,
-    SWING_LOOKBACK_CANDLES,
-)
+from src.backtest.replay import BacktestTrade, replay_strategy
+from src.strategy import registry
+from src.strategy.base import Strategy
 
 # Bump when the harness itself changes how it counts, so old reports are not compared blindly
 HARNESS_VERSION = 1
@@ -36,17 +28,8 @@ def date_to_ms(value: str | None) -> int | None:
     return int(dt.timestamp() * 1000)
 
 
-def strategy_params() -> dict:
-    return {
-        "timeframe": MACD_TIMEFRAME,
-        "macd_fast": MACD_FAST,
-        "macd_slow": MACD_SLOW,
-        "macd_signal": MACD_SIGNAL,
-        "macd_candles": MACD_CANDLES,
-        "risk_reward_ratio": RISK_REWARD_RATIO,
-        "swing_lookback_candles": SWING_LOOKBACK_CANDLES,
-        "signal_expiry_candles": SIGNAL_EXPIRY_CANDLES,
-    }
+# The strategy a run replays unless told otherwise: the one the Phase 0 gate baselines cover
+DEFAULT_STRATEGY = registry.DEFAULT_REF
 
 
 def run_backtest(
@@ -55,17 +38,32 @@ def run_backtest(
     start: str | None = None,
     end: str | None = None,
     oos_start: str | None = None,
-    warmup: int = PRODUCTION_WARMUP,
+    warmup: int | None = None,
+    strategy: Strategy | str | None = None,
+    context_source: str = "resample",
 ) -> tuple[dict, list[BacktestTrade]]:
-    """Replay `symbols` from `data_dir` and report every cost scenario. Returns (report, trades)."""
+    """Replay `strategy` (a registered one, default macd_cross@2.2.0) on `symbols` from `data_dir` and
+    report every cost scenario. `warmup` defaults to the strategy's warmup_bars; context timeframes
+    are resampled from the base klines or read from CSV (`context_source`). Returns (report, trades)."""
+    if strategy is None or isinstance(strategy, str):
+        strategy = registry.get(strategy or DEFAULT_STRATEGY)
+    warmup = strategy.warmup_bars if warmup is None else warmup
     start_ms, end_ms, oos_ms = date_to_ms(start), date_to_ms(end), date_to_ms(oos_start)
     trades: list[BacktestTrade] = []
     files = {}
+    context_files = {}
     crosses = unresolved = 0
     for symbol in symbols:
-        path = kline_csv_path(data_dir, symbol, MACD_TIMEFRAME)
+        path = kline_csv_path(data_dir, symbol, strategy.timeframe)
         klines = load_klines_csv(path)
-        replay = replay_symbol(klines, symbol, start_ms=start_ms, end_ms=end_ms, warmup=warmup)
+        context, described = load_context_klines(
+            data_dir, symbol, klines, strategy.timeframe, strategy.context_timeframes, context_source
+        )
+        if described:
+            context_files[symbol] = described
+        replay = replay_strategy(
+            strategy, klines, symbol, start_ms=start_ms, end_ms=end_ms, warmup=warmup, context=context
+        )
         trades.extend(replay.trades)
         unresolved += replay.unresolved
         crosses += len(replay.trades) + replay.unresolved
@@ -80,6 +78,15 @@ def run_backtest(
     trades.sort(key=lambda t: (t.cross_candle_ms, t.symbol, t.side))
     report = {
         "harness_version": HARNESS_VERSION,
+        "strategy": {
+            "key": strategy.key,
+            "version": strategy.version,
+            "status": strategy.status,
+            "params_hash": strategy.params_hash,
+            "code_hash": strategy.code_hash,
+            "context_timeframes": list(strategy.context_timeframes),
+            "context_source": context_source if strategy.context_timeframes else None,
+        },
         "dataset": {
             "symbols": list(symbols),
             "start": start,
@@ -87,8 +94,9 @@ def run_backtest(
             "oos_start": oos_start,
             "warmup_candles": warmup,
             "files": files,
+            **({"context_files": context_files} if context_files else {}),
         },
-        "params": strategy_params(),
+        "params": strategy.report_params(),
         "costs": cost_model_description(symbols),
         "ci_method": {"bootstrap": "weekly_block", "samples": BOOTSTRAP_SAMPLES, "seed": BOOTSTRAP_SEED},
         "signals": {"crosses": crosses, "resolved": len(trades), "unresolved": unresolved},

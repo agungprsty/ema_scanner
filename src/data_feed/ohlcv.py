@@ -7,6 +7,9 @@ from src.strategy.macd import compute_macd
 
 logger = logging.getLogger(__name__)
 
+# Fewer klines than this from Binance is treated as a failed fetch
+MIN_KLINES = 35
+
 
 def fetch_klines(
     client: UMFutures,
@@ -19,7 +22,7 @@ def fetch_klines(
         if isinstance(resp, dict) and "data" in resp:
             resp = resp["data"]
 
-        if not resp or len(resp) < 35:
+        if not resp or len(resp) < MIN_KLINES:
             logger.warning(
                 "fetch_klines %s %s: insufficient candles (len=%s)",
                 symbol,
