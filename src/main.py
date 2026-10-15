@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
@@ -28,6 +28,7 @@ from src.config.settings import (
     MACD_SIGNAL,
     MACD_SLOW,
     MACD_TIMEFRAME,
+    PUBLIC_BASE_URL,
     REQUIRE_CRON,
     RISK_REWARD_RATIO,
     ROUND_TRIP_FEE_PERCENT,
@@ -65,7 +66,9 @@ from src.services.db import (
     get_profitloss_adjustments,
     get_profitloss_history,
     get_signal_by_id,
+    get_signal_counts,
     get_signals_by_keys,
+    get_strategy_versions,
     get_track_record,
     get_watchlist,
     init_db,
@@ -103,6 +106,8 @@ from src.strategy import registry
 from src.strategy.context import MarketContext
 from src.strategy.macd import compute_macd, detect_macd_cross
 from src.strategy.outcome import CANDLE_INTERVAL_MS
+from src.web import views
+from src.web.pages import build_router
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -139,6 +144,11 @@ async def lifespan(app: FastAPI):
             "API_SECRET_KEY is unset, a placeholder, or shorter than %d characters; "
             "protected endpoints are disabled and will return 503",
             _API_KEY_MIN_LENGTH,
+        )
+    if not PUBLIC_BASE_URL:
+        logger.warning(
+            "PUBLIC_BASE_URL is unset: canonical and og:url links follow the request's Host header and scheme. "
+            "Set PUBLIC_BASE_URL=https://<domain> in production"
         )
     await init_db()
     await init_redis()
@@ -237,7 +247,18 @@ async def verify_api_key(
     return True
 
 
-app.mount("/static", StaticFiles(directory="src/static"), name="static")
+class RevalidatedStaticFiles(StaticFiles):
+    """Static files whose page scripts and stylesheets are revalidated on every load (a cheap 304), so a
+    deploy never pairs a fresh module with a stale one it imports. The pinned vendor library may be cached."""
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if not path.startswith("vendor/") and response.status_code in (200, 304):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount("/static", RevalidatedStaticFiles(directory="src/static"), name="static")
 
 
 class LoginRequest(BaseModel):
@@ -485,17 +506,6 @@ async def _health_checks() -> tuple[bool, bool, bool | None]:
         ok = task in done and not task.cancelled() and task.exception() is None
         results.append(task.result() if ok else failed)
     return results[0], results[1], results[2]
-
-
-@app.get("/")
-@app.head("/")
-async def root():
-    return FileResponse("src/static/index.html")
-
-
-@app.get("/history")
-async def history():
-    return FileResponse("src/static/index.html")
 
 
 @app.get("/api/info")
@@ -761,7 +771,18 @@ async def get_single_signal(signal_id: int, request: Request):
     # The ledger is public, the owner's journal is not
     if not is_authenticated(request):
         sig.pop("journal", None)
-    return sig
+    return {**sig, **signal_extras(sig)}
+
+
+def signal_extras(sig: dict) -> dict:
+    """Fields the pages derive from a stored signal: the status of the strategy version that produced it,
+    when an open one closes at the latest, and its public page."""
+    expires = views.expires_at_ms(sig) if views.is_open(sig) else None
+    return {
+        "strategy_status": views.strategy_status(sig),
+        "expires_at": views.iso_utc(expires) if expires else None,
+        "permalink": f"/s/{sig['id']}" if sig.get("id") is not None else None,
+    }
 
 
 # Trade Journal Endpoints
@@ -1464,7 +1485,7 @@ async def list_signals(
         limit=limit,
         offset=offset,
         summary=summary,
-        signals=records,
+        signals=[{**record, **signal_extras(record)} for record in records],
     )
 
 
@@ -1496,3 +1517,26 @@ async def track_record(strategy_key: StrategyKeyQuery = None, strategy_version: 
     per side, symbol and exit month. Breakdown rows under min_breakdown_sample trades are flagged
     meaningful=false."""
     return await get_track_record(strategy_key=strategy_key, strategy_version=strategy_version)
+
+
+@app.get("/api/versions")
+async def strategy_versions():
+    """Every strategy version: the registered ones with their frozen parameters, hashes and status, and
+    any older version found only in stored signals, each with signal counts and its holdout result.
+    `frozen` and the frozen hashes come from the stored strategy_versions rows (the lock file without a
+    database); `emitting` / `refusal` say whether the scheduled scan may emit for the version now."""
+    return {
+        "headline": f"{STRATEGY_KEY}@{STRATEGY_VERSION}",
+        "cost_model_version": COST_MODEL_VERSION,
+        "strategies": views.strategy_versions(await get_signal_counts(), await get_strategy_versions()),
+    }
+
+
+@app.get("/api/changelog")
+async def changelog():
+    """docs/changelog.json: rule, cost-model, ledger and site changes, newest first."""
+    return views.load_changelog()
+
+
+# Public pages (server-rendered shells; data comes from the endpoints above)
+app.include_router(build_router(is_authenticated))

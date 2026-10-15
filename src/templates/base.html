@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0f1012">
+  <title>{{ title }}</title>
+  <meta name="description" content="{{ description }}">
+  {% if noindex %}<meta name="robots" content="noindex, nofollow">{% endif %}
+  <link rel="canonical" href="{{ canonical }}">
+  <meta property="og:site_name" content="{{ site_name }}">
+  <meta property="og:type" content="{{ og_type or 'website' }}">
+  <meta property="og:title" content="{{ title }}">
+  <meta property="og:description" content="{{ description }}">
+  <meta property="og:url" content="{{ canonical }}">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="{{ title }}">
+  <meta name="twitter:description" content="{{ description }}">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/base.css?v={{ asset_version }}">
+  <!-- No favicon file: an empty data icon stops the browser's request for /favicon.ico (img-src allows data:) -->
+  <link rel="icon" href="data:,">
+</head>
+<body data-page="{{ page }}"{% block body_attrs %}{% endblock %}>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="wrap">
+    <header class="topbar">
+      <div class="brand">
+        <a class="brand-name" href="/">Crossline</a>
+        <span class="brand-meta">MACD crossover research · 2H · Binance USDⓈ-M futures</span>
+        <a class="research-badge" href="/methodology" title="How results are measured">Research · no validated edge</a>
+      </div>
+      <dl class="status">
+        <div><dt>API</dt><dd><span class="dot" id="health-dot"></span> <span id="health-text">Checking</span></dd></div>
+        <div><dt>Next scan</dt><dd class="num" id="cron-text">--:--</dd></div>
+        <div><dt>WIB</dt><dd class="num" id="clock">--:--:--</dd></div>
+      </dl>
+    </header>
+
+    <nav class="nav" aria-label="Pages">
+      {% for key, href, label in nav %}
+      <a href="{{ href }}"{% if key == page %} aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
+
+    <main id="main">
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+      <nav aria-label="More">
+        <a href="/methodology"{% if page == 'methodology' %} aria-current="page"{% endif %}>Methodology</a>
+        <a href="/changelog"{% if page == 'changelog' %} aria-current="page"{% endif %}>Changelog</a>
+        <a href="/api/ledger.jsonl">Ledger (JSONL)</a>
+        <a href="/ops"{% if page == 'ops' %} aria-current="page"{% endif %}>Ops</a>
+      </nav>
+      <p>Research signals of fixed rules, published win or lose. No edge has been validated out of sample. Nothing here is investment advice.</p>
+      <p class="small muted">Charts: <a href="https://www.tradingview.com/" rel="noopener">TradingView</a> Lightweight Charts™.</p>
+    </footer>
+  </div>
+
+  <output class="toast" id="toast" hidden></output>
+  <script type="module" src="/static/js/pages/{{ entry }}.js?v={{ asset_version }}"></script>
+</body>
+</html>

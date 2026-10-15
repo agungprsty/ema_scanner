@@ -8,6 +8,11 @@
 limit_req_zone $binary_remote_addr zone=scanner_limit:10m rate=10r/s;
 # Dashboard sign-in: a handful of attempts per minute per IP is plenty for the owner
 limit_req_zone $binary_remote_addr zone=login_limit:1m rate=10r/m;
+# Public ledger exports and verification rebuild the whole ledger when it has changed: a few per minute
+limit_req_zone $binary_remote_addr zone=ledger_limit:10m rate=30r/m;
+# Per-signal candles (immutable once closed, Cache-Control: public): the track record's chart grid
+# requests one per chart as it scrolls, so these get a looser zone of their own
+limit_req_zone $binary_remote_addr zone=candles_limit:10m rate=20r/s;
 
 # HTTP - Redirect to HTTPS
 server {
@@ -50,9 +55,11 @@ server {
     add_header Referrer-Policy "no-referrer-when-downgrade" always;
     # HTTPS only for a year. Add "; preload" only once every subdomain serves HTTPS
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-    # Scripts come only from this origin (app.js and the self-hosted chart library in /static/vendor/).
-    # style-src needs 'unsafe-inline' for the <style> block and style attributes in index.html; fonts are
-    # Google Fonts; img-src allows data: for the inline SVG select arrow. No inline or third-party script.
+    # Scripts come only from this origin: the ES modules in /static/js/ (one entry per page, loaded with
+    # <script type="module" src=...>) and the self-hosted chart library in /static/vendor/, which carries an
+    # SRI hash. The Jinja pages never contain inline script or event-handler attributes (tests/test_frontend.py).
+    # style-src needs 'unsafe-inline' for the style attributes the pages and the chart library set on bars,
+    # markers and chart canvases; fonts are Google Fonts; img-src allows data: for the inline SVG select arrow.
     add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
     add_header Permissions-Policy "accelerometer=(), autoplay=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()" always;
 
@@ -66,6 +73,32 @@ server {
     # Sign-in, rate limited separately from the rest of the API
     location = /api/auth/login {
         limit_req zone=login_limit burst=5 nodelay;
+        limit_req_status 429;
+
+        proxy_pass http://127.0.0.1:7860;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Whole-ledger exports and the server-side verification
+    location ~ ^/api/(ledger|ledger\.csv|ledger\.jsonl|ledger/verify)$ {
+        limit_req zone=ledger_limit burst=10 nodelay;
+        limit_req_status 429;
+
+        proxy_pass http://127.0.0.1:7860;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # One signal's chart candles
+    location ~ ^/api/signals/[0-9]+/candles$ {
+        limit_req zone=candles_limit burst=60 nodelay;
         limit_req_status 429;
 
         proxy_pass http://127.0.0.1:7860;

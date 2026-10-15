@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block body_attrs %} data-signal-id="{{ sig.id }}"{% endblock %}
+{% block content %}
+<article class="signal-page">
+  <header class="signal-head">
+    <p class="crumbs"><a href="/signals">Signals</a> / #{{ sig.id }}</p>
+    <h1>
+      <span class="sym">{{ sig.symbol }}</span>
+      <span class="{{ 'is-long' if sig.side == 'LONG' else 'is-short' }}">{{ '▲' if sig.side == 'LONG' else '▼' }} {{ sig.side }}</span>
+      <span class="tf">2H</span>
+      <span class="ref num">{{ ref }}</span>
+      {% if strategy_status == 'shadow' %}<span class="chip chip-shadow" title="Shadow strategy: stored and evaluated, never alerted">SHADOW</span>{% endif %}
+      {% if sig.source == 'legacy' %}<span class="chip chip-legacy">LEGACY</span>{% elif sig.source == 'catchup' %}<span class="chip chip-late">LATE</span>{% elif sig.source == 'manual' %}<span class="chip">MANUAL</span>{% endif %}
+    </h1>
+  </header>
+
+  <div class="banner banner-{{ outcome_class }}" role="status">
+    <span class="status-label {{ 'open' if is_open else 'closed' }}"><span class="status-dot" aria-hidden="true"></span>{{ outcome_label | upper }}</span>
+    <span class="banner-text">{{ banner }}</span>
+    {% if exclusion %}<span class="banner-note">{{ exclusion }}</span>{% endif %}
+  </div>
+
+  <section class="panel chart-panel" aria-labelledby="chart-title">
+    <div class="panel-title">
+      <h2 id="chart-title">Chart</h2>
+      <div class="seg" role="radiogroup" aria-label="Chart view">
+        <label><input type="radio" name="chart-view" value="publish"><span>At publish</span></label>
+        <label><input type="radio" name="chart-view" value="after" checked><span>{{ 'Now' if is_open else 'After close' }}</span></label>
+      </div>
+    </div>
+    <div class="chart chart-lg" id="chart-viewport"><div class="chart-msg">Loading candles…</div></div>
+    <p class="chart-note" id="chart-note">At publish shows only the candles that had closed when the signal was detected. Candles: Binance USDⓈ-M futures 2H klines (fapi/v1/klines); a closed signal is drawn from the window stored when it was settled.</p>
+  </section>
+
+  <section class="panel" aria-labelledby="facts-title">
+    <div class="panel-title"><h2 id="facts-title">Facts</h2><a href="/api/signals/{{ sig.id }}">Raw JSON</a></div>
+    <dl class="facts">
+      {% for f in facts %}
+      <div{% if f.hash %} class="fact-wide"{% endif %}>
+        <dt>{{ f.label }}</dt>
+        <dd class="{{ 'num' if f.mono }}{{ ' hash' if f.hash }}">{{ f.value }}{% if f.hint %}<span class="hint">{{ f.hint }}</span>{% endif %}</dd>
+      </div>
+      {% endfor %}
+    </dl>
+    <details class="raw-macd">
+      <summary>MACD values at the cross</summary>
+      <dl class="facts facts-compact">
+        <div><dt>MACD</dt><dd class="num">{{ sig.macd }}</dd></div>
+        <div><dt>Signal line</dt><dd class="num">{{ sig.signal }}</dd></div>
+        <div><dt>Histogram</dt><dd class="num">{{ sig.histogram }}</dd></div>
+        <div><dt>Input candles SHA-256</dt><dd class="num hash">{{ sig.input_candles_sha256 or '–' }}</dd></div>
+      </dl>
+    </details>
+  </section>
+
+  <section class="panel" aria-labelledby="timeline-title">
+    <div class="panel-title">
+      <h2 id="timeline-title">Ledger events</h2>
+      <a href="/api/signals/{{ sig.id }}/events">Raw JSON</a>
+    </div>
+    <p class="section-sub pad">Append-only and hash-chained: each event's hash covers the one before it, so changing or removing an earlier event breaks the chain. Removing the newest events shows only against a head copied elsewhere beforehand. <a href="/status#ledger">Verify the chain</a>.</p>
+    <ol class="timeline" id="timeline"><li class="empty">Loading…</li></ol>
+  </section>
+
+  <section aria-labelledby="recent-title">
+    <div class="section-head">
+      <h2 id="recent-title">Recent {{ sig.symbol }} signals</h2>
+      <a href="/signals?symbol={{ sig.symbol | urlencode }}">All {{ sig.symbol }} →</a>
+    </div>
+    <div class="card-grid" id="recent-signals"><div class="empty">Loading…</div></div>
+  </section>
+</article>
+{% endblock %}

@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+{% block body_attrs %} data-signed-in="{{ 'true' if signed_in else 'false' }}"{% endblock %}
+{% block content %}
+<div class="page-head page-head-row">
+  <div>
+    <h1>Ops</h1>
+    <p class="section-sub">Owner tools: scan preview, outcome evaluation, watchlist and your private journal. Nothing here changes the public track record: saved manual scans are labelled manual and excluded.</p>
+  </div>
+  <button class="btn" id="btn-signout" type="button"{% if not signed_in %} hidden{% endif %}>Sign out</button>
+</div>
+
+<section class="panel login-panel" id="login-panel"{% if signed_in %} hidden{% endif %} aria-labelledby="login-title">
+  <form id="login-form" class="login-form" novalidate>
+    <h2 id="login-title">Sign in</h2>
+    <p class="login-help">Needs the server API key (API_SECRET_KEY). The browser then holds an HttpOnly session cookie; the key is never stored by the page.</p>
+    <label class="field">
+      <span class="field-label">API key</span>
+      <input type="password" id="login-key" autocomplete="current-password" spellcheck="false" required>
+    </label>
+    <p class="login-error" id="login-error" aria-live="polite"></p>
+    <button class="btn btn-primary" id="login-submit" type="submit">Sign in</button>
+  </form>
+</section>
+
+<div id="ops-tools"{% if not signed_in %} hidden{% endif %}>
+  <section class="controls" aria-label="Scan">
+    <div class="params">
+      <label class="field">
+        <span class="field-label">Look back</span>
+        <select id="select-lookback">
+          <option value="1">1 bar</option>
+          <option value="3">3 bars</option>
+          <option value="5" selected>5 bars</option>
+          <option value="10">10 bars</option>
+        </select>
+      </label>
+      <label class="field">
+        <span class="field-label">Candle</span>
+        <select id="select-forming">
+          <option value="false" selected>Closed only</option>
+          <option value="true">Include forming</option>
+        </select>
+      </label>
+      <label class="field">
+        <span class="field-label">Results</span>
+        <select id="select-save">
+          <option value="false" selected>Preview only</option>
+          <option value="true">Save as manual</option>
+        </select>
+      </label>
+    </div>
+    <div class="actions">
+      <button class="btn" id="btn-eval" type="button">Evaluate outcomes</button>
+      <button class="btn btn-primary" id="btn-scan" type="button">
+        <span class="spinner" id="scan-icon"></span>
+        <span id="scan-label">Run scan</span>
+      </button>
+    </div>
+  </section>
+
+  <div class="notice" id="action-notice" role="alert" hidden></div>
+
+  <section class="panel">
+    <div class="panel-head">
+      <div class="tabs" role="tablist" aria-label="Owner views">
+        <button class="tab" role="tab" data-tab="scan" aria-selected="true">Latest scan</button>
+        <button class="tab" role="tab" data-tab="journal" aria-selected="false">Journal</button>
+        <button class="tab" role="tab" data-tab="watchlist" aria-selected="false">Watchlist<span class="count num" id="wl-count"></span></button>
+      </div>
+    </div>
+    <div class="caption" id="caption" aria-live="polite"></div>
+
+    <div id="view-scan">
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th class="r">Entry</th>
+              <th class="r">Stop</th>
+              <th class="r">Target</th>
+              <th>Status</th>
+              <th>Crossed (WIB)</th>
+            </tr>
+          </thead>
+          <tbody id="scan-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="view-journal" hidden>
+      <div class="filters filters-inline">
+        <input type="text" id="journal-symbol" placeholder="Symbol" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Filter by symbol">
+        <select id="journal-status-filter" aria-label="Filter by decision">
+          <option value="">Any decision</option>
+          <option value="TAKEN">Taken</option>
+          <option value="SKIPPED">Skipped</option>
+        </select>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th>Decision</th>
+              <th class="r">Entry fill</th>
+              <th class="r">Exit fill</th>
+              <th class="r">Your result</th>
+              <th>Signal status</th>
+              <th>Crossed (WIB)</th>
+            </tr>
+          </thead>
+          <tbody id="journal-tbody"></tbody>
+        </table>
+      </div>
+      <nav class="pager" id="journal-pager" aria-label="Pages" hidden>
+        <span class="pager-info num"></span>
+        <div class="pager-btns">
+          <button class="btn" type="button" data-step="-1">Previous</button>
+          <button class="btn" type="button" data-step="1">Next</button>
+        </div>
+      </nav>
+    </div>
+
+    <div id="view-watchlist" hidden>
+      <form class="wl-add" id="wl-form">
+        <input type="text" id="input-new-symbol" placeholder="Add symbol, e.g. SUIUSDT" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Symbol to add">
+        <button class="btn" id="btn-add-symbol" type="submit">Add</button>
+      </form>
+      <ul class="wl-list" id="watchlist-list"></ul>
+    </div>
+  </section>
+</div>
+
+<dialog id="signal-modal" aria-labelledby="modal-title">
+  <div class="dlg-head">
+    <div>
+      <h2 class="dlg-title" id="modal-title">Signal</h2>
+      <p class="dlg-sub" id="modal-sub"></p>
+    </div>
+    <button class="dlg-close" id="modal-close" type="button" aria-label="Close">&times;</button>
+  </div>
+  <div class="dlg-body">
+    <div class="chart" id="chart-viewport"></div>
+    <dl class="facts facts-compact">
+      <div><dt>Entry</dt><dd class="num" id="detail-entry">–</dd></div>
+      <div><dt>Stop</dt><dd class="num" id="detail-sl">–</dd></div>
+      <div><dt>Target</dt><dd class="num" id="detail-tp">–</dd></div>
+      <div><dt>Status</dt><dd id="detail-outcome">–</dd></div>
+    </dl>
+    <p class="dlg-link" id="detail-link" hidden><a id="detail-permalink" href="#">Open the public signal page →</a></p>
+
+    <form class="journal" id="journal-form" novalidate>
+      <h3>Your trade</h3>
+      <p class="journal-help" id="journal-help">Record whether you took this signal and at what prices, to compare your results with the signal's.</p>
+      <div id="journal-fields">
+        <div class="seg" role="radiogroup" aria-label="Decision">
+          <label><input type="radio" name="journal-status" value=""><span>Not recorded</span></label>
+          <label><input type="radio" name="journal-status" value="TAKEN"><span>Taken</span></label>
+          <label><input type="radio" name="journal-status" value="SKIPPED"><span>Skipped</span></label>
+        </div>
+        <div class="journal-grid">
+          <label class="field" data-taken>
+            <span class="field-label">Entry fill</span>
+            <input type="text" id="journal-entry" inputmode="decimal" autocomplete="off">
+          </label>
+          <label class="field" data-taken>
+            <span class="field-label">Exit fill (leave empty while open)</span>
+            <input type="text" id="journal-exit" inputmode="decimal" autocomplete="off">
+          </label>
+          <label class="field wide">
+            <span class="field-label">Notes</span>
+            <textarea id="journal-notes" rows="2" maxlength="500"></textarea>
+          </label>
+        </div>
+        <div class="journal-foot">
+          <span class="journal-result" id="journal-result" aria-live="polite"></span>
+          <button class="btn btn-primary" id="journal-save" type="submit">Save</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</dialog>
+{% endblock %}

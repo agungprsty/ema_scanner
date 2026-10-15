@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block body_attrs %} data-headline="{{ headline }}"{% endblock %}
+{% block content %}
+<div class="page-head page-head-row">
+  <div>
+    <h1>Track record</h1>
+    <p class="section-sub" id="period">Eligible closed trades of one strategy version, in R after costs.</p>
+  </div>
+  <label class="field version-picker">
+    <span class="field-label">Strategy version</span>
+    <select id="version-select" aria-describedby="version-note"><option value="{{ headline }}">{{ headline }}</option></select>
+  </label>
+</div>
+<p class="stats-note" id="version-note"></p>
+
+{% for ref, b in baselines.items() %}
+<section class="baseline-card" data-ref="{{ ref }}" aria-labelledby="baseline-title-{{ loop.index }}"{% if ref != headline %} hidden{% endif %}>
+  <h2 id="baseline-title-{{ loop.index }}">Before any live number: the backtest of {{ b.title }}</h2>
+  <p class="muted small"><span class="num">{{ ref }}</span>, mean net R per trade under cost model cm1, the costs the live figures below use.</p>
+  <div class="table-scroll">
+    <table class="compact baseline-table">
+      <thead><tr><th>Data</th><th class="r">n</th><th class="r">Mean net R (cm1)</th><th class="r">t</th><th class="r">95% CI</th></tr></thead>
+      <tbody>
+        {% for row in b.rows %}
+        <tr>
+          <td>{{ row.data }}<span class="hint">{{ row.note }}</span></td>
+          <td class="r num">{{ row.n }}</td>
+          <td class="r num"><strong>{{ row.net }}</strong></td>
+          <td class="r num">{{ row.t }}</td>
+          <td class="r num">{{ row.ci }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p><strong>{{ b.verdict }}</strong>{% if holdouts.get(ref) %} Holdout report: <a href="{{ holdouts[ref].url }}">{{ holdouts[ref].file }}</a> ({{ holdouts[ref].verdict or 'see report' }}).{% endif %}</p>
+  <p class="muted small">Source: {{ b.source }}. Pre-registration and holdout reports: <a href="/methodology#preregistration">Methodology</a>.</p>
+</section>
+{% endfor %}
+<section class="baseline-card" data-ref="" aria-label="Backtest" hidden>
+  <p class="muted">No backtest is published for this version.</p>
+</section>
+
+<section aria-labelledby="kpi-title">
+  <h2 id="kpi-title" class="visually-hidden">Key figures</h2>
+  <div class="stats" id="kpi-tiles"><div class="stat"><div class="stat-label">Loading…</div></div></div>
+  <p class="stats-note" id="kpi-note"></p>
+</section>
+
+<div class="tabs-bar" role="tablist" aria-label="Track record views">
+  <button class="tab" role="tab" id="tab-curves" data-tab="curves" aria-controls="view-curves" aria-selected="true">Curves</button>
+  <button class="tab" role="tab" id="tab-breakdown" data-tab="breakdown" aria-controls="view-breakdown" aria-selected="false" tabindex="-1">Breakdown</button>
+  <button class="tab" role="tab" id="tab-ledger" data-tab="ledger" aria-controls="view-ledger" aria-selected="false" tabindex="-1">Ledger</button>
+  <button class="tab" role="tab" id="tab-charts" data-tab="charts" aria-controls="view-charts" aria-selected="false" tabindex="-1">All charts</button>
+</div>
+
+<section id="view-curves" role="tabpanel" aria-labelledby="tab-curves">
+  <div class="panel">
+    <div class="panel-title"><h2>Equity in R</h2><span class="muted small">cumulative net R, one point per exit</span></div>
+    <div class="chart" id="equity-chart"><div class="chart-msg">Loading…</div></div>
+  </div>
+  <div class="panel">
+    <div class="panel-title"><h2>Underwater</h2><span class="muted small">distance below the running peak, R</span></div>
+    <div class="chart chart-sm" id="drawdown-chart"><div class="chart-msg">Loading…</div></div>
+  </div>
+  <div class="panel">
+    <div class="panel-title"><h2>Net R per trade</h2><span class="muted small" id="hist-note"></span></div>
+    <div class="histogram" id="histogram" role="img" aria-label="Histogram of net R per closed trade"></div>
+    <div class="hist-axis num" id="histogram-axis" aria-hidden="true"></div>
+  </div>
+</section>
+
+<section id="view-breakdown" role="tabpanel" aria-labelledby="tab-breakdown" hidden>
+  <p class="section-sub">Rows with fewer than {{ min_breakdown }} closed trades are greyed: <em>not meaningful</em>, too few trades to separate an edge from noise.</p>
+  <div class="breakdowns" id="breakdowns"></div>
+</section>
+
+<section id="view-ledger" role="tabpanel" aria-labelledby="tab-ledger" hidden>
+  <div class="panel">
+    <div class="panel-title">
+      <h2>Ledger</h2>
+      <span class="downloads">
+        <a id="dl-csv" href="/api/ledger.csv" download>CSV</a>
+        <a id="dl-jsonl" href="/api/ledger.jsonl" download>JSONL (verifiable)</a>
+      </span>
+    </div>
+    <p class="section-sub pad" id="ledger-caption">Every stored signal of this strategy, open, closed, late, manual and legacy alike, with whether it counts.</p>
+    <div class="table-scroll">
+      <table class="ledger-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Symbol</th>
+            <th>Side</th>
+            <th>Version</th>
+            <th>Source</th>
+            <th>Status</th>
+            <th class="r">Gross R</th>
+            <th class="r">Cost R</th>
+            <th class="r">Net R</th>
+            <th>Counted</th>
+            <th>Crossed (WIB)</th>
+            <th>Last event</th>
+          </tr>
+        </thead>
+        <tbody id="ledger-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="view-charts" role="tabpanel" aria-labelledby="tab-charts" hidden>
+  <p class="section-sub">Every closed signal of this version after close, wins and losses alike, newest first.</p>
+  <div class="chart-grid" id="chart-grid"></div>
+  <div class="more-row"><button class="btn" type="button" id="charts-more" hidden>Load more</button></div>
+</section>
+
+<section class="integrity" aria-labelledby="integrity-title">
+  <h2 id="integrity-title">Integrity</h2>
+  <dl class="facts facts-compact">
+    <div class="fact-wide"><dt>Ledger head</dt><dd class="num hash" id="ledger-head">–</dd></div>
+    <div><dt>Events</dt><dd class="num" id="ledger-events">–</dd></div>
+    <div><dt>Verification</dt><dd id="ledger-verify">–</dd></div>
+  </dl>
+</section>
+{% endblock %}

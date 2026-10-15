@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<article class="prose">
+  <h1>Changelog</h1>
+  <p class="lead">Changes to strategy rules, the cost model, the ledger and what the pages count, newest first. A change to a frozen strategy is always a new version. Also as JSON: <a href="/api/changelog">/api/changelog</a>.</p>
+  {% for e in changelog.entries %}
+  <section class="change" id="{{ e.date }}-{{ loop.index }}">
+    <p class="change-meta num">{{ e.date }} · {{ e.phase }} · <span class="badge">{{ e.kind }}</span>{% if e.ledger_rows_affected %} · {{ e.ledger_rows_affected }} ledger rows affected{% endif %}</p>
+    <h2>{{ e.title }}</h2>
+    <p>{% for part in e.summary|link_parts %}{% if part.href %}<a href="{{ part.href }}">{{ part.text }}</a>{% else %}{{ part.text }}{% endif %}{% endfor %}</p>
+    {% if e['items'] %}
+    <ul>{% for item in e['items'] %}<li>{% for part in item|link_parts %}{% if part.href %}<a href="{{ part.href }}">{{ part.text }}</a>{% else %}{{ part.text }}{% endif %}{% endfor %}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if e.strategy_refs %}
+    <p class="muted small">Strategy versions: {% for ref in e.strategy_refs %}<span class="num">{{ ref }}</span>{% if not loop.last %}, {% endif %}{% endfor %}</p>
+    {% endif %}
+  </section>
+  {% else %}
+  <p class="empty">No entries.</p>
+  {% endfor %}
+</article>
+{% endblock %}

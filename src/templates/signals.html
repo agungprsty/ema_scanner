@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <h1>Signals</h1>
+  <p class="section-sub">Every recorded signal, newest cross first. Legacy, late and manual signals stay listed, marked, and are excluded from stats. Shadow signals count only in their own version's track record.</p>
+</div>
+
+<section class="panel">
+  <form class="filters" id="filters" role="search" aria-label="Filter signals">
+    <label class="field">
+      <span class="field-label">Strategy</span>
+      <select id="filter-strategy" name="strategy">
+        <option value="">All strategies</option>
+      </select>
+    </label>
+    <label class="field">
+      <span class="field-label">Symbol</span>
+      <input type="text" id="filter-symbol" name="symbol" placeholder="e.g. BTCUSDT" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="20">
+    </label>
+    <label class="field">
+      <span class="field-label">Side</span>
+      <select id="filter-side" name="side">
+        <option value="">Any side</option>
+        <option value="LONG">Long</option>
+        <option value="SHORT">Short</option>
+      </select>
+    </label>
+    <label class="field">
+      <span class="field-label">Status</span>
+      <select id="filter-status" name="status">
+        <option value="">Any status</option>
+      </select>
+    </label>
+    <label class="field">
+      <span class="field-label">Source</span>
+      <select id="filter-source" name="source">
+        <option value="">Any source</option>
+        <option value="cron">Scheduled (on time)</option>
+        <option value="catchup">Late (catch-up)</option>
+        <option value="manual">Manual scan</option>
+        <option value="legacy">Legacy</option>
+      </select>
+    </label>
+  </form>
+
+  <div class="caption" id="caption" aria-live="polite"></div>
+
+  <div class="table-view">
+    <table>
+      <thead>
+        <tr>
+          <th>Symbol</th>
+          <th>Side</th>
+          <th>Strategy</th>
+          <th>Status</th>
+          <th class="r">Net R</th>
+          <th class="r">Entry</th>
+          <th>Crossed (WIB)</th>
+        </tr>
+      </thead>
+      <tbody id="signals-tbody"></tbody>
+    </table>
+  </div>
+  <div class="card-list card-view" id="signals-cards"></div>
+  <nav class="pager" id="pager" aria-label="Pages" hidden>
+    <span class="pager-info num"></span>
+    <div class="pager-btns">
+      <button class="btn" type="button" data-step="-1">Previous</button>
+      <button class="btn" type="button" data-step="1">Next</button>
+    </div>
+  </nav>
+</section>
+{% endblock %}

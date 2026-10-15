@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <h1>Status</h1>
+  <p class="section-sub">The scheduled scan runs after every 2H candle closes. Each run is recorded in the <code>cron_runs</code> table; the health check turns degraded when the last success is older than 2 hours 5 minutes.</p>
+</div>
+
+<section aria-labelledby="sched-title">
+  <h2 id="sched-title" class="visually-hidden">Schedule</h2>
+  <div class="stats">
+    <div class="stat"><div class="stat-label">Health</div><div class="stat-value" id="st-health">–</div><div class="stat-sub" id="st-health-sub">&nbsp;</div></div>
+    <div class="stat"><div class="stat-label">Last success</div><div class="stat-value num" id="st-last">–</div><div class="stat-sub" id="st-last-sub">&nbsp;</div></div>
+    <div class="stat"><div class="stat-label">On schedule, 7 days</div><div class="stat-value num" id="st-ratio">–</div><div class="stat-sub" id="st-ratio-sub">&nbsp;</div></div>
+    <div class="stat"><div class="stat-label">Next run</div><div class="stat-value num" id="st-next">–</div><div class="stat-sub" id="st-next-sub">&nbsp;</div></div>
+  </div>
+</section>
+
+<section class="panel" aria-labelledby="runs-title">
+  <div class="panel-title"><h2 id="runs-title">Last 50 runs</h2><span class="muted small" id="runs-total"></span></div>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Slot (WIB)</th>
+          <th>Status</th>
+          <th class="r">Started after slot</th>
+          <th class="r">Duration</th>
+          <th class="r">New signals</th>
+          <th class="r">Closed</th>
+        </tr>
+      </thead>
+      <tbody id="runs-tbody"></tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel" id="ledger" aria-labelledby="ledger-title">
+  <div class="panel-title"><h2 id="ledger-title">Signal ledger</h2><a href="/api/ledger/head">Raw JSON</a></div>
+  <dl class="facts">
+    <div class="fact-wide"><dt>Chain head</dt><dd class="num hash" id="lg-head">–</dd></div>
+    <div><dt>Events</dt><dd class="num" id="lg-count">–</dd></div>
+    <div><dt>Last event</dt><dd class="num" id="lg-last">–</dd></div>
+    <div><dt>Server verification</dt><dd id="lg-verify">–</dd></div>
+  </dl>
+  <p class="section-sub pad">Check it yourself: download <a href="/api/ledger.jsonl">the ledger</a>, copy a daily head below, and later run <code>python -m src.ledger verify --jsonl FILE --head HASH</code>. Any edited, removed or reordered event fails.</p>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>Day (UTC)</th><th class="r">Events</th><th>Head hash</th></tr></thead>
+      <tbody id="heads-tbody"></tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

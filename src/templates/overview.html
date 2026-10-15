@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="intro">
+  <h1>Every signal of fixed MACD crossover rules, published win or lose</h1>
+  <p>Each signal is found by the scheduled scan on closed 2H candles, entered at the next candle's open, and settled from candles by the rules of its strategy version. Results are in R, a multiple of the planned risk, after fees and modelled slippage. <strong>No edge has been validated:</strong> the live rules lost money in a backtest over {{ baseline.period }} ({{ baseline.net }} per trade after the same costs as below, t {{ baseline.t }}, n {{ baseline.n }}).</p>
+</section>
+
+<section aria-labelledby="kpi-title">
+  <div class="section-head">
+    <h2 id="kpi-title">Track record by strategy version</h2>
+    <a href="/track-record">Full track record →</a>
+  </div>
+  <p class="section-sub">Live and shadow versions side by side. Only on-time scheduled signals of each version count; shadow signals are never alerted.</p>
+  <div class="kpi-grid" id="kpis" aria-live="polite">
+    <div class="empty">Loading…</div>
+  </div>
+</section>
+
+<section aria-labelledby="open-title">
+  <div class="section-head">
+    <h2 id="open-title">Open signals <span class="count num" id="open-count"></span></h2>
+    <a href="/signals?status=PENDING">All open →</a>
+  </div>
+  <div class="card-grid" id="open-signals">
+    <div class="empty">Loading…</div>
+  </div>
+</section>
+
+<div class="two-col">
+  <section aria-labelledby="events-title" class="panel">
+    <div class="panel-title">
+      <h2 id="events-title">Latest ledger events</h2>
+      <a href="/status#ledger">Ledger →</a>
+    </div>
+    <ol class="event-feed" id="events"><li class="empty">Loading…</li></ol>
+  </section>
+
+  <section aria-labelledby="cron-title" class="panel">
+    <div class="panel-title">
+      <h2 id="cron-title">Scheduled scan</h2>
+      <a href="/status">Status →</a>
+    </div>
+    <dl class="facts facts-compact" id="cron-facts">
+      <div><dt>Last success</dt><dd class="num" id="cron-last">–</dd></div>
+      <div><dt>Next run</dt><dd class="num" id="cron-next">–</dd></div>
+      <div><dt>On schedule, 7 days</dt><dd class="num" id="cron-ratio">–</dd></div>
+      <div><dt>Schedule</dt><dd id="cron-schedule">Every 2 hours, after each 2H candle closes</dd></div>
+    </dl>
+  </section>
+</div>
+{% endblock %}

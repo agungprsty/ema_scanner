@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block content %}
+<article class="prose">
+  <h1>Methodology</h1>
+  <p class="lead">How every number on this site is produced. Crossline is a research project: it publishes all signals of fixed, versioned rules and books every result, including the losing ones. No edge has been validated out of sample.</p>
+
+  <nav class="toc" aria-label="On this page">
+    <a href="#r">R</a> · <a href="#costs">Costs</a> · <a href="#exits">Exits</a> · <a href="#winrate">Win rate</a> · <a href="#ci">Intervals</a> · <a href="#eligibility">Eligibility</a> · <a href="#samples">Sample sizes</a> · <a href="#ledger">Ledger</a> · <a href="#preregistration">Pre-registration</a>
+  </nav>
+
+  <h2 id="r">R: results in units of planned risk</h2>
+  <p>Every trade risks the distance from its entry to its stop. A trade's result in <strong>R</strong> is its profit or loss divided by that planned risk: reaching the stop is −1R, a target at 1.5 times the risk is +1.5R. R makes trades with different stop distances comparable; summed percentages do not, so the site never adds them up.</p>
+  <ul>
+    <li><strong>Gross R</strong>: the result at the planned levels, entry and exit at the exact prices, no costs.</li>
+    <li><strong>Cost R</strong>: fees and modelled slippage, in R. Shown as a negative number.</li>
+    <li><strong>Net R</strong> = gross R − cost R. Every statistic uses net R.</li>
+  </ul>
+  <p>Entry is the open of the candle after the cross candle closes (<em>next open</em>). Signals booked before v2.2 at the interpolated cross price, a price nobody could fill, have no achievable result and are labelled legacy.</p>
+
+  <h2 id="costs">Cost model {{ cost_model }}</h2>
+  <p>A round-trip fee of <strong>{{ fee_percent }}%</strong> of notional, plus one-way slippage per fill by symbol. The entry fills at market, slippage worse than planned. A stop fills at market with {{ stop_multiplier }}× the slippage, since stops trigger into the move. A target fills at its limit price with no slippage. Expiry, time and opposite-cross exits fill at market with plain slippage.</p>
+  <div class="table-scroll">
+    <table class="compact">
+      <thead><tr><th>Symbol</th><th class="r">Slippage per fill (bps)</th><th class="r">Stop fill (bps)</th></tr></thead>
+      <tbody>
+        {% for row in cost_rows %}
+        <tr><td class="num">{{ row.symbol }}</td><td class="r num">{{ '%.1f' % row.bps }}</td><td class="r num">{{ '%.1f' % (row.bps * stop_multiplier) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p>Funding payments are not modelled yet. Every trade row records its cost model version, so a future model restates trades rather than mixing them.</p>
+
+  <h2 id="exits">Exits by strategy version</h2>
+  <p><strong>Stop first.</strong> When one candle touches both the stop and the target, the trade counts as stopped: candles cannot show which came first, so the site takes the worse one.</p>
+  {% for s in strategies %}
+  <section class="strategy-def" id="{{ s.key }}-{{ s.version }}">
+    <h3><span class="num">{{ s.ref }}</span> <span class="badge badge-{{ s.status }}">{{ s.status }}</span>{% if s.holdout %} <a class="badge" href="{{ s.holdout.url }}">holdout {{ s.holdout.verdict or 'report' }}</a>{% endif %}</h3>
+    <p>{{ s.description }}</p>
+    {% if s.has_target %}
+    <p>Exit: target, stop (checked first), or <strong>expiry</strong> at the close of the {{ s.hold_limit_candles }}th 2H candle after the cross, booked at that close.</p>
+    {% else %}
+    <p>Exit: stop (checked first), the open after the first opposite cross, or a <strong>time exit</strong> at the close of the {{ s.hold_limit_candles }}th candle from the entry candle.</p>
+    {% endif %}
+    <p class="muted small">params_hash <span class="num hash">{{ s.params_hash }}</span>{% if s.frozen_at %} · frozen {{ s.frozen_at }}{% endif %}</p>
+    {% if s.status in ('live', 'shadow') and not s.emitting %}
+    <p class="is-down small">Not emitting signals: {{ s.refusal }}. The scheduled scan refuses a version whose frozen record does not match the running code.</p>
+    {% endif %}
+  </section>
+  {% endfor %}
+
+  <h2 id="winrate">Win rate</h2>
+  <p>For a strategy with a fixed target, a win is a trade that hit the target: <strong>win rate = target hits / (target hits + stops + expired)</strong>. Expired trades count as closed, against the win rate. It is always shown with its sample, e.g. 44.4% (4/9), and next to the <strong>break-even win rate</strong> (1 + mean cost R) / (target R + 1): the win rate at which wins of the target and losses of 1R, each paying the average cost, net to zero.</p>
+  <p>For a strategy without a fixed target, a win is a trade closed with a net R above zero, and there is no single break-even win rate. Net R comes first on every page; a win rate alone says little about results.</p>
+
+  <h2 id="ci">Confidence intervals</h2>
+  <ul>
+    <li><strong>Mean net R</strong>: Student t 95% interval, mean ± t<sub>0.975, n−1</sub> × sd / √n; none with fewer than 2 trades.</li>
+    <li><strong>Win rate</strong>: Wilson score 95% interval.</li>
+    <li><strong>Max drawdown</strong>: largest fall of cumulative net R from a peak, with trades ordered by exit time, then id. The running total starts at zero.</li>
+    <li><strong>Profit factor</strong>: winning net R over the absolute losing net R.</li>
+  </ul>
+  <p>An interval that contains zero means the data cannot tell the mean apart from no edge at all.</p>
+
+  <h2 id="eligibility">Which signals count</h2>
+  <p>A signal counts in its own strategy version's track record only when the <strong>scheduled scan</strong> found it on time (within {{ late_grace_minutes }} minutes of its entry candle opening) and it is entered at the <strong>next open</strong>, and only with the outcome the evaluator booked from candles. Everything else is listed, marked, and excluded:</p>
+  <ul>
+    <li><span class="chip chip-late">LATE</span> found after its entry candle had already passed (a catch-up after downtime).</li>
+    <li><span class="chip">MANUAL</span> saved from an owner's manual scan.</li>
+    <li><span class="chip chip-legacy">LEGACY</span> booked under pre-v2.2 rules: interpolated entry, or a result recorded without fees.</li>
+    <li><span class="chip chip-shadow">SHADOW</span> produced by a shadow version: stored and evaluated, never alerted, counted only in that version's own record.</li>
+  </ul>
+  <p>Versions never mix: each version of the rules has its own statistics. Hand-entered trades never reach any statistic, and neither does a signal with no ledger events (one put in the database outside the app, which verification also reports).</p>
+
+  <h2 id="samples">Sample sizes</h2>
+  <ul>
+    <li>Below <strong>{{ min_sample }}</strong> closed trades, every figure is marked <em>insufficient sample</em>.</li>
+    <li>Summed totals (net R) are shown from <strong>{{ min_totals }}</strong> closed trades per version, so a few trades do not anchor anyone.</li>
+    <li>Breakdown rows with fewer than <strong>{{ min_breakdown }}</strong> trades are greyed as <em>not meaningful</em>.</li>
+  </ul>
+  <p>For scale: with a spread of about 1.5R per trade, telling an edge of +0.05R per trade from zero (t ≥ 2) takes roughly 3,600 trades.</p>
+
+  <h2 id="ledger">The ledger</h2>
+  <p>Every fact about a signal (detected, alert sent, excluded, resolved) is an append-only event whose hash covers the event before it. A daily head is published, the candles a trade was settled on are stored with their hash, and the whole ledger can be downloaded and verified offline: <code>python -m src.ledger verify --jsonl FILE --head HASH</code>. See <a href="/status#ledger">Status</a>.</p>
+  <p>Database triggers refuse edits to the ledger tables, but whoever controls the database can switch them off. Changing or removing an earlier event breaks the chain for anyone who verifies it; removing the newest events, or rewriting the whole chain, shows only against a head copied outside this site beforehand. Copy one from <a href="/status#ledger">Status</a> to hold the record to it.</p>
+
+  <h2 id="preregistration">Pre-registration and holdout tests</h2>
+  <p>A new strategy version is frozen (parameters and code hashed) and its pass criteria written down before it meets data it was not selected on. It is then run once on a sealed holdout period, here 2020-01 to 2024-09, and the result is published whether it passes or fails. Every configuration tried during research is logged, so the number of attempts is part of judging the one kept.</p>
+  <p>The live rules' backtest ({{ baseline.period }}, 12 symbols, n {{ baseline.n }}): <strong>{{ baseline.net }}</strong> per trade under cost model {{ cost_model }} (t {{ baseline.t }}, 95% CI {{ baseline.ci }}); {{ baseline.note }}.</p>
+  {% if documents %}
+  <ul class="doc-links">
+    {% for d in documents %}<li><a href="{{ d.url }}">{{ d.file }}</a></li>{% endfor %}
+  </ul>
+  {% endif %}
+</article>
+{% endblock %}

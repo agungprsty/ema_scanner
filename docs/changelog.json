@@ -1,0 +1,87 @@
+{
+  "format": 1,
+  "description": "Crossline changelog: every change to strategy rules, cost model, ledger or what the public pages count. Newest first. Strategy entries name the frozen version (strategy key@version) and its hashes; a change to a frozen strategy is always a new version. /changelog renders this file and /api/changelog serves it.",
+  "entries": [
+    {
+      "date": "2026-10-15",
+      "phase": "Phase 1",
+      "kind": "site",
+      "title": "Public research pages",
+      "summary": "The dashboard is split into public pages: Overview, Signals, a shareable page per signal (/s/{id}), Track record, Status, Methodology and this changelog. Owner tools (scan preview, evaluate, watchlist, journal) moved to /ops behind the sign-in.",
+      "items": [
+        "Track record per strategy version: KPIs with n and 95% intervals, equity curve and drawdown in R, R histogram, breakdowns per side, symbol and month (groups under 20 trades greyed as not meaningful), the full ledger with CSV and JSONL downloads, and a grid of every closed signal's chart, wins and losses alike.",
+        "Signal pages share one title format for wins and losses: SYMBOL SIDE · ±R or OPEN · Crossline strategy@version.",
+        "Status page from the cron_runs table: last success, on-schedule ratio over 7 days, the last 50 runs, and the ledger head with its verification.",
+        "Live and shadow strategies are shown side by side; the shadow strategy's win rate counts trades closed with a positive net R, since it has no fixed target."
+      ],
+      "strategy_refs": [],
+      "ledger_rows_affected": 0
+    },
+    {
+      "date": "2026-10-15",
+      "phase": "Phase 1",
+      "kind": "research",
+      "title": "Holdout result: macd_cross_ema50d_oppexit@1.0.0 fails",
+      "summary": "The pre-registered candidate was run once on the sealed 2020-01 to 2024-09 holdout: mean net R −0.0243R per trade (n 7,354, t −1.35). All four pre-registered criteria fail, so it is not promoted. Its parameters can no longer change.",
+      "items": [
+        "Report: /research/holdout-result-macd_cross_ema50d_oppexit-1.0.0.md",
+        "Reference run of the live rules on the same holdout: /research/holdout-reference-macd_cross-2.2.0.json",
+        "It keeps running as shadow, as a public record of a failed candidate: its signals accrue in the ledger, never alerted and never in the headline, and are not a path to promotion."
+      ],
+      "strategy_refs": ["macd_cross_ema50d_oppexit@1.0.0"],
+      "ledger_rows_affected": 0
+    },
+    {
+      "date": "2026-10-15",
+      "phase": "Phase 1",
+      "kind": "strategy",
+      "title": "Shadow strategy macd_cross_ema50d_oppexit@1.0.0 pre-registered",
+      "summary": "MACD(12,26,9) 2H cross in the direction of the last closed daily close versus its EMA50, next-open entry, swing stop, no target; exit at the open after the first opposite cross, at the stop (checked first), or at the close of the 96th candle. Shadow signals are stored and evaluated but never alerted and never mixed into the live track record.",
+      "items": [
+        "params_hash 3088c6678f741e4007d0dd3e4563211e3925784fc90782b559f8c3698da98d64",
+        "code_hash dfc880b5e79bef9e710076dde64c7f54c5a801603cdf154c8e350f958dd87160",
+        "Pre-registration: /research/preregistration-macd_cross_ema50d_oppexit-1.0.0.md"
+      ],
+      "strategy_refs": ["macd_cross_ema50d_oppexit@1.0.0"],
+      "ledger_rows_affected": 0
+    },
+    {
+      "date": "2026-10-15",
+      "phase": "Phase 1",
+      "kind": "ledger",
+      "title": "Strategy registry and hash-chained signal ledger",
+      "summary": "Strategies implement one interface and are registered by key@version with frozen parameter and code hashes; the scheduled scan refuses to emit for a version whose running code differs from the frozen one. Every signal's history is an append-only, hash-chained event log (detected, resolved, alert_sent, excluded) with a daily published head, and each closed signal's candle window is stored at resolution so its chart never changes.",
+      "items": [
+        "Live rules ported unchanged as macd_cross@2.2.0 (params_hash a87bf51a4d837d831ab41608248c18ef508e8d32485c00ada1d4feb4b77a2d12); its backtest output is byte-identical to before.",
+        "Verify a downloaded ledger offline: python -m src.ledger verify --jsonl FILE --head HASH"
+      ],
+      "strategy_refs": ["macd_cross@2.2.0"],
+      "ledger_rows_affected": 0
+    },
+    {
+      "date": "2026-10-15",
+      "phase": "Phase 0",
+      "kind": "ledger",
+      "title": "Honest ledger",
+      "summary": "Signals carry their strategy version, source, entry basis and detection time. Trades are restated under cost model cm1 (fees plus modelled slippage) as gross, cost and net R. Only on-time scheduled signals entered at the next open count; legacy, late and manual signals stay listed but are excluded.",
+      "items": [
+        "Signals booked with the interpolated cross price as entry were restated as legacy: they have no achievable fill.",
+        "Headline statistics show n, a 95% interval and the break-even win rate; summed totals wait for 100 closed trades per version.",
+        "Manual scans are previews by default; hand-entered trades never reach the track record.",
+        "Backtest harness and CI gate: the live rules reproduce the review's numbers trade for trade."
+      ],
+      "strategy_refs": ["macd_cross@2.2.0"],
+      "ledger_rows_affected": 4
+    },
+    {
+      "date": "2026-10-13",
+      "phase": "Pre-Phase 0",
+      "kind": "strategy",
+      "title": "v2.2: next-open entry, cost-aware results, outcome alerts",
+      "summary": "Entries moved from the interpolated cross price to the open of the candle after the cross, results are measured in R after fees, and closed trades are alerted. Signals before this used earlier rules and are labelled legacy.",
+      "items": [],
+      "strategy_refs": ["macd_cross@2.2.0"],
+      "ledger_rows_affected": 0
+    }
+  ]
+}
