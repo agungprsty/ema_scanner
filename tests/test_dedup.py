@@ -436,8 +436,12 @@ def cron_env(monkeypatch, fake_redis):
         return None
 
     monkeypatch.setattr(cron_module, "fetch_klines", lambda client, sym, tf, limit: _Frame([sym, sym]))
-    monkeypatch.setattr(cron_module, "compute_macd", lambda df, **kwargs: df)
-    monkeypatch.setattr(cron_module, "detect_macd_cross", lambda df, sym, **kwargs: signals.get(sym))
+    monkeypatch.setattr(
+        cron_module,
+        "detect_strategy_signals",
+        # The live strategy's path; the pre-registered shadow strategy finds nothing here
+        lambda strategy, sym, frames, now_ms: [signals[sym]] if signals.get(sym) and strategy.status == "live" else [],
+    )
     monkeypatch.setattr(cron_module, "save_macd_signal", fake_save)
     monkeypatch.setattr(cron_module, "send_alert", fake_send_alert)
     monkeypatch.setattr(cron_module, "evaluate_pending_signals", fake_evaluate)

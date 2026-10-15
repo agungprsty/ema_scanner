@@ -69,9 +69,12 @@ class FakeSession:
 
 def test_macd_signal_unique_index_declared():
     indexes = {idx.name: idx for idx in db.MacdSignalModel.__table__.indexes}
-    idx = indexes["uq_macd_signals_symbol_side_tf_candle"]
+    idx = indexes["uq_macd_signals_strategy_candle"]
     assert idx.unique
     assert [c.name for c in idx.columns] == list(db.SIGNAL_UNIQUE_COLUMNS)
+    # One row per cross per strategy version, so a shadow strategy can record the same candle
+    assert db.SIGNAL_UNIQUE_COLUMNS[:2] == ("strategy_key", "strategy_version")
+    assert db.LEGACY_SIGNAL_UNIQUE_INDEX not in indexes
 
 
 def test_profitloss_signal_id_unique_index_declared():
@@ -85,7 +88,9 @@ def test_profitloss_signal_id_unique_index_declared():
 def test_signal_insert_uses_on_conflict_do_nothing_returning_id():
     sql = _compile(db.build_signal_insert(_make_signal(), "2h"))
     assert "INSERT INTO macd_signals" in sql
-    assert "ON CONFLICT (symbol, side, timeframe, cross_candle_ms) DO NOTHING" in sql
+    assert (
+        "ON CONFLICT (strategy_key, strategy_version, symbol, side, timeframe, cross_candle_ms) DO NOTHING" in sql
+    )
     assert "RETURNING macd_signals.id" in sql
 
 
@@ -117,8 +122,14 @@ def test_migrations_dedupe_before_creating_unique_indexes():
     delete_pl = next(i for i, s in enumerate(statements) if s.startswith("DELETE FROM profitloss_history"))
     create_signals = next(
         i for i, s in enumerate(statements)
-        if "CREATE UNIQUE INDEX IF NOT EXISTS uq_macd_signals_symbol_side_tf_candle" in s
+        if "CREATE UNIQUE INDEX IF NOT EXISTS uq_macd_signals_strategy_candle" in s
     )
+    add_columns = [i for i, s in enumerate(statements) if s.startswith("ALTER TABLE macd_signals ADD COLUMN")]
+    drop_old = statements.index(f"DROP INDEX IF EXISTS {db.LEGACY_SIGNAL_UNIQUE_INDEX};")
+    # The strategy columns exist before the dedup reads them, and the old index goes only once the
+    # new one guards every cross
+    assert add_columns and max(add_columns) < delete_signals
+    assert create_signals < drop_old
     create_pl = next(
         i for i, s in enumerate(statements)
         if "CREATE UNIQUE INDEX IF NOT EXISTS uq_profitloss_history_signal_id" in s
@@ -131,7 +142,10 @@ def test_migrations_dedupe_before_creating_unique_indexes():
 
 def test_migration_survivor_prefers_resolved_signal():
     rank = " ".join(db.SIGNAL_SURVIVOR_RANK.split())
-    assert "PARTITION BY symbol, side, timeframe, cross_candle_ms" in rank
+    assert (
+        "PARTITION BY COALESCE(strategy_key, 'macd_cross'), COALESCE(strategy_version, ''), "
+        "symbol, side, timeframe, cross_candle_ms" in rank
+    )
     assert "ORDER BY (COALESCE(win_status, 'PENDING') <> 'PENDING') DESC, id ASC" in rank
     assert "ROW_NUMBER() OVER w AS rn" in rank
     assert "FIRST_VALUE(id) OVER w AS keep_id" in rank
@@ -828,7 +842,10 @@ async def test_performance_counts_only_eligible_trades_of_the_version(monkeypatc
     # Excluded covers every signal not counted, other versions included, each under one reason
     assert "macd_signals.is_eligible IS NOT true" in excluded_sql
     assert "macd_signals.strategy_version IS DISTINCT FROM " in excluded_sql
-    assert "GROUP BY CASE WHEN (macd_signals.source = " in excluded_sql
+    # Another strategy is checked before the source, so its legacy rows are not this version's
+    assert "GROUP BY CASE WHEN (macd_signals.strategy_key IS DISTINCT FROM " in excluded_sql
+    # Signals without ledger events never count
+    assert "EXISTS (SELECT * \nFROM signal_events \nWHERE signal_events.signal_id = macd_signals.id)" in trades_sql
     assert "macd_signals.strategy_version = " not in excluded_sql
     params = session.statements[0].compile(dialect=postgresql.dialect()).params
     assert db.STRATEGY_VERSION in params.values()
@@ -838,7 +855,7 @@ async def test_performance_counts_only_eligible_trades_of_the_version(monkeypatc
     assert out["filters"] == {"symbol": "ETHUSDT", "side": "LONG"}
     assert (out["n_closed"], out["wins"], out["losses"]) == (3, 1, 2)
     assert out["open_count"] == 5
-    assert out["excluded"] == {"legacy": 4, "catchup": 1, "manual": 0, "other_version": 0, "other": 0}
+    assert out["excluded"] == {"legacy": 4, "catchup": 1, "manual": 0, "other_version": 0, "outside_ledger": 0, "other": 0}
     assert out["total_net_r"] == pytest.approx(-0.79)
     # Exit order 10:00, then the two 14:00 exits by id: -1.15, -1.1, +1.46
     assert out["max_drawdown_r"] == pytest.approx(2.25)
@@ -858,7 +875,7 @@ async def test_performance_without_db_is_empty(monkeypatch):
     monkeypatch.setattr(db, "_session_maker", None)
     out = await db.get_performance()
     assert out["n_closed"] == 0 and out["win_rate"] is None
-    assert out["excluded"] == {"legacy": 0, "catchup": 0, "manual": 0, "other_version": 0, "other": 0}
+    assert out["excluded"] == {"legacy": 0, "catchup": 0, "manual": 0, "other_version": 0, "outside_ledger": 0, "other": 0}
 
 
 async def test_summary_reports_eligible_outcomes_with_target_rr(monkeypatch):
@@ -909,7 +926,11 @@ async def test_signal_list_dates_filter_on_the_cross_candle_half_open(monkeypatc
     assert summary["eligible_closed_count"] == 0 and summary["excluded_count"] == 0
     # Counted figures need an evaluator booking; excluded is every signal outside the running version
     assert "profitloss_history.booked_by = " in sql
-    assert "FILTER (WHERE macd_signals.is_eligible IS NOT true OR macd_signals.strategy_version IS DISTINCT FROM " in sql
+    assert (
+        "FILTER (WHERE macd_signals.is_eligible IS NOT true OR macd_signals.strategy_key IS DISTINCT FROM "
+        in sql
+    )
+    assert "OR macd_signals.strategy_version IS DISTINCT FROM " in sql
     # Newest cross first, whatever order the rows were stored in
     assert "ORDER BY macd_signals.cross_candle_ms DESC, macd_signals.id DESC" in _compile(session.statements[1])
 
@@ -945,7 +966,7 @@ async def test_signal_list_rejects_bad_dates(monkeypatch):
 
 async def test_profitloss_summary_labels_as_booked_figures_and_adds_eligible_ones(monkeypatch):
     agg = SimpleNamespace(
-        total=9, profit=4, loss=5, expired=0, pnl=9.33, total_r=0.63, avg_r=0.07,
+        total=10, family_total=9, profit=4, loss=5, expired=0, pnl=9.33, total_r=0.63, avg_r=0.07,
         eligible_closed=6, eligible_wins=1, eligible_net_r=-4.4351,
     )
     session = FakeSession([AnyResult(rows=[]), AnyResult(one=agg)])
@@ -953,7 +974,8 @@ async def test_profitloss_summary_labels_as_booked_figures_and_adds_eligible_one
 
     _, total, summary = await db.get_profitloss_history()
 
-    assert total == 9
+    # The listing total covers every row; the as-booked figures only the headline strategy's
+    assert total == 10 and summary["total_trades"] == 9
     # The as-booked figures stay for old clients, next to the counted ones and a note saying which is which
     assert (summary["winrate"], summary["total_r"]) == (44.4, 0.63)
     assert summary["eligible_closed_count"] == 6 and summary["eligible_win_count"] == 1
@@ -965,11 +987,13 @@ async def test_profitloss_summary_labels_as_booked_figures_and_adds_eligible_one
     assert "LEFT OUTER JOIN macd_signals ON macd_signals.id = profitloss_history.signal_id" in agg_sql
     assert "sum(profitloss_history.net_r) FILTER (WHERE macd_signals.is_eligible IS true" in agg_sql
     assert "profitloss_history.booked_by = " in agg_sql
+    # A shadow strategy's paper trades never reach the deprecated as-booked figures
+    assert "sum(profitloss_history.r_multiple) FILTER (WHERE macd_signals.id IS NULL OR macd_signals.strategy_key = " in agg_sql
 
 
 async def test_profitloss_dates_compare_as_timestamps(monkeypatch):
     agg = SimpleNamespace(
-        total=0, profit=0, loss=0, expired=0, pnl=0.0, total_r=0.0, avg_r=None,
+        total=0, family_total=0, profit=0, loss=0, expired=0, pnl=0.0, total_r=0.0, avg_r=None,
         eligible_closed=0, eligible_wins=0, eligible_net_r=0.0,
     )
     session = FakeSession([AnyResult(rows=[]), AnyResult(one=agg)])

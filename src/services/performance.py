@@ -23,6 +23,8 @@ DEFINITIONS = {
     "win_rate": "Percent of closed trades that hit the target. Closed means target, stop or expired, "
     "so expired trades count against the win rate.",
     "win_rate_ci95": "Wilson score interval for the win rate, in percent.",
+    "win_rate_no_target": "For a strategy without a fixed target (no target_rr), a win is a closed trade with a "
+    "net R above zero, and there is no single break-even win rate, since wins and losses have no fixed size.",
     "mean_net_r": "Average result per closed trade in R after fees and modelled slippage (cost model).",
     "mean_net_r_ci95": "Student t interval for the mean net R; null with fewer than 2 trades.",
     "profit_factor": "Sum of winning net R divided by the absolute sum of losing net R; null without a losing trade.",
@@ -31,8 +33,9 @@ DEFINITIONS = {
     "target_rr R and a loss of 1 R, each paying the average cost, net to zero.",
     "eligible": "Only signals of this strategy version from the scheduled scan, entered at the next candle "
     "open and detected on time, count, and only with the outcome the evaluator booked from candles "
-    "(hand-entered trades never count). Every other signal is listed under excluded by reason: legacy, "
-    "late (catchup), manual, other_version, or other.",
+    "(hand-entered trades never count), and only when the signal is recorded in the ledger. Every other "
+    "signal is listed under excluded by reason: legacy, late (catchup), manual, other_version, "
+    "outside_ledger (no ledger events: stored outside the app), or other.",
     "min_sample_for_totals": "The dashboard shows summed totals such as total_net_r only from this many "
     "closed trades per strategy version, to avoid anchoring on a few trades; the API always reports them.",
 }
@@ -194,13 +197,28 @@ def _iso(dt: datetime | None) -> str | None:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt else None
 
 
-def summarize_trades(trades: Iterable[ClosedTrade], target_rr: float) -> dict:
-    """KPIs of closed trades in R. Rates are percents, R values are per trade unless named total."""
+def is_win(trade: ClosedTrade, target_rr: float | None) -> bool:
+    """A strategy with a fixed target wins when the target is hit; one without wins on a net R above zero."""
+    if target_rr is None:
+        return trade.net_r is not None and trade.net_r > 0
+    return trade.result == "PROFIT"
+
+
+def summarize_trades(trades: Iterable[ClosedTrade], target_rr: float | None) -> dict:
+    """KPIs of closed trades in R. Rates are percents, R values are per trade unless named total.
+
+    `target_rr` is the planned reward-to-risk of a strategy with a fixed target; None for a strategy
+    without one, whose win rate then counts trades closed with a positive net R and which has no
+    break-even win rate."""
     ordered = chronological(trades)
     n = len(ordered)
-    wins = sum(1 for t in ordered if t.result == "PROFIT")
-    losses = sum(1 for t in ordered if t.result == "LOSS")
-    expired = sum(1 for t in ordered if t.result == "EXPIRED")
+    wins = sum(1 for t in ordered if is_win(t, target_rr))
+    if target_rr is None:
+        losses = n - wins
+        expired = 0
+    else:
+        losses = sum(1 for t in ordered if t.result == "LOSS")
+        expired = sum(1 for t in ordered if t.result == "EXPIRED")
 
     net = [t.net_r for t in ordered if t.net_r is not None]
     gross = [t.gross_r for t in ordered if t.gross_r is not None]
@@ -210,7 +228,7 @@ def summarize_trades(trades: Iterable[ClosedTrade], target_rr: float) -> dict:
     win_ci = wilson_interval(wins, n)
     mean_ci = t_interval(net)
     profit = profit_factor(net)
-    break_even = break_even_win_rate(target_rr, mean_cost_r)
+    break_even = break_even_win_rate(target_rr, mean_cost_r) if target_rr is not None else None
     exits = [dt for dt in (parse_utc(t.exit_time) for t in ordered) if dt is not None]
 
     return {
@@ -229,9 +247,85 @@ def summarize_trades(trades: Iterable[ClosedTrade], target_rr: float) -> dict:
         "max_drawdown_r": round(max_drawdown(net), 3),
         "break_even_win_rate": _pct(break_even),
         "target_rr": target_rr,
+        "win_rule": "target_hit" if target_rr is not None else "net_r_positive",
         "sample_size_warning": INSUFFICIENT_SAMPLE if n < MIN_SAMPLE else None,
         "min_sample": MIN_SAMPLE,
         "min_sample_for_totals": MIN_SAMPLE_FOR_TOTALS,
         "first_exit_time": _iso(min(exits)) if exits else None,
         "last_exit_time": _iso(max(exits)) if exits else None,
     }
+
+
+# Rows of a breakdown table with fewer closed trades than this are shown greyed as "not meaningful"
+MIN_BREAKDOWN_SAMPLE = 20
+# Width of a bin of the net R histogram
+HISTOGRAM_BIN_R = 0.25
+
+
+def group_summary(label: str, trades: Sequence[ClosedTrade], target_rr: float | None) -> dict:
+    """One row of a breakdown table: n, wins, mean net R with its 95% interval, win rate and total."""
+    net = [t.net_r for t in trades if t.net_r is not None]
+    n = len(trades)
+    wins = sum(1 for t in trades if is_win(t, target_rr))
+    ci = t_interval(net)
+    return {
+        "key": label,
+        "n": n,
+        "wins": wins,
+        "win_rate": _pct(wins / n) if n else None,
+        "mean_net_r": _round(_mean(net), 3),
+        "mean_net_r_ci95": [round(ci[0], 3), round(ci[1], 3)] if ci else None,
+        "total_net_r": round(sum(net), 3),
+        "meaningful": n >= MIN_BREAKDOWN_SAMPLE,
+    }
+
+
+def breakdown(records: Iterable[tuple[str, ClosedTrade]], target_rr: float | None) -> list[dict]:
+    """Breakdown rows from (group label, trade) pairs, largest group first, then by label."""
+    groups: dict[str, list[ClosedTrade]] = {}
+    for label, trade in records:
+        groups.setdefault(label, []).append(trade)
+    rows = [group_summary(label, trades, target_rr) for label, trades in groups.items()]
+    return sorted(rows, key=lambda r: (-r["n"], r["key"]))
+
+
+def equity_curve(trades: Iterable[ClosedTrade]) -> list[dict]:
+    """Cumulative net R and the drawdown below its running peak, one point per exit instant.
+
+    Trades closing at the same instant (several symbols on one candle close) are one point, so the
+    times are strictly increasing; `n` is how many trades the point adds. Trades are walked in the order
+    max_drawdown uses (exit time, then id) and a point's drawdown is the deepest reached within its
+    instant, so the curve's lowest point equals max_drawdown_r. Unreadable exit times are left out of
+    the curve (never out of the KPIs)."""
+    points: list[dict] = []
+    total = peak = 0.0
+    for t in chronological(trades):
+        dt = parse_utc(t.exit_time)
+        if dt is None or t.net_r is None:
+            continue
+        ts = int(dt.timestamp())
+        total += t.net_r
+        peak = max(peak, total)
+        drawdown = round(total - peak, 4)
+        if points and points[-1]["time"] == ts:
+            last = points[-1]
+            last.update(equity_r=round(total, 4), drawdown_r=min(last["drawdown_r"], drawdown), n=last["n"] + 1)
+        else:
+            points.append({"time": ts, "equity_r": round(total, 4), "drawdown_r": drawdown, "n": 1})
+    return points
+
+
+def histogram(values: Iterable[float], bin_width: float = HISTOGRAM_BIN_R) -> list[dict]:
+    """Counts of net R per bin [lo, hi), bins aligned on multiples of `bin_width`, empty bins kept."""
+    vals = [v for v in values if v is not None and math.isfinite(v)]
+    if not vals:
+        return []
+    first = math.floor(min(vals) / bin_width)
+    last = math.floor(max(vals) / bin_width)
+    counts = [0] * (last - first + 1)
+    for v in vals:
+        counts[math.floor(v / bin_width) - first] += 1
+    return [
+        {"lo": round((first + i) * bin_width, 4), "hi": round((first + i + 1) * bin_width, 4), "count": c}
+        for i, c in enumerate(counts)
+    ]

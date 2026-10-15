@@ -19,18 +19,28 @@ from src.config.settings import (
     MACD_SIGNAL,
     MACD_SLOW,
     MACD_TIMEFRAME,
+    RISK_REWARD_RATIO,
     SCAN_CONCURRENCY,
+    SHADOW_ALERTS,
+    SIGNAL_EXPIRY_CANDLES,
+    STRATEGY_KEY,
+    STRATEGY_VERSION,
+    SWING_LOOKBACK_CANDLES,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
 )
-from src.data_feed.ohlcv import fetch_klines
-from src.services.alerts import format_signal_alert, notify_closed_trades
+from src.data_feed.ohlcv import MIN_KLINES, fetch_klines
+from src.ledger.candles import context_fingerprint
+from src.services.alerts import format_outcome_alert, format_signal_alert, notify_closed_trades
 from src.services.background import run_in_background
 from src.services.db import (
     evaluate_pending_signals,
     get_last_cron_success,
+    get_strategy_versions,
     get_watchlist,
+    record_alert_events,
     record_cron_run,
+    record_daily_ledger_head,
     save_macd_signal,
 )
 from src.services.redis_client import (
@@ -40,7 +50,10 @@ from src.services.redis_client import (
     release_lock,
 )
 from src.services.telegram import send_alert
-from src.strategy.macd import MacdSignal, compute_macd, detect_macd_cross
+from src.strategy import registry
+from src.strategy.base import SignalIntent, Strategy
+from src.strategy.context import MarketContext, timeframe_ms
+from src.strategy.macd import MacdSignal
 from src.strategy.outcome import CANDLE_INTERVAL_MS
 
 logger = logging.getLogger(__name__)
@@ -91,6 +104,93 @@ def cron_slot_ms(at: datetime, interval_ms: int = CANDLE_INTERVAL_MS["2h"]) -> i
     return at_ms - at_ms % interval_ms
 
 
+def fetch_plan(strategies: list[Strategy]) -> dict[str, int]:
+    """Klines to fetch per timeframe and symbol so each strategy gets what it reads. Each timeframe is
+    fetched once per symbol per run and shared by every strategy (the per-run cache)."""
+    plan: dict[str, int] = {}
+    for strategy in strategies:
+        plan[strategy.timeframe] = max(plan.get(strategy.timeframe, 0), strategy.history_bars)
+        for tf in strategy.context_timeframes:
+            plan[tf] = max(plan.get(tf, 0), context_limit(strategy))
+    return plan
+
+
+def context_limit(strategy: Strategy) -> int:
+    # The closed context candles plus the forming one, and at least what fetch_klines accepts
+    return max(strategy.context_bars + 1, MIN_KLINES)
+
+
+def detect_strategy_signals(
+    strategy: Strategy, symbol: str, frames: dict, now_ms: int, catchup_bars: int = CRON_LOOKBACK_CANDLES
+) -> list[SignalIntent]:
+    """Run one strategy on the klines fetched for `symbol`, as of `now_ms`. Each strategy sees exactly
+    the window it asked for, whatever another strategy made the run fetch, so its indicators match a
+    run where it is alone."""
+    if any(frames.get(tf) is None for tf in (strategy.timeframe, *strategy.context_timeframes)):
+        return []
+    own = {strategy.timeframe: frames[strategy.timeframe].tail(strategy.history_bars)}
+    for tf in strategy.context_timeframes:
+        own[tf] = frames[tf].tail(context_limit(strategy))
+    ctx = MarketContext.from_klines(symbol, now_ms, strategy.timeframe, own, catchup_bars=catchup_bars)
+    intents = strategy.detect(ctx)
+    if intents:
+        # What the strategy read, for the signal's detected event: anyone holding the same klines can
+        # recompute the hash (src/ledger/candles.py)
+        sha, summary = context_fingerprint(ctx)
+        for intent in intents:
+            intent.input_candles_sha256 = sha
+            intent.input_candles = summary
+    return intents
+
+
+def record_alert_on_delivery(task, signal_ids: list[int], kind: str, message: str) -> None:
+    """Once the Telegram task for `message` finishes and reports delivery, append an alert_sent event
+    for each signal it announced. A failed or skipped send records nothing."""
+    if not signal_ids or not isinstance(task, asyncio.Task):
+        return
+
+    def _done(t: asyncio.Task) -> None:
+        if t.cancelled() or t.exception() is not None or not t.result():
+            return
+        run_in_background(record_alert_events(signal_ids, kind, message), name="ledger-alert-sent")
+
+    task.add_done_callback(_done)
+
+
+def settings_drift() -> list[str]:
+    """Configuration that no longer does what it did before strategies were registered: the MACD_*
+    and trade settings only drive ad-hoc scans now, and the headline version should be a live one."""
+    warnings = []
+    headline = registry.lookup(STRATEGY_KEY, STRATEGY_VERSION)
+    if headline is None or headline.status != "live":
+        warnings.append(
+            f"STRATEGY_KEY/STRATEGY_VERSION {STRATEGY_KEY}@{STRATEGY_VERSION} is not a registered live strategy; "
+            "the headline statistics report on a version the scheduled scan does not run"
+        )
+    if headline is not None and headline.key == "macd_cross":
+        env = {
+            "macd_fast": MACD_FAST,
+            "macd_slow": MACD_SLOW,
+            "macd_signal": MACD_SIGNAL,
+            "macd_candles": MACD_CANDLES,
+            "risk_reward_ratio": RISK_REWARD_RATIO,
+            "swing_lookback_candles": SWING_LOOKBACK_CANDLES,
+            "signal_expiry_candles": SIGNAL_EXPIRY_CANDLES,
+        }
+        differ = {k: v for k, v in env.items() if headline.params_dict.get(k) != v}
+        if differ:
+            warnings.append(
+                f"settings {differ} differ from the frozen parameters of {headline.ref}; the scheduled scan and the "
+                "evaluator use the frozen ones, only ad-hoc scans use the settings"
+            )
+    return warnings
+
+
+def dedup_scope(strategy: Strategy) -> str | None:
+    """Redis claim scope: None (the original keys, shared with ad-hoc scans) for the headline version."""
+    return None if (strategy.key, strategy.version) == (STRATEGY_KEY, STRATEGY_VERSION) else strategy.ref
+
+
 async def ping_dead_man_switch(url: str | None = None) -> bool:
     """Tell an external monitor (Healthchecks.io, Cronitor, ...) a scheduled run succeeded.
 
@@ -126,6 +226,8 @@ class MacdCronScheduler:
         self._last_status: str | None = None
         self._last_success: datetime | None = None
         self._started_at: datetime | None = None
+        self._emitting: list[str] = []
+        self._refused: dict[str, str] = {}
         self._lock = asyncio.Lock()
 
     def start(self, client_getter: Callable) -> None:
@@ -136,6 +238,8 @@ class MacdCronScheduler:
         if self._task is not None and not self._task.done():
             return
 
+        for warning in settings_drift():
+            logger.warning("[CRON] %s", warning)
         self._client_getter = client_getter
         self._is_active = True
         self._started_at = datetime.now(UTC)
@@ -164,6 +268,9 @@ class MacdCronScheduler:
             "total_runs": self._total_runs,
             "last_signals_count": self._last_signals_count,
             "last_evaluated_count": self._last_evaluated_count,
+            # Strategy versions the last run emitted for, and those it refused (not frozen, or code
+            # or parameters that differ from the frozen version)
+            "strategies": {"emitting": list(self._emitting), "refused": dict(self._refused)},
         }
         if include_error:
             status["last_error"] = self._last_error
@@ -286,7 +393,9 @@ class MacdCronScheduler:
 
         # Step 1: Evaluate existing pending signals in database
         eval_res = await evaluate_pending_signals(client)
-        await notify_closed_trades(eval_res.pop("closed", None))
+        closed = eval_res.pop("closed", None)
+        if await notify_closed_trades(closed):
+            await record_alert_events([t.get("signal_id") for t in closed], "outcome", format_outcome_alert(closed))
         self._last_evaluated_count = eval_res.get("evaluated_count", 0)
         logger.info(
             "[CRON] Evaluated pending trades: %d (Wins/Profit: %d, Loss: %d)",
@@ -295,64 +404,78 @@ class MacdCronScheduler:
             eval_res.get("loss_count", 0),
         )
 
-        # Step 2: Scan for newly confirmed 2H MACD signals
+        # Step 2: Run every live and shadow strategy whose frozen version matches the running code
+        strategies, refused = registry.emitting_strategies(await get_strategy_versions())
+        self._emitting = [s.ref for s in strategies]
+        self._refused = refused
         watchlist_items = await get_watchlist(active_only=True)
         symbols = [item["symbol"] for item in watchlist_items][:MACD_MAX_SYMBOLS]
         new_signals_found = 0
         telegram_parts = []
+        shadow_parts: dict[str, list[str]] = {}
+        # Stored signals each message announces, for their alert_sent events
+        telegram_ids: list[int] = []
+        shadow_ids: dict[str, list[int]] = {}
 
-        if symbols:
+        if symbols and strategies:
             sem = asyncio.Semaphore(SCAN_CONCURRENCY)
+            plan = fetch_plan(strategies)
+            now_ms = int(datetime.now(UTC).timestamp() * 1000)
 
-            async def _detect_symbol(sym: str):
+            async def _scan_symbol(sym: str) -> list[tuple[Strategy, MacdSignal]]:
                 async with sem:
-                    df = await asyncio.to_thread(fetch_klines, client, sym, MACD_TIMEFRAME, MACD_CANDLES)
-                    if df is None:
-                        return None
-                    df = compute_macd(df, fast=MACD_FAST, slow=MACD_SLOW, signal=MACD_SIGNAL)
-                    if df is None:
-                        return None
-                    # Closed candles only; re-checking a few catches crosses missed while down
-                    return detect_macd_cross(
-                        df, sym, lookback_candles=CRON_LOOKBACK_CANDLES, include_current=False
-                    )
+                    frames = {}
+                    for tf, limit in plan.items():
+                        frames[tf] = await asyncio.to_thread(fetch_klines, client, sym, tf, limit)
+                found = []
+                for strategy in strategies:
+                    try:
+                        # Closed candles only; re-checking a few catches crosses missed while down
+                        found.extend((strategy, sig) for sig in detect_strategy_signals(strategy, sym, frames, now_ms))
+                    except Exception:
+                        logger.exception("[CRON] %s detection failed on %s", strategy.ref, sym)
+                return found
 
-            tasks = [_detect_symbol(s) for s in symbols]
-            results = await asyncio.gather(*tasks)
-            detected = [r for r in results if r is not None]
+            results = await asyncio.gather(*[_scan_symbol(s) for s in symbols])
+            detected = [pair for found in results for pair in found]
             alert_enabled = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 
-            for sig in detected:
+            for strategy, sig in detected:
+                scope = dedup_scope(strategy)
+                # Shadow strategies are stored and evaluated like the live one but stay off Telegram
+                alerts_on = alert_enabled and (strategy.status == "live" or SHADOW_ALERTS)
                 claimed = await claim_cross(
-                    sig.side, sig.symbol, sig.cross_candle_ms, timeframe=MACD_TIMEFRAME
+                    sig.side, sig.symbol, sig.cross_candle_ms, timeframe=strategy.timeframe, strategy=scope
                 )
                 if claimed:
                     # A late signal is still recorded and alerted, but as a catch-up that
                     # stays out of the track record: candles after its entry already closed
                     detected_at = datetime.now(UTC)
-                    late = is_late_signal(sig, detected_at)
+                    late = is_late_signal(sig, detected_at, timeframe_ms(strategy.timeframe))
                     saved = await save_macd_signal(
                         sig,
-                        timeframe=MACD_TIMEFRAME,
+                        timeframe=strategy.timeframe,
                         source="catchup" if late else "cron",
                         detected_at=detected_at,
                     )
                     if saved and "id" in saved:
                         if saved.get("inserted") is False:
                             continue
-                    elif alert_enabled:
+                    elif alerts_on:
                         logger.warning(
-                            "[CRON] Failed to save MACD signal %s %s @ %s; alerting without persistence",
+                            "[CRON] Failed to save %s signal %s %s @ %s; alerting without persistence",
+                            strategy.ref,
                             sig.side,
                             sig.symbol,
                             sig.cross_candle_ms,
                         )
                     else:
                         await release_cross(
-                            sig.side, sig.symbol, sig.cross_candle_ms, timeframe=MACD_TIMEFRAME
+                            sig.side, sig.symbol, sig.cross_candle_ms, timeframe=strategy.timeframe, strategy=scope
                         )
                         logger.warning(
-                            "[CRON] Failed to save MACD signal %s %s @ %s; dedup claim released",
+                            "[CRON] Failed to save %s signal %s %s @ %s; dedup claim released",
+                            strategy.ref,
                             sig.side,
                             sig.symbol,
                             sig.cross_candle_ms,
@@ -360,7 +483,15 @@ class MacdCronScheduler:
                         continue
 
                     new_signals_found += 1
-                    telegram_parts.append(format_signal_alert(sig, late=late))
+                    saved_id = saved.get("id") if saved else None
+                    if strategy.status == "live":
+                        telegram_parts.append(format_signal_alert(sig, late=late))
+                        if saved_id is not None:
+                            telegram_ids.append(saved_id)
+                    elif SHADOW_ALERTS:
+                        shadow_parts.setdefault(strategy.ref, []).append(format_signal_alert(sig, late=late))
+                        if saved_id is not None:
+                            shadow_ids.setdefault(strategy.ref, []).append(saved_id)
 
         self._last_signals_count = new_signals_found
         logger.info("[CRON] 2H Confirmed Scan finished: %d new signals detected", new_signals_found)
@@ -368,7 +499,16 @@ class MacdCronScheduler:
         if telegram_parts:
             header = "<b>Crossline: scheduled 2H scan</b>\n\n"
             alert_body = header + "\n\n".join(telegram_parts)
-            run_in_background(send_alert(alert_body), name="cron-telegram-alert")
+            task = run_in_background(send_alert(alert_body), name="cron-telegram-alert")
+            record_alert_on_delivery(task, telegram_ids, "signal", alert_body)
+        for ref, parts in shadow_parts.items():
+            header = f"<b>Crossline shadow {ref}</b> (paper only, not the live strategy)\n\n"
+            body = header + "\n\n".join(parts)
+            task = run_in_background(send_alert(body), name="cron-telegram-shadow-alert")
+            record_alert_on_delivery(task, shadow_ids.get(ref, []), "shadow_signal", body)
+
+        # The first run of each UTC day publishes the chain head (ledger_heads, /api/ledger/head)
+        await record_daily_ledger_head()
 
         elapsed = round(time.perf_counter() - start_time, 2)
         return {
@@ -377,6 +517,8 @@ class MacdCronScheduler:
             "evaluated": eval_res,
             "new_signals_count": new_signals_found,
             "symbols_scanned": len(symbols),
+            "strategies": self._emitting,
+            "refused_strategies": self._refused,
         }
 
 

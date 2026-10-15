@@ -298,8 +298,9 @@ async def test_cron_telegram_alert_runs_as_a_held_background_task(runs, monkeypa
 
     monkeypatch.setattr(cron_module, "get_watchlist", watchlist)
     monkeypatch.setattr(cron_module.asyncio, "to_thread", detect_thread)
-    monkeypatch.setattr(cron_module, "compute_macd", lambda df, **kw: df)
-    monkeypatch.setattr(cron_module, "detect_macd_cross", lambda *a, **kw: Sig())
+    monkeypatch.setattr(
+        cron_module, "detect_strategy_signals", lambda strategy, *a, **kw: [Sig()] if strategy.status == "live" else []
+    )
     monkeypatch.setattr(cron_module, "claim_cross", claim)
     monkeypatch.setattr(cron_module, "save_macd_signal", save)
     monkeypatch.setattr(cron_module, "is_late_signal", lambda *a: False)

@@ -277,7 +277,7 @@ async def test_performance_endpoint_is_public_and_passes_filters(monkeypatch):
         assert calls == [("2.2.0", "ETHUSDT", "LONG")]
         assert data["n_closed"] == 0
         assert data["open_count"] == 2
-        assert data["excluded"] == {"legacy": 4, "catchup": 0, "manual": 0, "other_version": 0, "other": 0}
+        assert data["excluded"] == {"legacy": 4, "catchup": 0, "manual": 0, "other_version": 0, "outside_ledger": 0, "other": 0}
         assert data["min_sample_for_totals"] == 100
         assert data["sample_size_warning"] == "insufficient sample"
         assert data["mean_net_r_ci95"] is None

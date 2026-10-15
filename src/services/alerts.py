@@ -6,7 +6,14 @@ from src.services.telegram import send_alert
 
 logger = logging.getLogger(__name__)
 
-RESULT_LABELS = {"PROFIT": "target hit", "LOSS": "stopped out", "EXPIRED": "expired"}
+RESULT_LABELS = {
+    "PROFIT": "target hit",
+    "LOSS": "stopped out",
+    "EXPIRED": "expired",
+    "STOPPED": "stopped out",
+    "OPPOSITE_CROSS": "closed on the opposite cross",
+    "TIME_EXIT": "closed at the time stop",
+}
 CANDLE_HOURS = 2
 
 
@@ -32,11 +39,15 @@ def format_signal_alert(sig, late: bool | None = None) -> str:
             f"<b>LATE signal</b>: {age}. The entry below is a past price, so do not chase it. "
             "Not counted in the track record.\n"
         )
+    # A strategy without a fixed target stores tp1 = 0 and exits by its own rule
+    target = (
+        f"TP1: {_price(sig.tp1)} (R:R 1:{sig.risk_reward_ratio:.1f})" if sig.tp1 else "Target: none (rule-based exit)"
+    )
     return (
         f"{warning}<b>{sig.side}</b> #${html.escape(sig.symbol)} (2h)\n"
         f"Entry: {_price(sig.entry_price)}\n"
         f"Stop loss: {_price(sig.stop_loss)}\n"
-        f"TP1: {_price(sig.tp1)} (R:R 1:{sig.risk_reward_ratio:.1f})\n"
+        f"{target}\n"
         f"MACD: {sig.macd:.4f} | Signal: {sig.signal:.4f} | Hist: {sig.histogram:.4f}\n"
         f"Cross candle: {sig.cross_time}"
     )
@@ -49,8 +60,9 @@ def format_outcome_alert(closed: list[dict]) -> str:
         label = RESULT_LABELS.get(t["result"], t["result"].lower())
         r = t.get("r_multiple")
         r_text = f"{r:+.2f}R, " if r is not None else ""
+        shadow = f"[shadow {html.escape(t['shadow_strategy'])}] " if t.get("shadow_strategy") else ""
         lines.append(
-            f"<b>{html.escape(t['symbol'])} {side}</b> {label}\n"
+            f"{shadow}<b>{html.escape(t['symbol'])} {side}</b> {label}\n"
             f"Entry {_price(t['entry_price'])} → exit {_price(t['exit_price'])}\n"
             f"{r_text}{t['pnl_percent']:+.2f}% after fees and modelled slippage"
         )

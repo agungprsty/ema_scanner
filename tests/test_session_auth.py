@@ -218,6 +218,7 @@ async def test_header_auth_needs_no_cookie_and_no_csrf_header(fake_services):
         ("PUT", "/api/signals/1/journal"),
         ("DELETE", "/api/signals/1/journal"),
         ("POST", "/api/profitloss-history"),
+        ("GET", "/api/profitloss-history/adjustments"),
     ],
 )
 async def test_private_endpoints_require_credentials(method, path):

@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
@@ -45,7 +45,8 @@ from src.config.settings import (
 )
 from src.data_feed.binance_client import create_futures_client
 from src.data_feed.ohlcv import fetch_candles_payload, fetch_candles_range, fetch_klines
-from src.services.alerts import format_signal_alert, notify_closed_trades
+from src.ledger.candles import context_fingerprint
+from src.services.alerts import format_outcome_alert, format_signal_alert, notify_closed_trades
 from src.services.auth import issue_session_token, verify_session_token
 from src.services.background import run_in_background
 from src.services.cron_scheduler import cron_scheduler
@@ -56,20 +57,36 @@ from src.services.db import (
     delete_journal_entry,
     delete_watchlist_symbol,
     evaluate_pending_signals,
+    get_cron_runs,
     get_journal,
     get_macd_signals,
     get_macd_signals_summary,
     get_performance,
+    get_profitloss_adjustments,
     get_profitloss_history,
     get_signal_by_id,
     get_signals_by_keys,
+    get_track_record,
     get_watchlist,
     init_db,
     is_db_connected,
+    record_alert_events,
     record_profit_loss,
     save_macd_signal,
     toggle_watchlist_symbol,
     upsert_journal_entry,
+)
+from src.services.ledger import (
+    LEDGER_COLUMNS,
+    export_jsonl,
+    export_rows,
+    filter_rows,
+    get_ledger_head,
+    get_recent_events,
+    get_signal_candle_window,
+    get_signal_events,
+    rows_to_csv,
+    verify_ledger,
 )
 from src.services.redis_client import (
     claim_cross,
@@ -82,6 +99,8 @@ from src.services.redis_client import (
     set_cached_json,
 )
 from src.services.telegram import send_alert
+from src.strategy import registry
+from src.strategy.context import MarketContext
 from src.strategy.macd import compute_macd, detect_macd_cross
 from src.strategy.outcome import CANDLE_INTERVAL_MS
 
@@ -402,6 +421,8 @@ class ExcludedCounts(BaseModel):
     catchup: int = 0
     manual: int = 0
     other_version: int = 0
+    # Signals with no ledger events: put in the table outside the app (see /api/ledger/verify)
+    outside_ledger: int = 0
     other: int = 0
 
 
@@ -424,7 +445,9 @@ class PerformanceResponse(BaseModel):
     profit_factor: float | None
     max_drawdown_r: float
     break_even_win_rate: float | None
-    target_rr: float
+    # None for a strategy without a fixed target, whose win rate counts trades closed with a net R above zero
+    target_rr: float | None
+    win_rule: Literal["target_hit", "net_r_positive"] = "target_hit"
     open_count: int
     excluded: ExcludedCounts
     sample_size_warning: str | None
@@ -500,6 +523,9 @@ async def get_info():
             "stop_slippage_multiplier": STOP_SLIPPAGE_MULTIPLIER,
         },
         "max_symbols": MACD_MAX_SYMBOLS,
+        # Every registered strategy version with its frozen parameters and hashes; the scheduled scan
+        # runs the live and shadow ones (shadow signals are stored and evaluated, never alerted)
+        "strategies": [s.describe() for s in registry.all_strategies()],
         "cron": cron_scheduler.get_status(),
     }
 
@@ -838,11 +864,84 @@ async def _load_signal_candles(sig: dict, start_ms: int, end_ms: int, cache_key:
     return payload
 
 
+def _publish_candle_window(sig: dict) -> tuple[int, int]:
+    """(start_ms, end_ms) of the candles that had closed when a signal was published (detected): the
+    cross candle and the ones before it, plus any that closed before a late detection."""
+    interval_ms = CANDLE_INTERVAL_MS.get(sig.get("timeframe") or "2h", CANDLE_INTERVAL_MS["2h"])
+    cross_ms = int(sig["cross_candle_ms"])
+    detected_ms = _parse_utc_ms(sig.get("detected_at")) or cross_ms + interval_ms
+    last_open_ms = detected_ms - detected_ms % interval_ms - interval_ms
+    last_open_ms = min(max(last_open_ms, cross_ms), cross_ms + SIGNAL_EXPIRY_CANDLES * interval_ms)
+    return cross_ms - SIGNAL_CANDLES_BEFORE * interval_ms, last_open_ms
+
+
+async def _publish_candles(sig: dict, signal_id: int, response: Response) -> dict:
+    start_ms, end_ms = _publish_candle_window(sig)
+    # Every candle in the window closed before the signal was published, so the window never changes.
+    # A persisted window that reaches back far enough (strategies that read history to settle) is reused
+    persisted = await get_signal_candle_window(signal_id) if sig.get("win_status", "PENDING") != "PENDING" else None
+    if persisted and persisted.get("candles") and persisted["candles"][0]["time"] * 1000 <= start_ms:
+        candles = [c for c in persisted["candles"] if start_ms <= c["time"] * 1000 <= end_ms and not c.get("partial")]
+        payload = {"symbol": persisted["symbol"], "timeframe": persisted["timeframe"], "candles": candles}
+    else:
+        payload = await _single_flight(
+            ("signal-candles", signal_id, "publish"),
+            lambda: _load_signal_candles(
+                sig, start_ms, end_ms, f"klines:signal:{signal_id}:publish", SIGNAL_CANDLES_FINAL_TTL
+            ),
+        )
+    response.headers["Cache-Control"] = f"public, max-age={SIGNAL_CANDLES_FINAL_TTL}"
+    return {**payload, "final": True, "view": "publish", "as_of": sig.get("detected_at")}
+
+
+async def _context_before_window(sig: dict, signal_id: int, window: list[dict]) -> list[dict]:
+    """Candles before a persisted window, for the chart only: a window that starts at the cross candle
+    (rules that read no history to settle) gets the SIGNAL_CANDLES_BEFORE candles before it from the
+    at-publish candles, every one closed before the signal was published. They are returned apart
+    from `candles`, which stay exactly the hashed window. Empty when not needed or not available."""
+    if not window:
+        return []
+    interval_ms = CANDLE_INTERVAL_MS.get(sig.get("timeframe") or "2h", CANDLE_INTERVAL_MS["2h"])
+    first_ms = window[0]["time"] * 1000
+    if first_ms <= int(sig["cross_candle_ms"]) - SIGNAL_CANDLES_BEFORE * interval_ms:
+        return []
+    start_ms, end_ms = _publish_candle_window(sig)
+    try:
+        payload = await _single_flight(
+            ("signal-candles", signal_id, "publish"),
+            lambda: _load_signal_candles(
+                sig, start_ms, end_ms, f"klines:signal:{signal_id}:publish", SIGNAL_CANDLES_FINAL_TTL
+            ),
+        )
+    except HTTPException:
+        return []
+    return [c for c in payload.get("candles") or [] if c["time"] * 1000 < first_ms and not c.get("partial")]
+
+
 @app.get("/api/signals/{signal_id}/candles")
-async def get_signal_candles(signal_id: int, response: Response):
+async def get_signal_candles(
+    signal_id: int,
+    response: Response,
+    view: Annotated[
+        Literal["after", "publish"],
+        Query(description="after: the trade window (default); publish: the candles closed when it was published"),
+    ] = "after",
+):
     sig = await get_signal_by_id(signal_id)
     if not sig:
         raise HTTPException(status_code=404, detail="Signal not found")
+    if view == "publish":
+        return await _publish_candles(sig, signal_id, response)
+
+    # A closed signal is charted from the window the evaluator settled it on, stored at resolution
+    # and hashed into its resolved event, so the chart can never change afterwards. Signals closed
+    # before the window was stored, and open ones, are fetched as before
+    if sig.get("win_status", "PENDING") != "PENDING":
+        persisted = await get_signal_candle_window(signal_id)
+        if persisted:
+            context = await _context_before_window(sig, signal_id, persisted.get("candles") or [])
+            response.headers["Cache-Control"] = f"public, max-age={SIGNAL_CANDLES_FINAL_TTL}"
+            return {**persisted, "context": context, "final": True}
 
     start_ms, end_ms, final = _signal_candle_window(sig, int(time.time() * 1000))
     ttl = SIGNAL_CANDLES_FINAL_TTL if final else KLINES_CACHE_TTL
@@ -855,10 +954,136 @@ async def get_signal_candles(signal_id: int, response: Response):
     return {**payload, "final": final}
 
 
+# Signal ledger: append-only, hash-chained events (src/ledger), public so anyone can check the record
+def _ledger_unavailable() -> HTTPException:
+    return HTTPException(status_code=503, detail="Ledger unavailable: no database")
+
+
+@app.get("/api/signals/{signal_id}/events")
+async def list_signal_events(signal_id: int):
+    """Everything the ledger recorded about one signal, oldest first, with each event's chain hashes."""
+    try:
+        events = await get_signal_events(signal_id)
+    except Exception as exc:
+        logger.exception("Failed to read events of signal %s", signal_id)
+        raise HTTPException(status_code=500, detail="Failed to read the ledger") from exc
+    if events is None:
+        if not await is_db_connected():
+            raise _ledger_unavailable()
+        raise HTTPException(status_code=404, detail="Signal not found")
+    return {"signal_id": signal_id, "events": events}
+
+
+@app.get("/api/ledger/head")
+async def ledger_head(response: Response):
+    """The chain's latest event hash, and the heads published once per UTC day. A head copied today can
+    be checked against any later export (python -m src.ledger verify --jsonl FILE --head HASH)."""
+    try:
+        head = await get_ledger_head()
+    except Exception as exc:
+        logger.exception("Failed to read the ledger head")
+        raise HTTPException(status_code=500, detail="Failed to read the ledger") from exc
+    if head is None:
+        raise _ledger_unavailable()
+    response.headers["Cache-Control"] = "no-store"
+    return head
+
+
+@app.get("/api/ledger/verify")
+async def ledger_verify():
+    """Recompute the whole chain on the server: ok, and the first event that fails when one does.
+    Also checks the published heads, the persisted candle windows and that every signal's live row
+    matches its latest event. Reused for a few minutes while the head does not move."""
+    try:
+        result = await verify_ledger()
+    except Exception as exc:
+        logger.exception("Ledger verification failed to run")
+        raise HTTPException(status_code=500, detail="Failed to verify the ledger") from exc
+    if result is None:
+        raise _ledger_unavailable()
+    return result
+
+
+StrategyKeyQuery = Annotated[
+    str | None, Query(max_length=40, pattern=r"^[a-z0-9_]+$", description="Strategy key, e.g. macd_cross")
+]
+StrategyVersionQuery = Annotated[
+    str | None, Query(max_length=20, pattern=r"^[A-Za-z0-9_.-]+$", description="Strategy version, e.g. 2.2.0")
+]
+
+
+@app.get("/api/ledger.csv")
+async def ledger_csv(strategy_key: StrategyKeyQuery = None, strategy_version: StrategyVersionQuery = None):
+    """Every stored signal, eligible or not (with the flags saying which), its trade's R columns and
+    its latest event hash; optionally only one strategy (and version)."""
+    rows = await export_rows()
+    if rows is None:
+        raise _ledger_unavailable()
+    rows = filter_rows(rows, strategy_key, strategy_version)
+    name = "-".join(p for p in ("crossline-ledger", strategy_key, strategy_version) if p)
+    return PlainTextResponse(
+        rows_to_csv(rows),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{name}.csv"'},
+    )
+
+
+@app.get("/api/ledger")
+async def ledger_rows(strategy_key: StrategyKeyQuery = None, strategy_version: StrategyVersionQuery = None):
+    """The ledger rows of /api/ledger.csv as JSON, for the track-record table."""
+    rows = await export_rows()
+    if rows is None:
+        raise _ledger_unavailable()
+    rows = filter_rows(rows, strategy_key, strategy_version)
+    return {"total": len(rows), "columns": list(LEDGER_COLUMNS), "rows": rows}
+
+
+@app.get("/api/ledger/events")
+async def ledger_recent_events(limit: Annotated[int, Query(ge=1, le=50)] = 10):
+    """The newest events of the chain, newest first, with each one's signal and hashes."""
+    try:
+        events = await get_recent_events(limit)
+    except Exception as exc:
+        logger.exception("Failed to read the newest ledger events")
+        raise HTTPException(status_code=500, detail="Failed to read the ledger") from exc
+    if events is None:
+        raise _ledger_unavailable()
+    return {"events": events}
+
+
+@app.get("/api/ledger.jsonl")
+async def ledger_jsonl():
+    """The ledger rows plus every event and daily head, for offline verification with
+    python -m src.ledger verify --jsonl."""
+    body = await export_jsonl()
+    if body is None:
+        raise _ledger_unavailable()
+    return PlainTextResponse(
+        body,
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": 'attachment; filename="crossline-ledger.jsonl"'},
+    )
+
+
 # Cron Scheduler Management Endpoints
 @app.get("/api/cron/status")
 async def get_cron_scheduler_status(request: Request):
     return cron_scheduler.get_status(include_error=is_authenticated(request))
+
+
+@app.get("/api/cron/runs")
+async def list_cron_runs(request: Request, limit: Annotated[int, Query(ge=1, le=200)] = 50):
+    """The newest scheduled runs from cron_runs, the last success and the on-schedule ratio over the
+    last 7 days. Error text is only included for the signed-in owner."""
+    try:
+        data = await get_cron_runs(limit=limit, include_error=is_authenticated(request))
+    except Exception as exc:
+        logger.exception("Failed to read cron runs")
+        raise HTTPException(status_code=500, detail="Failed to read cron runs") from exc
+    if data is None:
+        raise HTTPException(status_code=503, detail="Cron runs unavailable: no database")
+    status = cron_scheduler.get_status()
+    return {**data, "enabled": status["enabled"], "next_run": status["next_run"], "schedule_text": status["schedule"]}
 
 
 @app.post("/api/cron/trigger", dependencies=[Depends(verify_api_key)])
@@ -873,7 +1098,8 @@ async def trigger_cron_execution():
 async def _evaluate_and_notify(client) -> dict:
     res = await evaluate_pending_signals(client)
     closed = res.pop("closed", None) if isinstance(res, dict) else None
-    await notify_closed_trades(closed)
+    if await notify_closed_trades(closed):
+        await record_alert_events([t.get("signal_id") for t in closed], "outcome", format_outcome_alert(closed))
     return res
 
 
@@ -924,10 +1150,20 @@ async def list_profit_loss_history(
     )
 
 
+@app.get("/api/profitloss-history/adjustments", dependencies=[Depends(verify_api_key)])
+async def list_profit_loss_adjustments(
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+):
+    items, total = await get_profitloss_adjustments(limit=limit, offset=offset)
+    return {"total": total, "limit": limit, "offset": offset, "adjustments": items}
+
+
 @app.post("/api/profitloss-history", dependencies=[Depends(verify_api_key)])
 async def add_profit_loss_record(body: ProfitLossRecordRequest):
-    """Record a hand-entered trade. It is listed but never counted in the track record, and it cannot
-    point at a stored signal (409), whose outcome only the evaluator books."""
+    """Record a hand-entered trade, kept for ops in profitloss_adjustments: never in the track record,
+    the ledger or GET /api/profitloss-history (list them at /api/profitloss-history/adjustments). It
+    cannot point at a stored signal (409), whose outcome only the evaluator books."""
     try:
         item = await record_profit_loss(
             symbol=body.symbol,
@@ -949,6 +1185,15 @@ async def add_profit_loss_record(body: ProfitLossRecordRequest):
     if not item:
         raise HTTPException(status_code=400, detail="Failed to record profit/loss item")
     return {"status": "success", "item": item}
+
+
+def _stamp_input_candles(sig, symbol: str, timeframe: str, klines) -> None:
+    """Fingerprint the closed candles an ad-hoc scan detected `sig` on, for its detected event."""
+    try:
+        ctx = MarketContext.from_klines(symbol, int(time.time() * 1000), timeframe, {timeframe: klines})
+        sig.input_candles_sha256, sig.input_candles = context_fingerprint(ctx)
+    except Exception:
+        logger.warning("Could not fingerprint the candles of the %s %s scan", symbol, timeframe)
 
 
 # Scanner Endpoints (Strict 2h timeframe). A manual scan is a preview by default: it neither stores
@@ -1025,16 +1270,19 @@ async def run_macd_scan(
 
     async def _detect(sym: str):
         async with sem:
-            df = await asyncio.to_thread(fetch_klines, client, sym, timeframe, limit)
-            if df is None:
+            klines = await asyncio.to_thread(fetch_klines, client, sym, timeframe, limit)
+            if klines is None:
                 failed_symbols.append(sym)
                 return None
-            df = compute_macd(df, fast=MACD_FAST, slow=MACD_SLOW, signal=MACD_SIGNAL)
+            df = compute_macd(klines, fast=MACD_FAST, slow=MACD_SLOW, signal=MACD_SIGNAL)
             if df is None:
                 return None
-            return detect_macd_cross(
+            sig = detect_macd_cross(
                 df, sym, lookback_candles=lookback, include_current=include_current
             )
+            if sig is not None and save_db:
+                _stamp_input_candles(sig, sym, timeframe, klines)
+            return sig
 
     tasks = [_detect(sym) for sym in symbol_list]
     results = await asyncio.gather(*tasks)
@@ -1182,6 +1430,11 @@ async def list_signals(
             "(420 for WIB); 0 means UTC days",
         ),
     ] = 0,
+    strategy_key: StrategyKeyQuery = None,
+    strategy_version: StrategyVersionQuery = None,
+    source: Annotated[
+        Literal["cron", "catchup", "manual", "legacy"] | None, Query(description="Filter by where the signal came from")
+    ] = None,
 ):
     target_side = direction or side
     try:
@@ -1197,6 +1450,9 @@ async def list_signals(
             limit=limit,
             offset=offset,
             tz_offset_minutes=tz_offset_minutes,
+            strategy_key=strategy_key,
+            strategy_version=strategy_version,
+            source=source,
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from None
@@ -1225,7 +1481,18 @@ async def performance(
     ] = None,
     symbol: Annotated[str | None, Query(max_length=20, description="Filter by symbol")] = None,
     side: Annotated[Literal["LONG", "SHORT", "long", "short"] | None, Query(description="Filter by side")] = None,
+    strategy_key: StrategyKeyQuery = None,
 ):
     """Track record of one strategy version: eligible closed trades only, each figure with its sample
     size and a 95% interval where one applies. `definitions` in the payload states every formula."""
-    return await get_performance(strategy_version=strategy_version, symbol=symbol, side=side)
+    kwargs = {"strategy_key": strategy_key} if strategy_key else {}
+    return await get_performance(strategy_version=strategy_version, symbol=symbol, side=side, **kwargs)
+
+
+@app.get("/api/track-record")
+async def track_record(strategy_key: StrategyKeyQuery = None, strategy_version: StrategyVersionQuery = None):
+    """Everything the track-record page draws for one strategy version: the KPIs of /api/performance,
+    the equity curve and drawdown in R (one point per exit instant), the net R histogram and breakdowns
+    per side, symbol and exit month. Breakdown rows under min_breakdown_sample trades are flagged
+    meaningful=false."""
+    return await get_track_record(strategy_key=strategy_key, strategy_version=strategy_version)

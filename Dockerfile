@@ -19,6 +19,10 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 COPY --chown=appuser:appgroup . .
 
+# Commit the image was built from, stamped on every detected event in the signal ledger
+ARG GIT_SHA=""
+ENV GIT_SHA=${GIT_SHA}
+
 USER appuser
 
 EXPOSE 7860

@@ -113,7 +113,7 @@ jobs:
         run: |
           PYTHONPATH=. python -m src.backtest --data data/klines --symbols $GATE_SYMBOLS \
             --start 2025-01-01 --end 2026-01-01 --oos-start 2025-07-01 \
-            --out backtest-report.json --baseline backtest/baseline.json
+            --out backtest-report.json --baseline backtest/baseline.json --purpose gate
 
       - name: Upload backtest report
         if: always()
@@ -155,6 +155,8 @@ jobs:
           context: .
           push: true
           tags: ${{ env.IMAGE_TAG }}
+          build-args: |
+            GIT_SHA=${{ github.sha }}
 
   deploy:
     name: Deploy to VPS

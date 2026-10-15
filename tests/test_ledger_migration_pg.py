@@ -129,7 +129,10 @@ TRADES = [
 async def _seed(url: str) -> None:
     engine = create_async_engine(url)
     async with engine.begin() as conn:
-        await conn.execute(text("DROP TABLE IF EXISTS macd_signals, profitloss_history, watchlist_symbols, trade_journal"))
+        await conn.execute(text(
+            "DROP TABLE IF EXISTS macd_signals, profitloss_history, watchlist_symbols, trade_journal, "
+            "signal_events, ledger_heads, signal_candles, profitloss_adjustments"
+        ))
         for ddl in OLD_SCHEMA:
             await conn.execute(text(ddl))
         signals = {s[0]: s for s in SIGNALS}
@@ -252,7 +255,7 @@ async def test_performance_and_date_filters_on_the_production_snapshot(monkeypat
         # v2.2 only: ids 5-10, one target and five stops; ids 1-4 are legacy and stay out
         assert (perf["n_closed"], perf["wins"], perf["losses"], perf["expired"]) == (6, 1, 5, 0)
         assert perf["open_count"] == 5
-        assert perf["excluded"] == {"legacy": 4, "catchup": 0, "manual": 0, "other_version": 0, "other": 0}
+        assert perf["excluded"] == {"legacy": 4, "catchup": 0, "manual": 0, "other_version": 0, "outside_ledger": 0, "other": 0}
         assert perf["win_rate"] == 16.7
         assert perf["total_net_r"] == pytest.approx(sum(net[sid] for sid in range(5, 11)), abs=1e-3)
         assert perf["total_net_r"] < -3.88
@@ -309,6 +312,9 @@ async def test_hand_entered_trades_never_reach_the_track_record(monkeypatch):
             cross_time="2026-10-14T12:00:00Z", exit_time="2026-10-14T18:00:00Z",
         )
         assert item["booked_by"] == "manual" and item["net_r"] is None
+        # It went to the adjustments table, not to profitloss_history
+        assert item["adjustment"] is True
+        assert (await db.get_profitloss_adjustments())[1] == 1
         # A manual row written straight into the table against a counted signal (as the old endpoint
         # allowed) does not count either
         engine = create_async_engine(url)
@@ -335,10 +341,12 @@ async def test_hand_entered_trades_never_reach_the_track_record(monkeypatch):
     finally:
         await db.close_db()
 
-    # A reboot does not restate the hand-entered rows, so they never gain a net R
+    # A reboot does not restate the hand-entered row written straight into profitloss_history, so it
+    # never gains a net R; the one entered through the API is only in profitloss_adjustments
     await _boot(monkeypatch, url)
     manual = await _fetch(url, "SELECT net_r, cost_model_version FROM profitloss_history WHERE booked_by = 'manual'")
-    assert manual == [(None, None), (None, None)]
+    assert manual == [(None, None)]
+    assert await _fetch(url, "SELECT symbol, result FROM profitloss_adjustments") == [("BTCUSDT", "PROFIT")]
     monkeypatch.setattr(db, "_engine", None)
     monkeypatch.setattr(db, "_session_maker", None)
     assert await db.init_db(max_retries=1)
@@ -374,6 +382,6 @@ async def test_backfill_marks_late_and_forming_rows(monkeypatch):
     try:
         perf = await db.get_performance()
         assert perf["open_count"] == 3
-        assert perf["excluded"] == {"legacy": 4, "catchup": 1, "manual": 1, "other_version": 0, "other": 0}
+        assert perf["excluded"] == {"legacy": 4, "catchup": 1, "manual": 1, "other_version": 0, "outside_ledger": 0, "other": 0}
     finally:
         await db.close_db()

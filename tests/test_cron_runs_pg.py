@@ -18,7 +18,10 @@ pytestmark = [
     pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL not set"),
 ]
 
-ALL_TABLES = "macd_signals, profitloss_history, watchlist_symbols, trade_journal, cron_runs"
+ALL_TABLES = (
+    "macd_signals, profitloss_history, watchlist_symbols, trade_journal, cron_runs, "
+    "signal_events, ledger_heads, signal_candles, profitloss_adjustments"
+)
 
 
 async def _execute(url: str, *statements: str) -> list:

@@ -62,17 +62,22 @@ async def is_redis_connected() -> bool:
         return False
 
 
-def _dedup_key(side: str, symbol: str, candle_ms: int, timeframe: str = "2h") -> str:
+def _dedup_key(side: str, symbol: str, candle_ms: int, timeframe: str = "2h", strategy: str | None = None) -> str:
+    """Claim key of one cross. The headline strategy (and ad-hoc scans of it) keep the original key;
+    any other strategy ("key@version") claims its own, so a shadow signal on the same candle is never
+    swallowed by the live one."""
+    if strategy:
+        return f"sig:{strategy}:{timeframe}:{side.lower()}:{symbol.upper()}:{candle_ms}"
     return f"macd:{timeframe}:{side.lower()}:{symbol.upper()}:{candle_ms}"
 
 
 async def is_cross_detected(
-    side: str, symbol: str, candle_ms: int, timeframe: str = "2h"
+    side: str, symbol: str, candle_ms: int, timeframe: str = "2h", strategy: str | None = None
 ) -> bool:
     if _redis is None:
         return False
     try:
-        return (await _redis.exists(_dedup_key(side, symbol, candle_ms, timeframe))) > 0
+        return (await _redis.exists(_dedup_key(side, symbol, candle_ms, timeframe, strategy))) > 0
     except Exception as e:
         logger.warning("Redis dedup check error: %s", e)
         return False
@@ -84,11 +89,12 @@ async def claim_cross(
     candle_ms: int,
     timeframe: str = "2h",
     ttl: int = CROSS_TTL,
+    strategy: str | None = None,
 ) -> bool:
     if _redis is None:
         return True
     try:
-        res = await _redis.set(_dedup_key(side, symbol, candle_ms, timeframe), "1", nx=True, ex=ttl)
+        res = await _redis.set(_dedup_key(side, symbol, candle_ms, timeframe, strategy), "1", nx=True, ex=ttl)
         return bool(res)
     except Exception as e:
         logger.warning("Redis claim cross error: %s", e)
@@ -96,12 +102,12 @@ async def claim_cross(
 
 
 async def release_cross(
-    side: str, symbol: str, candle_ms: int, timeframe: str = "2h"
+    side: str, symbol: str, candle_ms: int, timeframe: str = "2h", strategy: str | None = None
 ) -> None:
     if _redis is None:
         return
     try:
-        await _redis.delete(_dedup_key(side, symbol, candle_ms, timeframe))
+        await _redis.delete(_dedup_key(side, symbol, candle_ms, timeframe, strategy))
     except Exception as e:
         logger.warning("Redis release cross error: %s", e)
 
