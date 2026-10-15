@@ -1,0 +1,2516 @@
+{
+  "evaluation": {
+    "strategy": "macd_cross_ema50d_oppexit@1.0.0",
+    "primary_metric": "mean net R per trade under cost model cm1",
+    "thresholds": {
+      "min_t_stat": 2.0,
+      "impact_round_trip_percent": 0.1,
+      "top_trim_fraction": 0.01,
+      "min_positive_symbols": 7
+    },
+    "verdict": "FAIL",
+    "all_symbols": {
+      "symbols": [
+        "BTCUSDT",
+        "ETHUSDT",
+        "SOLUSDT",
+        "XRPUSDT",
+        "NEARUSDT",
+        "ZECUSDT",
+        "BNBUSDT",
+        "DOGEUSDT",
+        "ADAUSDT",
+        "LINKUSDT",
+        "AVAXUSDT",
+        "LTCUSDT"
+      ],
+      "primary_cm1": {
+        "n": 7354,
+        "mean_net_r": -0.024271937368281055,
+        "t_stat": -1.3465641661963825,
+        "ci95_net_r": [
+          -0.0784513283042571,
+          0.034596035347120885
+        ],
+        "mean_gross_r": 0.08094986887828813
+      },
+      "impact_10bps": {
+        "n": 7354,
+        "mean_net_r": -0.05876754148521505,
+        "t_stat": -3.2583436906835486,
+        "ci95_net_r": [
+          -0.11331999436284412,
+          -6.342562919138534e-05
+        ],
+        "mean_gross_r": 0.08094986887828813
+      },
+      "without_top_1pct": {
+        "n": 7280,
+        "mean_net_r": -0.11533478411731675,
+        "t_stat": -9.482929876303139,
+        "ci95_net_r": [
+          -0.15749336080274798,
+          -0.07291400809558478
+        ],
+        "mean_gross_r": -0.010700013396457656,
+        "dropped": 74
+      },
+      "per_symbol": {
+        "BTCUSDT": {
+          "n": 646,
+          "mean_net_r": 0.022973018066015295,
+          "t_stat": 0.3981860965011849,
+          "ci95_net_r": [
+            -0.07845934067064643,
+            0.13098834630117998
+          ],
+          "mean_gross_r": 0.09460256708386112
+        },
+        "ETHUSDT": {
+          "n": 609,
+          "mean_net_r": 0.10756747485227389,
+          "t_stat": 1.7048673802465173,
+          "ci95_net_r": [
+            -0.00219034939514918,
+            0.22801756611619492
+          ],
+          "mean_gross_r": 0.16681372584036605
+        },
+        "SOLUSDT": {
+          "n": 519,
+          "mean_net_r": 0.059524419406467965,
+          "t_stat": 1.078491966132096,
+          "ci95_net_r": [
+            -0.04043172935745521,
+            0.17087466754225988
+          ],
+          "mean_gross_r": 0.1270855782454813
+        },
+        "XRPUSDT": {
+          "n": 643,
+          "mean_net_r": -0.05085646862844192,
+          "t_stat": -0.889100454902793,
+          "ci95_net_r": [
+            -0.15836780272678955,
+            0.06294672950578645
+          ],
+          "mean_gross_r": 0.07197095007967662
+        },
+        "NEARUSDT": {
+          "n": 556,
+          "mean_net_r": -0.07144417638668626,
+          "t_stat": -1.3447756576892076,
+          "ci95_net_r": [
+            -0.16439847793254303,
+            0.028964423913845364
+          ],
+          "mean_gross_r": 0.08819003253129595
+        },
+        "ZECUSDT": {
+          "n": 656,
+          "mean_net_r": -0.14930451947202913,
+          "t_stat": -3.1270702975031694,
+          "ci95_net_r": [
+            -0.23796310834906007,
+            -0.05377640364982984
+          ],
+          "mean_gross_r": 0.0018176414688412057
+        },
+        "BNBUSDT": {
+          "n": 654,
+          "mean_net_r": -0.0022875751547461105,
+          "t_stat": -0.03138954706702203,
+          "ci95_net_r": [
+            -0.13565400624351098,
+            0.15722293554848218
+          ],
+          "mean_gross_r": 0.1342523906237082
+        },
+        "DOGEUSDT": {
+          "n": 569,
+          "mean_net_r": 0.09599456955796695,
+          "t_stat": 0.7821987364197602,
+          "ci95_net_r": [
+            -0.10395259658868064,
+            0.38132864565512115
+          ],
+          "mean_gross_r": 0.20349818598682134
+        },
+        "ADAUSDT": {
+          "n": 637,
+          "mean_net_r": -0.05993621851716314,
+          "t_stat": -1.2726713524737736,
+          "ci95_net_r": [
+            -0.15215298378586856,
+            0.03303227861073174
+          ],
+          "mean_gross_r": 0.04177579560384889
+        },
+        "LINKUSDT": {
+          "n": 653,
+          "mean_net_r": -0.05408311785856306,
+          "t_stat": -1.1418004965491277,
+          "ci95_net_r": [
+            -0.14056766092873577,
+            0.03869572311662582
+          ],
+          "mean_gross_r": 0.030538398618395506
+        },
+        "AVAXUSDT": {
+          "n": 539,
+          "mean_net_r": -0.006698867202911716,
+          "t_stat": -0.1331528565088562,
+          "ci95_net_r": [
+            -0.09943362862673218,
+            0.0846879770643153
+          ],
+          "mean_gross_r": 0.07666981625090487
+        },
+        "LTCUSDT": {
+          "n": 673,
+          "mean_net_r": -0.14173733448599538,
+          "t_stat": -3.147214961499514,
+          "ci95_net_r": [
+            -0.23135866839879896,
+            -0.054646973164951894
+          ],
+          "mean_gross_r": -0.03169029256275142
+        }
+      },
+      "positive_symbols": [
+        "BTCUSDT",
+        "DOGEUSDT",
+        "ETHUSDT",
+        "SOLUSDT"
+      ],
+      "exits": {
+        "OPPOSITE_CROSS": 6046,
+        "STOPPED": 1308
+      },
+      "criteria": {
+        "1_mean_ci_t": false,
+        "2_impact_10bps": false,
+        "3_without_top_1pct": false,
+        "4_positive_symbols": false
+      }
+    },
+    "secondary": {
+      "control": {
+        "symbols": [
+          "BNBUSDT",
+          "DOGEUSDT",
+          "ADAUSDT",
+          "LINKUSDT",
+          "AVAXUSDT",
+          "LTCUSDT"
+        ],
+        "primary_cm1": {
+          "n": 3725,
+          "mean_net_r": -0.03204583268758111,
+          "t_stat": -1.1560095687851457,
+          "ci95_net_r": [
+            -0.1028609346926617,
+            0.038469842411680936
+          ],
+          "mean_gross_r": 0.07252127555875879
+        },
+        "impact_10bps": {
+          "n": 3725,
+          "mean_net_r": -0.06550829776387337,
+          "t_stat": -2.3613045121449274,
+          "ci95_net_r": [
+            -0.13638495304560225,
+            0.005252092778790719
+          ],
+          "mean_gross_r": 0.07252127555875879
+        },
+        "without_top_1pct": {
+          "n": 3687,
+          "mean_net_r": -0.1307628953099463,
+          "t_stat": -7.9346718717137845,
+          "ci95_net_r": [
+            -0.1821914349779575,
+            -0.08389536558909667
+          ],
+          "mean_gross_r": -0.02660014853572547,
+          "dropped": 38
+        },
+        "per_symbol": {
+          "BNBUSDT": {
+            "n": 654,
+            "mean_net_r": -0.0022875751547461105,
+            "t_stat": -0.03138954706702203,
+            "ci95_net_r": [
+              -0.13565400624351098,
+              0.15722293554848218
+            ],
+            "mean_gross_r": 0.1342523906237082
+          },
+          "DOGEUSDT": {
+            "n": 569,
+            "mean_net_r": 0.09599456955796695,
+            "t_stat": 0.7821987364197602,
+            "ci95_net_r": [
+              -0.10395259658868064,
+              0.38132864565512115
+            ],
+            "mean_gross_r": 0.20349818598682134
+          },
+          "ADAUSDT": {
+            "n": 637,
+            "mean_net_r": -0.05993621851716314,
+            "t_stat": -1.2726713524737736,
+            "ci95_net_r": [
+              -0.15215298378586856,
+              0.03303227861073174
+            ],
+            "mean_gross_r": 0.04177579560384889
+          },
+          "LINKUSDT": {
+            "n": 653,
+            "mean_net_r": -0.05408311785856306,
+            "t_stat": -1.1418004965491277,
+            "ci95_net_r": [
+              -0.14056766092873577,
+              0.03869572311662582
+            ],
+            "mean_gross_r": 0.030538398618395506
+          },
+          "AVAXUSDT": {
+            "n": 539,
+            "mean_net_r": -0.006698867202911716,
+            "t_stat": -0.1331528565088562,
+            "ci95_net_r": [
+              -0.09943362862673218,
+              0.0846879770643153
+            ],
+            "mean_gross_r": 0.07666981625090487
+          },
+          "LTCUSDT": {
+            "n": 673,
+            "mean_net_r": -0.14173733448599538,
+            "t_stat": -3.147214961499514,
+            "ci95_net_r": [
+              -0.23135866839879896,
+              -0.054646973164951894
+            ],
+            "mean_gross_r": -0.03169029256275142
+          }
+        },
+        "positive_symbols": [
+          "DOGEUSDT"
+        ],
+        "exits": {
+          "OPPOSITE_CROSS": 3060,
+          "STOPPED": 665
+        },
+        "criteria": {
+          "1_mean_ci_t": false,
+          "2_impact_10bps": false,
+          "3_without_top_1pct": false,
+          "4_positive_symbols": false
+        }
+      },
+      "watchlist": {
+        "symbols": [
+          "BTCUSDT",
+          "ETHUSDT",
+          "SOLUSDT",
+          "XRPUSDT",
+          "NEARUSDT",
+          "ZECUSDT"
+        ],
+        "primary_cm1": {
+          "n": 3629,
+          "mean_net_r": -0.01629239477682537,
+          "t_stat": -0.7112515124227192,
+          "ci95_net_r": [
+            -0.07613185578210249,
+            0.044831190747984265
+          ],
+          "mean_gross_r": 0.08960142856835339
+        },
+        "impact_10bps": {
+          "n": 3629,
+          "mean_net_r": -0.0518484681487581,
+          "t_stat": -2.262647550626007,
+          "ci95_net_r": [
+            -0.11247210301295092,
+            0.009810373691672218
+          ],
+          "mean_gross_r": 0.08960142856835339
+        },
+        "without_top_1pct": {
+          "n": 3592,
+          "mean_net_r": -0.10099331402619556,
+          "t_stat": -5.6528513032413565,
+          "ci95_net_r": [
+            -0.14767141173419396,
+            -0.053624745787417626
+          ],
+          "mean_gross_r": 0.004126583344496388,
+          "dropped": 37
+        },
+        "per_symbol": {
+          "BTCUSDT": {
+            "n": 646,
+            "mean_net_r": 0.022973018066015295,
+            "t_stat": 0.3981860965011849,
+            "ci95_net_r": [
+              -0.07845934067064643,
+              0.13098834630117998
+            ],
+            "mean_gross_r": 0.09460256708386112
+          },
+          "ETHUSDT": {
+            "n": 609,
+            "mean_net_r": 0.10756747485227389,
+            "t_stat": 1.7048673802465173,
+            "ci95_net_r": [
+              -0.00219034939514918,
+              0.22801756611619492
+            ],
+            "mean_gross_r": 0.16681372584036605
+          },
+          "SOLUSDT": {
+            "n": 519,
+            "mean_net_r": 0.059524419406467965,
+            "t_stat": 1.078491966132096,
+            "ci95_net_r": [
+              -0.04043172935745521,
+              0.17087466754225988
+            ],
+            "mean_gross_r": 0.1270855782454813
+          },
+          "XRPUSDT": {
+            "n": 643,
+            "mean_net_r": -0.05085646862844192,
+            "t_stat": -0.889100454902793,
+            "ci95_net_r": [
+              -0.15836780272678955,
+              0.06294672950578645
+            ],
+            "mean_gross_r": 0.07197095007967662
+          },
+          "NEARUSDT": {
+            "n": 556,
+            "mean_net_r": -0.07144417638668626,
+            "t_stat": -1.3447756576892076,
+            "ci95_net_r": [
+              -0.16439847793254303,
+              0.028964423913845364
+            ],
+            "mean_gross_r": 0.08819003253129595
+          },
+          "ZECUSDT": {
+            "n": 656,
+            "mean_net_r": -0.14930451947202913,
+            "t_stat": -3.1270702975031694,
+            "ci95_net_r": [
+              -0.23796310834906007,
+              -0.05377640364982984
+            ],
+            "mean_gross_r": 0.0018176414688412057
+          }
+        },
+        "positive_symbols": [
+          "BTCUSDT",
+          "ETHUSDT",
+          "SOLUSDT"
+        ],
+        "exits": {
+          "OPPOSITE_CROSS": 2986,
+          "STOPPED": 643
+        },
+        "criteria": {
+          "1_mean_ci_t": false,
+          "2_impact_10bps": false,
+          "3_without_top_1pct": false,
+          "4_positive_symbols": false
+        }
+      }
+    }
+  },
+  "report": {
+    "harness_version": 1,
+    "strategy": {
+      "key": "macd_cross_ema50d_oppexit",
+      "version": "1.0.0",
+      "status": "shadow",
+      "params_hash": "3088c6678f741e4007d0dd3e4563211e3925784fc90782b559f8c3698da98d64",
+      "code_hash": "dfc880b5e79bef9e710076dde64c7f54c5a801603cdf154c8e350f958dd87160",
+      "context_timeframes": [
+        "1d"
+      ],
+      "context_source": "resample"
+    },
+    "dataset": {
+      "symbols": [
+        "BTCUSDT",
+        "ETHUSDT",
+        "SOLUSDT",
+        "XRPUSDT",
+        "NEARUSDT",
+        "ZECUSDT",
+        "BNBUSDT",
+        "DOGEUSDT",
+        "ADAUSDT",
+        "LINKUSDT",
+        "AVAXUSDT",
+        "LTCUSDT"
+      ],
+      "start": "2020-01-01",
+      "end": "2024-10-01",
+      "oos_start": null,
+      "warmup_candles": 498,
+      "files": {
+        "BTCUSDT": {
+          "file": "BTCUSDT_2h.csv",
+          "rows": 20820,
+          "first_open_ms": 1577836800000,
+          "last_open_ms": 1727733600000,
+          "sha256": "c2501842f01df04303b85fc46b79767fa75ecb7603c9f630fd444527550966ee"
+        },
+        "ETHUSDT": {
+          "file": "ETHUSDT_2h.csv",
+          "rows": 20820,
+          "first_open_ms": 1577836800000,
+          "last_open_ms": 1727733600000,
+          "sha256": "28f5b1cb4a7df7a20e4ef1552f485a068b08d48d1ee74e93eeb93c85c1f3bf45"
+        },
+        "SOLUSDT": {
+          "file": "SOLUSDT_2h.csv",
+          "rows": 17673,
+          "first_open_ms": 1600063200000,
+          "last_open_ms": 1727733600000,
+          "sha256": "3931275cfe6ada7af1b85d147c509afa636e3cc2e71cbb1691f76dc443cc6034"
+        },
+        "XRPUSDT": {
+          "file": "XRPUSDT_2h.csv",
+          "rows": 20696,
+          "first_open_ms": 1578297600000,
+          "last_open_ms": 1727733600000,
+          "sha256": "fbfdb70fb5da5108b065d7f0ea56e1a3a96525af8b209e949dd71578f44001cd"
+        },
+        "NEARUSDT": {
+          "file": "NEARUSDT_2h.csv",
+          "rows": 17300,
+          "first_open_ms": 1602748800000,
+          "last_open_ms": 1727733600000,
+          "sha256": "62ed1687beed6667c1a9b0483ba79621fb176d184428320aa1b1599af1c07d61"
+        },
+        "ZECUSDT": {
+          "file": "ZECUSDT_2h.csv",
+          "rows": 20336,
+          "first_open_ms": 1580889600000,
+          "last_open_ms": 1727733600000,
+          "sha256": "e8ee5e442fe8068a41c1aad4a44c447ddfd02ddfcfdf640135b4c26339301d09"
+        },
+        "BNBUSDT": {
+          "file": "BNBUSDT_2h.csv",
+          "rows": 20336,
+          "first_open_ms": 1581321600000,
+          "last_open_ms": 1727733600000,
+          "sha256": "52d4aebc57544db4c27acdd4b52f3e7a22ef57fa9286307b12bbb0e810a78dce"
+        },
+        "DOGEUSDT": {
+          "file": "DOGEUSDT_2h.csv",
+          "rows": 18524,
+          "first_open_ms": 1594368000000,
+          "last_open_ms": 1727733600000,
+          "sha256": "187f0a8f33d9f4b0c6a3e0e260ba5295ec8968628f80275ac6448b2749dd0be2"
+        },
+        "ADAUSDT": {
+          "file": "ADAUSDT_2h.csv",
+          "rows": 20456,
+          "first_open_ms": 1580457600000,
+          "last_open_ms": 1727733600000,
+          "sha256": "48be140c3c2ecbe2f114d77752c5af752bd6e93e45224ad3941fa3d7e827c17d"
+        },
+        "LINKUSDT": {
+          "file": "LINKUSDT_2h.csv",
+          "rows": 20624,
+          "first_open_ms": 1579248000000,
+          "last_open_ms": 1727733600000,
+          "sha256": "a2501368fb44711bbc38d69e322ecf6b7503f88277eb0fd930b30c2ebeb2f2a1"
+        },
+        "AVAXUSDT": {
+          "file": "AVAXUSDT_2h.csv",
+          "rows": 17625,
+          "first_open_ms": 1600840800000,
+          "last_open_ms": 1727733600000,
+          "sha256": "16aec1e94ce30a72136cb0fa5e596863b69764129c44f01ef242f75b94e4e9a6"
+        },
+        "LTCUSDT": {
+          "file": "LTCUSDT_2h.csv",
+          "rows": 20660,
+          "first_open_ms": 1578556800000,
+          "last_open_ms": 1727733600000,
+          "sha256": "4d0d45763a91a6889e71c7dc69d9508cd54ab243856ab2e478176475eb2172b6"
+        }
+      },
+      "context_files": {
+        "BTCUSDT": {
+          "1d": {
+            "source": "resampled from 2h"
+          }
+        },
+        "ETHUSDT": {
+          "1d": {
+            "source": "resampled from 2h"
+          }
+        },
+        "SOLUSDT": {
+          "1d": {
+            "source": "resampled from 2h"
+          }
+        },
+        "XRPUSDT": {
+          "1d": {
+            "source": "resampled from 2h"
+          }
+        },
+        "NEARUSDT": {
+          "1d": {
+            "source": "resampled from 2h"
+          }
+        },
+        "ZECUSDT": {
+          "1d": {
+            "source": "resampled from 2h"
+          }
+        },
+        "BNBUSDT": {
+          "1d": {
+            "source": "resampled from 2h"
+          }
+        },
+        "DOGEUSDT": {
+          "1d": {
+            "source": "resampled from 2h"
+          }
+        },
+        "ADAUSDT": {
+          "1d": {
+            "source": "resampled from 2h"
+          }
+        },
+        "LINKUSDT": {
+          "1d": {
+            "source": "resampled from 2h"
+          }
+        },
+        "AVAXUSDT": {
+          "1d": {
+            "source": "resampled from 2h"
+          }
+        },
+        "LTCUSDT": {
+          "1d": {
+            "source": "resampled from 2h"
+          }
+        }
+      }
+    },
+    "params": {
+      "timeframe": "2h",
+      "macd_fast": 12,
+      "macd_slow": 26,
+      "macd_signal": 9,
+      "macd_candles": 500,
+      "swing_lookback_candles": 5,
+      "trend_ema_period": 50,
+      "trend_ema_bars": 200,
+      "max_hold_candles": 96
+    },
+    "costs": {
+      "cost_model_version": "cm1",
+      "scenarios": {
+        "prod": {
+          "fee_percent": 0.1,
+          "slippage_bps": {
+            "ADAUSDT": 10.0,
+            "AVAXUSDT": 10.0,
+            "BNBUSDT": 10.0,
+            "BTCUSDT": 2.0,
+            "DOGEUSDT": 10.0,
+            "ETHUSDT": 2.0,
+            "LINKUSDT": 10.0,
+            "LTCUSDT": 10.0,
+            "NEARUSDT": 25.0,
+            "SOLUSDT": 8.0,
+            "XRPUSDT": 10.0,
+            "ZECUSDT": 20.0
+          },
+          "stop_slippage_multiplier": 1.5
+        },
+        "fee_only": {
+          "fee_percent": 0.1,
+          "slippage_bps": {
+            "ADAUSDT": 0.0,
+            "AVAXUSDT": 0.0,
+            "BNBUSDT": 0.0,
+            "BTCUSDT": 0.0,
+            "DOGEUSDT": 0.0,
+            "ETHUSDT": 0.0,
+            "LINKUSDT": 0.0,
+            "LTCUSDT": 0.0,
+            "NEARUSDT": 0.0,
+            "SOLUSDT": 0.0,
+            "XRPUSDT": 0.0,
+            "ZECUSDT": 0.0
+          },
+          "stop_slippage_multiplier": 0.0
+        },
+        "gross": {
+          "fee_percent": 0.0,
+          "slippage_bps": {
+            "ADAUSDT": 0.0,
+            "AVAXUSDT": 0.0,
+            "BNBUSDT": 0.0,
+            "BTCUSDT": 0.0,
+            "DOGEUSDT": 0.0,
+            "ETHUSDT": 0.0,
+            "LINKUSDT": 0.0,
+            "LTCUSDT": 0.0,
+            "NEARUSDT": 0.0,
+            "SOLUSDT": 0.0,
+            "XRPUSDT": 0.0,
+            "ZECUSDT": 0.0
+          },
+          "stop_slippage_multiplier": 0.0
+        }
+      }
+    },
+    "ci_method": {
+      "bootstrap": "weekly_block",
+      "samples": 2000,
+      "seed": 20261015
+    },
+    "signals": {
+      "crosses": 7356,
+      "resolved": 7354,
+      "unresolved": 2
+    },
+    "scenarios": {
+      "prod": {
+        "n": 7354,
+        "outcomes": {
+          "PROFIT": 0,
+          "LOSS": 0,
+          "EXPIRED": 0,
+          "OPPOSITE_CROSS": 6046,
+          "STOPPED": 1308
+        },
+        "win_rate": 0.0,
+        "expired_rate": 0.0,
+        "positive_net_rate": 0.31520261082404133,
+        "mean_gross_r": 0.08094986887828813,
+        "mean_cost_r": 0.1052218062465692,
+        "mean_net_r": -0.024271937368281055,
+        "sd_net_r": 1.5457498121712352,
+        "t_stat": -1.3465641661963825,
+        "ci95_net_r": [
+          -0.0784513283042571,
+          0.034596035347120885
+        ],
+        "total_net_r": -178.4958274063389,
+        "profit_factor": 0.9453524401752593,
+        "max_drawdown_r": 525.0350730906871,
+        "by_symbol": {
+          "ADAUSDT": {
+            "n": 637,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 533,
+              "STOPPED": 104
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3092621664050236,
+            "mean_gross_r": 0.04177579560384889,
+            "mean_cost_r": 0.10171201412101206,
+            "mean_net_r": -0.05993621851716314,
+            "sd_net_r": 1.188619324939582,
+            "t_stat": -1.2726713524737736,
+            "ci95_net_r": [
+              -0.15215298378586856,
+              0.03303227861073174
+            ],
+            "total_net_r": -38.17937119543292,
+            "profit_factor": 0.8632739371427016,
+            "max_drawdown_r": 57.98729254215686
+          },
+          "AVAXUSDT": {
+            "n": 539,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 447,
+              "STOPPED": 92
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3358070500927644,
+            "mean_gross_r": 0.07666981625090487,
+            "mean_cost_r": 0.08336868345381658,
+            "mean_net_r": -0.006698867202911716,
+            "sd_net_r": 1.1680065099991757,
+            "t_stat": -0.1331528565088562,
+            "ci95_net_r": [
+              -0.09943362862673218,
+              0.0846879770643153
+            ],
+            "total_net_r": -3.610689422369415,
+            "profit_factor": 0.9835313457777537,
+            "max_drawdown_r": 30.500475715704344
+          },
+          "BNBUSDT": {
+            "n": 654,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 538,
+              "STOPPED": 116
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3180428134556575,
+            "mean_gross_r": 0.1342523906237082,
+            "mean_cost_r": 0.13653996577845426,
+            "mean_net_r": -0.0022875751547461105,
+            "sd_net_r": 1.8637136931172211,
+            "t_stat": -0.03138954706702203,
+            "ci95_net_r": [
+              -0.13565400624351098,
+              0.15722293554848218
+            ],
+            "total_net_r": -1.4960741512039561,
+            "profit_factor": 0.9950920322911352,
+            "max_drawdown_r": 64.32719524321436
+          },
+          "BTCUSDT": {
+            "n": 646,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 529,
+              "STOPPED": 117
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.30495356037151705,
+            "mean_gross_r": 0.09460256708386112,
+            "mean_cost_r": 0.07162954901784586,
+            "mean_net_r": 0.022973018066015295,
+            "sd_net_r": 1.4663857157317999,
+            "t_stat": 0.3981860965011849,
+            "ci95_net_r": [
+              -0.07845934067064643,
+              0.13098834630117998
+            ],
+            "total_net_r": 14.84056967064588,
+            "profit_factor": 1.0548030534846575,
+            "max_drawdown_r": 54.3047870902377
+          },
+          "DOGEUSDT": {
+            "n": 569,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 461,
+              "STOPPED": 108
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3321616871704745,
+            "mean_gross_r": 0.20349818598682134,
+            "mean_cost_r": 0.10750361642885439,
+            "mean_net_r": 0.09599456955796695,
+            "sd_net_r": 2.9274244024896405,
+            "t_stat": 0.7821987364197602,
+            "ci95_net_r": [
+              -0.10395259658868064,
+              0.38132864565512115
+            ],
+            "total_net_r": 54.6209100784832,
+            "profit_factor": 1.2151588249356333,
+            "max_drawdown_r": 68.2869276674954
+          },
+          "ETHUSDT": {
+            "n": 609,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 498,
+              "STOPPED": 111
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3251231527093596,
+            "mean_gross_r": 0.16681372584036605,
+            "mean_cost_r": 0.059246250988092164,
+            "mean_net_r": 0.10756747485227389,
+            "sd_net_r": 1.557037307513951,
+            "t_stat": 1.7048673802465173,
+            "ci95_net_r": [
+              -0.00219034939514918,
+              0.22801756611619492
+            ],
+            "total_net_r": 65.5085921850348,
+            "profit_factor": 1.2595427011956661,
+            "max_drawdown_r": 22.309908326269287
+          },
+          "LINKUSDT": {
+            "n": 653,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 541,
+              "STOPPED": 112
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3215926493108729,
+            "mean_gross_r": 0.030538398618395506,
+            "mean_cost_r": 0.08462151647695855,
+            "mean_net_r": -0.05408311785856306,
+            "sd_net_r": 1.21039768271122,
+            "t_stat": -1.1418004965491277,
+            "ci95_net_r": [
+              -0.14056766092873577,
+              0.03869572311662582
+            ],
+            "total_net_r": -35.31627596164168,
+            "profit_factor": 0.8723741968322247,
+            "max_drawdown_r": 51.907378223878965
+          },
+          "LTCUSDT": {
+            "n": 673,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 540,
+              "STOPPED": 133
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.2823179791976226,
+            "mean_gross_r": -0.03169029256275142,
+            "mean_cost_r": 0.11004704192324394,
+            "mean_net_r": -0.14173733448599538,
+            "sd_net_r": 1.1683296168935124,
+            "t_stat": -3.147214961499514,
+            "ci95_net_r": [
+              -0.23135866839879896,
+              -0.054646973164951894
+            ],
+            "total_net_r": -95.38922610907488,
+            "profit_factor": 0.7029083447554396,
+            "max_drawdown_r": 98.95337310256569
+          },
+          "NEARUSDT": {
+            "n": 556,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 470,
+              "STOPPED": 86
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3183453237410072,
+            "mean_gross_r": 0.08819003253129595,
+            "mean_cost_r": 0.15963420891798222,
+            "mean_net_r": -0.07144417638668626,
+            "sd_net_r": 1.2527210947814549,
+            "t_stat": -1.3447756576892076,
+            "ci95_net_r": [
+              -0.16439847793254303,
+              0.028964423913845364
+            ],
+            "total_net_r": -39.72296207099756,
+            "profit_factor": 0.847695114957584,
+            "max_drawdown_r": 56.37216751967891
+          },
+          "SOLUSDT": {
+            "n": 519,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 438,
+              "STOPPED": 81
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3699421965317919,
+            "mean_gross_r": 0.1270855782454813,
+            "mean_cost_r": 0.0675611588390133,
+            "mean_net_r": 0.059524419406467965,
+            "sd_net_r": 1.2573666371899397,
+            "t_stat": 1.078491966132096,
+            "ci95_net_r": [
+              -0.04043172935745521,
+              0.17087466754225988
+            ],
+            "total_net_r": 30.893173671956873,
+            "profit_factor": 1.1562855896031161,
+            "max_drawdown_r": 21.876954947002908
+          },
+          "XRPUSDT": {
+            "n": 643,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 520,
+              "STOPPED": 123
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.30171073094867806,
+            "mean_gross_r": 0.07197095007967662,
+            "mean_cost_r": 0.12282741870811857,
+            "mean_net_r": -0.05085646862844192,
+            "sd_net_r": 1.4504436276614574,
+            "t_stat": -0.889100454902793,
+            "ci95_net_r": [
+              -0.15836780272678955,
+              0.06294672950578645
+            ],
+            "total_net_r": -32.70070932808815,
+            "profit_factor": 0.890046106881993,
+            "max_drawdown_r": 63.346896064321484
+          },
+          "ZECUSDT": {
+            "n": 656,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 531,
+              "STOPPED": 125
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.2820121951219512,
+            "mean_gross_r": 0.0018176414688412057,
+            "mean_cost_r": 0.15112216094087033,
+            "mean_net_r": -0.14930451947202913,
+            "sd_net_r": 1.2228895374088027,
+            "t_stat": -3.1270702975031694,
+            "ci95_net_r": [
+              -0.23796310834906007,
+              -0.05377640364982984
+            ],
+            "total_net_r": -97.94376477365111,
+            "profit_factor": 0.705214784867482,
+            "max_drawdown_r": 100.58041068420304
+          }
+        },
+        "by_side": {
+          "LONG": {
+            "n": 3450,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 2865,
+              "STOPPED": 585
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.33420289855072466,
+            "mean_gross_r": 0.14548238174471698,
+            "mean_cost_r": 0.0903972296262683,
+            "mean_net_r": 0.055085152118448694,
+            "sd_net_r": 1.8168657775509118,
+            "t_stat": 1.7808250497620846,
+            "ci95_net_r": [
+              -0.024580858026898855,
+              0.14320587011235897
+            ],
+            "total_net_r": 190.04377480864798,
+            "profit_factor": 1.1311208504763834,
+            "max_drawdown_r": 214.25752717058427
+          },
+          "SHORT": {
+            "n": 3904,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 3181,
+              "STOPPED": 723
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.2984118852459016,
+            "mean_gross_r": 0.023921905407699125,
+            "mean_cost_r": 0.11832241827014453,
+            "mean_net_r": -0.09440051286244541,
+            "sd_net_r": 1.25453371687087,
+            "t_stat": -4.701613452547652,
+            "ci95_net_r": [
+              -0.17235679180090144,
+              -0.016481622347343086
+            ],
+            "total_net_r": -368.53960221498687,
+            "profit_factor": 0.797163615739718,
+            "max_drawdown_r": 369.1866416691984
+          }
+        },
+        "by_half_year": {
+          "2020H2": {
+            "n": 484,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 395,
+              "STOPPED": 89
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.30165289256198347,
+            "mean_gross_r": 0.14484694470286735,
+            "mean_cost_r": 0.08990125379639766,
+            "mean_net_r": 0.054945690906469676,
+            "sd_net_r": 1.5945856990973764,
+            "t_stat": 0.7580685068394777,
+            "ci95_net_r": [
+              -0.1307417278616696,
+              0.23246064210550219
+            ],
+            "total_net_r": 26.593714398731322,
+            "profit_factor": 1.123823254353931,
+            "max_drawdown_r": 51.279854953425925
+          },
+          "2021H1": {
+            "n": 797,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 689,
+              "STOPPED": 108
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.39648682559598497,
+            "mean_gross_r": 0.3445114752548932,
+            "mean_cost_r": 0.055838979903869504,
+            "mean_net_r": 0.2886724953510237,
+            "sd_net_r": 2.772254604959326,
+            "t_stat": 2.9396894482073077,
+            "ci95_net_r": [
+              0.05943141138367671,
+              0.5674559450493656
+            ],
+            "total_net_r": 230.0719787947659,
+            "profit_factor": 1.8167014641446568,
+            "max_drawdown_r": 44.09478133321534
+          },
+          "2021H2": {
+            "n": 956,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 796,
+              "STOPPED": 160
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3608786610878661,
+            "mean_gross_r": 0.13913773337556748,
+            "mean_cost_r": 0.07718961559168852,
+            "mean_net_r": 0.06194811778387896,
+            "sd_net_r": 1.3367245243848103,
+            "t_stat": 1.432897568084758,
+            "ci95_net_r": [
+              -0.07648939849426362,
+              0.20310696284367727
+            ],
+            "total_net_r": 59.22240060138829,
+            "profit_factor": 1.1523869526992694,
+            "max_drawdown_r": 54.42356179376581
+          },
+          "2022H1": {
+            "n": 917,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 803,
+              "STOPPED": 114
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.33478735005452565,
+            "mean_gross_r": 0.09926707958137053,
+            "mean_cost_r": 0.08007965481642977,
+            "mean_net_r": 0.01918742476494073,
+            "sd_net_r": 1.1298317659681143,
+            "t_stat": 0.5142657208232579,
+            "ci95_net_r": [
+              -0.12303431177888548,
+              0.16009368624313938
+            ],
+            "total_net_r": 17.59486850945065,
+            "profit_factor": 1.0523397352119503,
+            "max_drawdown_r": 82.77023597786628
+          },
+          "2022H2": {
+            "n": 889,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 720,
+              "STOPPED": 169
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.28346456692913385,
+            "mean_gross_r": -0.028344471208605355,
+            "mean_cost_r": 0.11523527272877333,
+            "mean_net_r": -0.1435797439373787,
+            "sd_net_r": 1.1834420470151101,
+            "t_stat": -3.617404375065838,
+            "ci95_net_r": [
+              -0.2719636095523924,
+              -0.0011915840425758089
+            ],
+            "total_net_r": -127.64239236032967,
+            "profit_factor": 0.6994503430730524,
+            "max_drawdown_r": 161.22703221728068
+          },
+          "2023H1": {
+            "n": 901,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 716,
+              "STOPPED": 185
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.29411764705882354,
+            "mean_gross_r": 0.00976251078071411,
+            "mean_cost_r": 0.13582897259667337,
+            "mean_net_r": -0.12606646181595926,
+            "sd_net_r": 1.22221134404097,
+            "t_stat": -3.0961047754207853,
+            "ci95_net_r": [
+              -0.2683870929319187,
+              0.03181670145552703
+            ],
+            "total_net_r": -113.5858820961793,
+            "profit_factor": 0.7431126109875684,
+            "max_drawdown_r": 122.99692608928618
+          },
+          "2023H2": {
+            "n": 985,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 797,
+              "STOPPED": 188
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.29644670050761424,
+            "mean_gross_r": 0.12255179307724719,
+            "mean_cost_r": 0.15603595764063663,
+            "mean_net_r": -0.033484164563389415,
+            "sd_net_r": 1.631916324082113,
+            "t_stat": -0.6439611929151282,
+            "ci95_net_r": [
+              -0.18722245878967803,
+              0.13504866179451958
+            ],
+            "total_net_r": -32.981902094938576,
+            "profit_factor": 0.930972547690324,
+            "max_drawdown_r": 99.17873598283686
+          },
+          "2024H1": {
+            "n": 948,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 753,
+              "STOPPED": 195
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.28270042194092826,
+            "mean_gross_r": -0.07040939862548712,
+            "mean_cost_r": 0.1122669416804372,
+            "mean_net_r": -0.18267634030592433,
+            "sd_net_r": 1.0910894534064945,
+            "t_stat": -5.154969656832669,
+            "ci95_net_r": [
+              -0.29276415137199,
+              -0.067588500228156
+            ],
+            "total_net_r": -173.17717061001628,
+            "profit_factor": 0.6249203408941868,
+            "max_drawdown_r": 187.26459548799082
+          },
+          "2024H2": {
+            "n": 477,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 377,
+              "STOPPED": 100
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.2662473794549266,
+            "mean_gross_r": -0.023025178112507125,
+            "mean_cost_r": 0.11238665113112231,
+            "mean_net_r": -0.13541182924362946,
+            "sd_net_r": 1.3517164296830315,
+            "t_stat": -2.187913771455626,
+            "ci95_net_r": [
+              -0.3543435094375742,
+              0.16265695265274632
+            ],
+            "total_net_r": -64.59144254921125,
+            "profit_factor": 0.7293530559458293,
+            "max_drawdown_r": 131.05744522884027
+          }
+        }
+      },
+      "fee_only": {
+        "n": 7354,
+        "outcomes": {
+          "PROFIT": 0,
+          "LOSS": 0,
+          "EXPIRED": 0,
+          "OPPOSITE_CROSS": 6046,
+          "STOPPED": 1308
+        },
+        "win_rate": 0.0,
+        "expired_rate": 0.0,
+        "positive_net_rate": 0.3326081044329616,
+        "mean_gross_r": 0.08094986887828813,
+        "mean_cost_r": 0.03449560411693398,
+        "mean_net_r": 0.04645426476135416,
+        "sd_net_r": 1.5413364840878478,
+        "t_stat": 2.5845797963457766,
+        "ci95_net_r": [
+          -0.0070872113433169985,
+          0.1039598290848312
+        ],
+        "total_net_r": 341.6246630549985,
+        "profit_factor": 1.1182040988705986,
+        "max_drawdown_r": 159.50147479881196,
+        "by_symbol": {
+          "ADAUSDT": {
+            "n": 637,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 533,
+              "STOPPED": 104
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.32339089481946626,
+            "mean_gross_r": 0.04177579560384889,
+            "mean_cost_r": 0.03270798900461685,
+            "mean_net_r": 0.009067806599232049,
+            "sd_net_r": 1.1838306145907072,
+            "t_stat": 0.19332249793673292,
+            "ci95_net_r": [
+              -0.08159045567848427,
+              0.1011019123385989
+            ],
+            "total_net_r": 5.776192803710815,
+            "profit_factor": 1.0233464648623027,
+            "max_drawdown_r": 24.814959014013706
+          },
+          "AVAXUSDT": {
+            "n": 539,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 447,
+              "STOPPED": 92
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3562152133580705,
+            "mean_gross_r": 0.07666981625090487,
+            "mean_cost_r": 0.026743087577477166,
+            "mean_net_r": 0.049926728673427706,
+            "sd_net_r": 1.1640257116155819,
+            "t_stat": 0.9957834870577703,
+            "ci95_net_r": [
+              -0.04177267866431541,
+              0.13989831070009204
+            ],
+            "total_net_r": 26.910506754977533,
+            "profit_factor": 1.1358835842018165,
+            "max_drawdown_r": 24.414875006427277
+          },
+          "BNBUSDT": {
+            "n": 654,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 538,
+              "STOPPED": 116
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3363914373088685,
+            "mean_gross_r": 0.1342523906237082,
+            "mean_cost_r": 0.04370206344318725,
+            "mean_net_r": 0.0905503271805209,
+            "sd_net_r": 1.8609762178803577,
+            "t_stat": 1.2443371717342167,
+            "ci95_net_r": [
+              -0.040363455519269786,
+              0.24994769472722814
+            ],
+            "total_net_r": 59.219913976060674,
+            "profit_factor": 1.2275257244909394,
+            "max_drawdown_r": 36.66024967944997
+          },
+          "BTCUSDT": {
+            "n": 646,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 529,
+              "STOPPED": 117
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3142414860681115,
+            "mean_gross_r": 0.09460256708386112,
+            "mean_cost_r": 0.050203644611544807,
+            "mean_net_r": 0.04439892247231635,
+            "sd_net_r": 1.4648542708132823,
+            "t_stat": 0.7703609634620184,
+            "ci95_net_r": [
+              -0.05591457577030615,
+              0.15214949697104382
+            ],
+            "total_net_r": 28.681703917116366,
+            "profit_factor": 1.1101676613696398,
+            "max_drawdown_r": 45.484369860616816
+          },
+          "DOGEUSDT": {
+            "n": 569,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 461,
+              "STOPPED": 108
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.34797891036906853,
+            "mean_gross_r": 0.20349818598682134,
+            "mean_cost_r": 0.03435165952852855,
+            "mean_net_r": 0.16914652645829276,
+            "sd_net_r": 2.9250721643773385,
+            "t_stat": 1.3793758936034193,
+            "ci95_net_r": [
+              -0.030429746898223246,
+              0.4527006991358037
+            ],
+            "total_net_r": 96.24437355476859,
+            "profit_factor": 1.428773036273837,
+            "max_drawdown_r": 35.456926636113295
+          },
+          "ETHUSDT": {
+            "n": 609,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 498,
+              "STOPPED": 111
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3284072249589491,
+            "mean_gross_r": 0.16681372584036605,
+            "mean_cost_r": 0.04149693219425703,
+            "mean_net_r": 0.12531679364610904,
+            "sd_net_r": 1.5562949085972226,
+            "t_stat": 1.987128829299772,
+            "ci95_net_r": [
+              0.015532911602344032,
+              0.24585056438296668
+            ],
+            "total_net_r": 76.3179273304804,
+            "profit_factor": 1.3121470347166104,
+            "max_drawdown_r": 20.49314293280535
+          },
+          "LINKUSDT": {
+            "n": 653,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 541,
+              "STOPPED": 112
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.33537519142419603,
+            "mean_gross_r": 0.030538398618395506,
+            "mean_cost_r": 0.027100596271877476,
+            "mean_net_r": 0.003437802346518029,
+            "sd_net_r": 1.2076124027233848,
+            "t_stat": 0.07274613589240955,
+            "ci95_net_r": [
+              -0.08298441257868032,
+              0.09640037374001817
+            ],
+            "total_net_r": 2.244884932276273,
+            "profit_factor": 1.0089851183899956,
+            "max_drawdown_r": 37.59946771434804
+          },
+          "LTCUSDT": {
+            "n": 673,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 540,
+              "STOPPED": 133
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3031203566121842,
+            "mean_gross_r": -0.03169029256275142,
+            "mean_cost_r": 0.03502858258525162,
+            "mean_net_r": -0.06671887514800304,
+            "sd_net_r": 1.1582608860689116,
+            "t_stat": -1.4943414983319474,
+            "ci95_net_r": [
+              -0.15346130410077652,
+              0.019422652770187007
+            ],
+            "total_net_r": -44.90180297460604,
+            "profit_factor": 0.8411120700602761,
+            "max_drawdown_r": 55.44597179482079
+          },
+          "NEARUSDT": {
+            "n": 556,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 470,
+              "STOPPED": 86
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.36151079136690645,
+            "mean_gross_r": 0.08819003253129595,
+            "mean_cost_r": 0.025522178870211333,
+            "mean_net_r": 0.06266785366108459,
+            "sd_net_r": 1.243165730443957,
+            "t_stat": 1.1886477885355502,
+            "ci95_net_r": [
+              -0.027500355068777446,
+              0.16231688574325048
+            ],
+            "total_net_r": 34.84332663556303,
+            "profit_factor": 1.1667229799695287,
+            "max_drawdown_r": 24.59334402160352
+          },
+          "SOLUSDT": {
+            "n": 519,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 438,
+              "STOPPED": 81
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.37957610789980734,
+            "mean_gross_r": 0.1270855782454813,
+            "mean_cost_r": 0.025131531611413564,
+            "mean_net_r": 0.10195404663406771,
+            "sd_net_r": 1.2548454710482992,
+            "t_stat": 1.8509636896935804,
+            "ci95_net_r": [
+              0.0027358097731711036,
+              0.21322516854775145
+            ],
+            "total_net_r": 52.91415020308114,
+            "profit_factor": 1.2890603958031308,
+            "max_drawdown_r": 17.76768441261308
+          },
+          "XRPUSDT": {
+            "n": 643,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 520,
+              "STOPPED": 123
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.32192846034214617,
+            "mean_gross_r": 0.07197095007967662,
+            "mean_cost_r": 0.039261995945775084,
+            "mean_net_r": 0.03270895413390154,
+            "sd_net_r": 1.4508697301969955,
+            "t_stat": 0.5716677915855729,
+            "ci95_net_r": [
+              -0.07511548538851325,
+              0.14508928004315394
+            ],
+            "total_net_r": 21.031857508098692,
+            "profit_factor": 1.081411417843289,
+            "max_drawdown_r": 32.81240436914814
+          },
+          "ZECUSDT": {
+            "n": 656,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 531,
+              "STOPPED": 125
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.30335365853658536,
+            "mean_gross_r": 0.0018176414688412057,
+            "mean_cost_r": 0.02873589083855007,
+            "mean_net_r": -0.026918249369708887,
+            "sd_net_r": 1.212818582153633,
+            "t_stat": -0.5684638989035897,
+            "ci95_net_r": [
+              -0.11298299275360643,
+              0.06727018162787242
+            ],
+            "total_net_r": -17.65837158652903,
+            "profit_factor": 0.935141499284493,
+            "max_drawdown_r": 42.69482301650601
+          }
+        },
+        "by_side": {
+          "LONG": {
+            "n": 3450,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 2865,
+              "STOPPED": 585
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.34782608695652173,
+            "mean_gross_r": 0.14548238174471698,
+            "mean_cost_r": 0.03142451223663473,
+            "mean_net_r": 0.11405786950808226,
+            "sd_net_r": 1.8135532705830062,
+            "t_stat": 3.6940645988116163,
+            "ci95_net_r": [
+              0.0357551291981666,
+              0.20039305007751151
+            ],
+            "total_net_r": 393.4996498028838,
+            "profit_factor": 1.301266826138212,
+            "max_drawdown_r": 111.36450051121449
+          },
+          "SHORT": {
+            "n": 3904,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 3181,
+              "STOPPED": 723
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.31915983606557374,
+            "mean_gross_r": 0.023921905407699125,
+            "mean_cost_r": 0.037209555701727126,
+            "mean_net_r": -0.013287650294027991,
+            "sd_net_r": 1.2496761685868107,
+            "t_stat": -0.6643632583302085,
+            "ci95_net_r": [
+              -0.08929256985392713,
+              0.06229424639028101
+            ],
+            "total_net_r": -51.87498674788527,
+            "profit_factor": 0.9672501311465604,
+            "max_drawdown_r": 126.34228405755951
+          }
+        },
+        "by_half_year": {
+          "2020H2": {
+            "n": 484,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 395,
+              "STOPPED": 89
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.31611570247933884,
+            "mean_gross_r": 0.14484694470286735,
+            "mean_cost_r": 0.032868923413096406,
+            "mean_net_r": 0.11197802128977093,
+            "sd_net_r": 1.5857244856676702,
+            "t_stat": 1.553558950902934,
+            "ci95_net_r": [
+              -0.07184370927644342,
+              0.28735703375008365
+            ],
+            "total_net_r": 54.197362304249125,
+            "profit_factor": 1.2791914018116066,
+            "max_drawdown_r": 36.85543702729892
+          },
+          "2021H1": {
+            "n": 797,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 689,
+              "STOPPED": 108
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.4065244667503137,
+            "mean_gross_r": 0.3445114752548932,
+            "mean_cost_r": 0.018857576081777037,
+            "mean_net_r": 0.3256538991731161,
+            "sd_net_r": 2.773405693511849,
+            "t_stat": 3.314912279529338,
+            "ci95_net_r": [
+              0.09640911640171496,
+              0.6061398998102312
+            ],
+            "total_net_r": 259.54615764097355,
+            "profit_factor": 1.9867272848826718,
+            "max_drawdown_r": 35.065718834777044
+          },
+          "2021H2": {
+            "n": 956,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 796,
+              "STOPPED": 160
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.37343096234309625,
+            "mean_gross_r": 0.13913773337556748,
+            "mean_cost_r": 0.025037816427593753,
+            "mean_net_r": 0.11409991694797372,
+            "sd_net_r": 1.3377878698048802,
+            "t_stat": 2.637102562207978,
+            "ci95_net_r": [
+              -0.023896790132936902,
+              0.254867534972567
+            ],
+            "total_net_r": 109.07952060226287,
+            "profit_factor": 1.3063973618697533,
+            "max_drawdown_r": 50.284183407675016
+          },
+          "2022H1": {
+            "n": 917,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 803,
+              "STOPPED": 114
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.35659760087241005,
+            "mean_gross_r": 0.09926707958137053,
+            "mean_cost_r": 0.02640590788582898,
+            "mean_net_r": 0.07286117169554153,
+            "sd_net_r": 1.1260025207248034,
+            "t_stat": 1.9594828016132106,
+            "ci95_net_r": [
+              -0.06772786107813812,
+              0.21342907751735346
+            ],
+            "total_net_r": 66.81369444481159,
+            "profit_factor": 1.2209944089405125,
+            "max_drawdown_r": 54.504018067778894
+          },
+          "2022H2": {
+            "n": 889,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 720,
+              "STOPPED": 169
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3025871766029246,
+            "mean_gross_r": -0.028344471208605355,
+            "mean_cost_r": 0.037322183527556264,
+            "mean_net_r": -0.06566665473616162,
+            "sd_net_r": 1.1789853162812025,
+            "t_stat": -1.6606854354552754,
+            "ci95_net_r": [
+              -0.19555948197996392,
+              0.07786600398682926
+            ],
+            "total_net_r": -58.37765606044768,
+            "profit_factor": 0.8436797148205747,
+            "max_drawdown_r": 115.69451545530258
+          },
+          "2023H1": {
+            "n": 901,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 716,
+              "STOPPED": 185
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3118756936736959,
+            "mean_gross_r": 0.00976251078071411,
+            "mean_cost_r": 0.04395804768699081,
+            "mean_net_r": -0.034195536906276705,
+            "sd_net_r": 1.2153060502155704,
+            "t_stat": -0.8445904423799723,
+            "ci95_net_r": [
+              -0.17843113551649156,
+              0.12463630219955472
+            ],
+            "total_net_r": -30.810178752555313,
+            "profit_factor": 0.9192071599528159,
+            "max_drawdown_r": 60.05314356543763
+          },
+          "2023H2": {
+            "n": 985,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 797,
+              "STOPPED": 188
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3238578680203046,
+            "mean_gross_r": 0.12255179307724719,
+            "mean_cost_r": 0.05108876708185627,
+            "mean_net_r": 0.07146302599539095,
+            "sd_net_r": 1.6310874219876996,
+            "t_stat": 1.3750619933377843,
+            "ci95_net_r": [
+              -0.07694927060905007,
+              0.24279140807472105
+            ],
+            "total_net_r": 70.39108060546009,
+            "profit_factor": 1.1747003657997634,
+            "max_drawdown_r": 52.71094210169341
+          },
+          "2024H1": {
+            "n": 948,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 753,
+              "STOPPED": 195
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.29957805907172996,
+            "mean_gross_r": -0.07040939862548712,
+            "mean_cost_r": 0.036557159479551696,
+            "mean_net_r": -0.10696655810503881,
+            "sd_net_r": 1.0808146238177836,
+            "t_stat": -3.0472001291335467,
+            "ci95_net_r": [
+              -0.2159052971133974,
+              0.002997163229912268
+            ],
+            "total_net_r": -101.4042970835768,
+            "profit_factor": 0.7505126439640282,
+            "max_drawdown_r": 127.16565136062923
+          },
+          "2024H2": {
+            "n": 477,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 377,
+              "STOPPED": 100
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.27672955974842767,
+            "mean_gross_r": -0.023025178112507125,
+            "mean_cost_r": 0.03527884839939847,
+            "mean_net_r": -0.05830402651190557,
+            "sd_net_r": 1.3432207809192296,
+            "t_stat": -0.948004362403594,
+            "ci95_net_r": [
+              -0.27431610510737686,
+              0.24234564219643345
+            ],
+            "total_net_r": -27.811020646178957,
+            "profit_factor": 0.8678525190185229,
+            "max_drawdown_r": 98.65467591439511
+          }
+        }
+      },
+      "gross": {
+        "n": 7354,
+        "outcomes": {
+          "PROFIT": 0,
+          "LOSS": 0,
+          "EXPIRED": 0,
+          "OPPOSITE_CROSS": 6046,
+          "STOPPED": 1308
+        },
+        "win_rate": 0.0,
+        "expired_rate": 0.0,
+        "positive_net_rate": 0.3414468316562415,
+        "mean_gross_r": 0.08094986887828813,
+        "mean_cost_r": 0.0,
+        "mean_net_r": 0.08094986887828813,
+        "sd_net_r": 1.5414743911116107,
+        "t_stat": 4.503411663828847,
+        "ci95_net_r": [
+          0.027192413585616176,
+          0.13788936758497256
+        ],
+        "total_net_r": 595.3053357309309,
+        "profit_factor": 1.2194103257441071,
+        "max_drawdown_r": 105.85658289754792,
+        "by_symbol": {
+          "ADAUSDT": {
+            "n": 637,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 533,
+              "STOPPED": 104
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.32653061224489793,
+            "mean_gross_r": 0.04177579560384889,
+            "mean_cost_r": 0.0,
+            "mean_net_r": 0.04177579560384889,
+            "sd_net_r": 1.1837653414886877,
+            "t_stat": 0.8906946122741657,
+            "ci95_net_r": [
+              -0.047816895523379505,
+              0.13397069176145082
+            ],
+            "total_net_r": 26.611181799651746,
+            "profit_factor": 1.1142566680120582,
+            "max_drawdown_r": 17.964130437843608
+          },
+          "AVAXUSDT": {
+            "n": 539,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 447,
+              "STOPPED": 92
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.35992578849721707,
+            "mean_gross_r": 0.07666981625090487,
+            "mean_cost_r": 0.0,
+            "mean_net_r": 0.07666981625090487,
+            "sd_net_r": 1.1643235985156764,
+            "t_stat": 1.5287803966332176,
+            "ci95_net_r": [
+              -0.014886963410709584,
+              0.1659481846924148
+            ],
+            "total_net_r": 41.32503095923772,
+            "profit_factor": 1.2191765817000833,
+            "max_drawdown_r": 22.32440692341393
+          },
+          "BNBUSDT": {
+            "n": 654,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 538,
+              "STOPPED": 116
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3486238532110092,
+            "mean_gross_r": 0.1342523906237082,
+            "mean_cost_r": 0.0,
+            "mean_net_r": 0.1342523906237082,
+            "sd_net_r": 1.8619615388879907,
+            "t_stat": 1.8439120234951973,
+            "ci95_net_r": [
+              0.003332140293444294,
+              0.29384539792819997
+            ],
+            "total_net_r": 87.80106346790515,
+            "profit_factor": 1.3657130928611116,
+            "max_drawdown_r": 29.19743784874649
+          },
+          "BTCUSDT": {
+            "n": 646,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 529,
+              "STOPPED": 117
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3219814241486068,
+            "mean_gross_r": 0.09460256708386112,
+            "mean_cost_r": 0.0,
+            "mean_net_r": 0.09460256708386112,
+            "sd_net_r": 1.4639639920717267,
+            "t_stat": 1.6424372474462945,
+            "ci95_net_r": [
+              -0.005151467180427393,
+              0.2018405274702798
+            ],
+            "total_net_r": 61.11325833617429,
+            "profit_factor": 1.2582921058470193,
+            "max_drawdown_r": 24.871256250784686
+          },
+          "DOGEUSDT": {
+            "n": 569,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 461,
+              "STOPPED": 108
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3532513181019332,
+            "mean_gross_r": 0.20349818598682134,
+            "mean_cost_r": 0.0,
+            "mean_net_r": 0.20349818598682134,
+            "sd_net_r": 2.9239158981481164,
+            "t_stat": 1.660167083449341,
+            "ci95_net_r": [
+              0.005146272442474141,
+              0.48755215713446776
+            ],
+            "total_net_r": 115.79046782650134,
+            "profit_factor": 1.5481261532065749,
+            "max_drawdown_r": 21.38281968683485
+          },
+          "ETHUSDT": {
+            "n": 609,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 498,
+              "STOPPED": 111
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3415435139573071,
+            "mean_gross_r": 0.16681372584036605,
+            "mean_cost_r": 0.0,
+            "mean_net_r": 0.16681372584036605,
+            "sd_net_r": 1.55704300080057,
+            "t_stat": 2.643868327943581,
+            "ci95_net_r": [
+              0.05709407980542023,
+              0.2869635700647228
+            ],
+            "total_net_r": 101.58955903678293,
+            "profit_factor": 1.448197218816591,
+            "max_drawdown_r": 16.317102431004997
+          },
+          "LINKUSDT": {
+            "n": 653,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 541,
+              "STOPPED": 112
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3445635528330781,
+            "mean_gross_r": 0.030538398618395506,
+            "mean_cost_r": 0.0,
+            "mean_net_r": 0.030538398618395506,
+            "sd_net_r": 1.2078270492692147,
+            "t_stat": 0.6460975569809373,
+            "ci95_net_r": [
+              -0.054994569167840394,
+              0.12378049456195053
+            ],
+            "total_net_r": 19.941574297812267,
+            "profit_factor": 1.0838945125258281,
+            "max_drawdown_r": 31.319084698137154
+          },
+          "LTCUSDT": {
+            "n": 673,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 540,
+              "STOPPED": 133
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3135215453194651,
+            "mean_gross_r": -0.03169029256275142,
+            "mean_cost_r": 0.0,
+            "mean_net_r": -0.03169029256275142,
+            "sd_net_r": 1.1561922289689162,
+            "t_stat": -0.711055884122231,
+            "ci95_net_r": [
+              -0.11842904850224771,
+              0.05408370628121776
+            ],
+            "total_net_r": -21.327566894731703,
+            "profit_factor": 0.9196159132354893,
+            "max_drawdown_r": 37.71723315292952
+          },
+          "NEARUSDT": {
+            "n": 556,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 470,
+              "STOPPED": 86
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.36510791366906475,
+            "mean_gross_r": 0.08819003253129595,
+            "mean_cost_r": 0.0,
+            "mean_net_r": 0.08819003253129595,
+            "sd_net_r": 1.2435110482730485,
+            "t_stat": 1.672273279324885,
+            "ci95_net_r": [
+              -0.0024919924420013333,
+              0.18704276307552087
+            ],
+            "total_net_r": 49.033658087400546,
+            "profit_factor": 1.245535194070364,
+            "max_drawdown_r": 21.824630689357278
+          },
+          "SOLUSDT": {
+            "n": 519,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 438,
+              "STOPPED": 81
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3834296724470135,
+            "mean_gross_r": 0.1270855782454813,
+            "mean_cost_r": 0.0,
+            "mean_net_r": 0.1270855782454813,
+            "sd_net_r": 1.2545192016424827,
+            "t_stat": 2.3078237332684153,
+            "ci95_net_r": [
+              0.028460106403095552,
+              0.2376321468188217
+            ],
+            "total_net_r": 65.95741510940479,
+            "profit_factor": 1.3775944075503204,
+            "max_drawdown_r": 15.37385750024471
+          },
+          "XRPUSDT": {
+            "n": 643,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 520,
+              "STOPPED": 123
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3421461897356143,
+            "mean_gross_r": 0.07197095007967662,
+            "mean_cost_r": 0.0,
+            "mean_net_r": 0.07197095007967662,
+            "sd_net_r": 1.4539939839090876,
+            "t_stat": 1.2551629541915703,
+            "ci95_net_r": [
+              -0.03673056641204233,
+              0.18575851869883792
+            ],
+            "total_net_r": 46.277320901232066,
+            "profit_factor": 1.1920875337667118,
+            "max_drawdown_r": 27.828038358559283
+          },
+          "ZECUSDT": {
+            "n": 656,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 531,
+              "STOPPED": 125
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.31402439024390244,
+            "mean_gross_r": 0.0018176414688412057,
+            "mean_cost_r": 0.0,
+            "mean_net_r": 0.0018176414688412057,
+            "sd_net_r": 1.2127056657621642,
+            "t_stat": 0.03838881757606211,
+            "ci95_net_r": [
+              -0.08528240245514608,
+              0.09474018060090215
+            ],
+            "total_net_r": 1.1923728035598309,
+            "profit_factor": 1.0046066292455156,
+            "max_drawdown_r": 36.039660710028805
+          }
+        },
+        "by_side": {
+          "LONG": {
+            "n": 3450,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 2865,
+              "STOPPED": 585
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3591304347826087,
+            "mean_gross_r": 0.14548238174471698,
+            "mean_cost_r": 0.0,
+            "mean_net_r": 0.14548238174471698,
+            "sd_net_r": 1.813122036411622,
+            "t_stat": 4.712950882930229,
+            "ci95_net_r": [
+              0.0672037682832551,
+              0.23125638674786617
+            ],
+            "total_net_r": 501.91421701927356,
+            "profit_factor": 1.4073265275760227,
+            "max_drawdown_r": 73.10589721270424
+          },
+          "SHORT": {
+            "n": 3904,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 3181,
+              "STOPPED": 723
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.32581967213114754,
+            "mean_gross_r": 0.023921905407699125,
+            "mean_cost_r": 0.0,
+            "mean_net_r": 0.023921905407699125,
+            "sd_net_r": 1.2508194049534453,
+            "t_stat": 1.1949674155527232,
+            "ci95_net_r": [
+              -0.051888857418585135,
+              0.10048027671147207
+            ],
+            "total_net_r": 93.39111871165738,
+            "profit_factor": 1.0630599351504564,
+            "max_drawdown_r": 92.02595061348042
+          }
+        },
+        "by_half_year": {
+          "2020H2": {
+            "n": 484,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 395,
+              "STOPPED": 89
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3305785123966942,
+            "mean_gross_r": 0.14484694470286735,
+            "mean_cost_r": 0.0,
+            "mean_net_r": 0.14484694470286735,
+            "sd_net_r": 1.5865141776064138,
+            "t_stat": 2.008575043603316,
+            "ci95_net_r": [
+              -0.038264683774006755,
+              0.3212886357392288
+            ],
+            "total_net_r": 70.1059212361878,
+            "profit_factor": 1.383474769774247,
+            "max_drawdown_r": 28.39709233825753
+          },
+          "2021H1": {
+            "n": 797,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 689,
+              "STOPPED": 108
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.411543287327478,
+            "mean_gross_r": 0.3445114752548932,
+            "mean_cost_r": 0.0,
+            "mean_net_r": 0.3445114752548932,
+            "sd_net_r": 2.773608023538479,
+            "t_stat": 3.506612430682188,
+            "ci95_net_r": [
+              0.11442605561946212,
+              0.6253238632536325
+            ],
+            "total_net_r": 274.57564577814986,
+            "profit_factor": 2.0815028751251106,
+            "max_drawdown_r": 31.665318909724846
+          },
+          "2021H2": {
+            "n": 956,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 796,
+              "STOPPED": 160
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3797071129707113,
+            "mean_gross_r": 0.13913773337556748,
+            "mean_cost_r": 0.0,
+            "mean_net_r": 0.13913773337556748,
+            "sd_net_r": 1.3387733952369425,
+            "t_stat": 3.213414855502956,
+            "ci95_net_r": [
+              0.000955937353323278,
+              0.28118853148839845
+            ],
+            "total_net_r": 133.01567310704252,
+            "profit_factor": 1.3903228885166314,
+            "max_drawdown_r": 48.40355376755507
+          },
+          "2022H1": {
+            "n": 917,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 803,
+              "STOPPED": 114
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.36314067611777534,
+            "mean_gross_r": 0.09926707958137053,
+            "mean_cost_r": 0.0,
+            "mean_net_r": 0.09926707958137053,
+            "sd_net_r": 1.12640397037538,
+            "t_stat": 2.6686753270820636,
+            "ci95_net_r": [
+              -0.04033408355051973,
+              0.2386026917062372
+            ],
+            "total_net_r": 91.02791197611677,
+            "profit_factor": 1.3178726907391975,
+            "max_drawdown_r": 40.81112294724914
+          },
+          "2022H2": {
+            "n": 889,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 720,
+              "STOPPED": 169
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.312710911136108,
+            "mean_gross_r": -0.028344471208605355,
+            "mean_cost_r": 0.0,
+            "mean_net_r": -0.028344471208605355,
+            "sd_net_r": 1.1784012238918573,
+            "t_stat": -0.7171765072893701,
+            "ci95_net_r": [
+              -0.15921866551013655,
+              0.11723809057298615
+            ],
+            "total_net_r": -25.19823490445016,
+            "profit_factor": 0.927900254884423,
+            "max_drawdown_r": 95.7816917271176
+          },
+          "2023H1": {
+            "n": 901,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 716,
+              "STOPPED": 185
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3196448390677026,
+            "mean_gross_r": 0.00976251078071411,
+            "mean_cost_r": 0.0,
+            "mean_net_r": 0.00976251078071411,
+            "sd_net_r": 1.215617911796397,
+            "t_stat": 0.24106093199110304,
+            "ci95_net_r": [
+              -0.13415215035811906,
+              0.16650678140707362
+            ],
+            "total_net_r": 8.796022213423413,
+            "profit_factor": 1.0249104370960198,
+            "max_drawdown_r": 37.174450454167676
+          },
+          "2023H2": {
+            "n": 985,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 797,
+              "STOPPED": 188
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.3380710659898477,
+            "mean_gross_r": 0.12255179307724719,
+            "mean_cost_r": 0.0,
+            "mean_net_r": 0.12255179307724719,
+            "sd_net_r": 1.633492908314061,
+            "t_stat": 2.354618390812364,
+            "ci95_net_r": [
+              -0.022906269967102145,
+              0.2935673869644995
+            ],
+            "total_net_r": 120.71351618108848,
+            "profit_factor": 1.3284741098065276,
+            "max_drawdown_r": 41.83386520107695
+          },
+          "2024H1": {
+            "n": 948,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 753,
+              "STOPPED": 195
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.310126582278481,
+            "mean_gross_r": -0.07040939862548712,
+            "mean_cost_r": 0.0,
+            "mean_net_r": -0.07040939862548712,
+            "sd_net_r": 1.080798498306836,
+            "t_stat": -2.0058112880606354,
+            "ci95_net_r": [
+              -0.17993900308728275,
+              0.03786697055629202
+            ],
+            "total_net_r": -66.7481098969618,
+            "profit_factor": 0.8249145389932048,
+            "max_drawdown_r": 98.70752842242497
+          },
+          "2024H2": {
+            "n": 477,
+            "outcomes": {
+              "PROFIT": 0,
+              "LOSS": 0,
+              "EXPIRED": 0,
+              "OPPOSITE_CROSS": 377,
+              "STOPPED": 100
+            },
+            "win_rate": 0.0,
+            "expired_rate": 0.0,
+            "positive_net_rate": 0.2809224318658281,
+            "mean_gross_r": -0.023025178112507125,
+            "mean_cost_r": 0.0,
+            "mean_net_r": -0.023025178112507125,
+            "sd_net_r": 1.3434502447839687,
+            "t_stat": -0.3743179046565954,
+            "ci95_net_r": [
+              -0.23772644032775989,
+              0.2774229752959809
+            ],
+            "total_net_r": -10.9830099596659,
+            "profit_factor": 0.9445382153449557,
+            "max_drawdown_r": 85.41811466725233
+          }
+        }
+      }
+    }
+  }
+}

@@ -38,3 +38,6 @@ tests/
 
 # Backtest data downloaded by scripts/fetch_klines.py
 data/
+
+# Research log of backtest runs (research/trials.jsonl); the app never reads it
+research/

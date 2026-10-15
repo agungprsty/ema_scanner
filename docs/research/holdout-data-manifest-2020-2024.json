@@ -1,0 +1,430 @@
+{
+  "purpose": "SEALED HOLDOUT - do not compute indicators/strategy statistics without a pre-registered protocol",
+  "source": "https://data.binance.vision/data/futures/um/monthly/klines/{SYMBOL}/2h/",
+  "market": "Binance USD-M futures",
+  "interval": "2h",
+  "requested_range": [
+    "2019-09",
+    "2024-09"
+  ],
+  "fetched_with": "scripts/fetch_klines.py (feat/phase1-research-platform @ f8b4a3c)",
+  "created_utc": "2026-10-15T02:22:10Z",
+  "columns": "open_time_ms,open,high,low,close,volume,quote_volume",
+  "files": {
+    "BTCUSDT_2h.csv": {
+      "symbol": "BTCUSDT",
+      "sha256": "c2501842f01df04303b85fc46b79767fa75ecb7603c9f630fd444527550966ee",
+      "bytes": 1573444,
+      "header": [
+        "open_time_ms",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_volume"
+      ],
+      "first_open_time_ms": 1577836800000,
+      "first_open_time": "2020-01-01T00:00:00Z",
+      "last_open_time_ms": 1727733600000,
+      "last_open_time": "2024-09-30T22:00:00Z",
+      "n_bars": 20820,
+      "expected_bars_contiguous": 20820,
+      "missing_bars_total": 0,
+      "gaps": [],
+      "duplicates": 0,
+      "unsorted": false,
+      "misaligned_open_times": 0,
+      "malformed_rows": 0,
+      "source_months": 57,
+      "first_month": "2020-01",
+      "last_month": "2024-09",
+      "source_zip_checksums_verified": true
+    },
+    "ETHUSDT_2h.csv": {
+      "symbol": "ETHUSDT",
+      "sha256": "28f5b1cb4a7df7a20e4ef1552f485a068b08d48d1ee74e93eeb93c85c1f3bf45",
+      "bytes": 1494630,
+      "header": [
+        "open_time_ms",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_volume"
+      ],
+      "first_open_time_ms": 1577836800000,
+      "first_open_time": "2020-01-01T00:00:00Z",
+      "last_open_time_ms": 1727733600000,
+      "last_open_time": "2024-09-30T22:00:00Z",
+      "n_bars": 20820,
+      "expected_bars_contiguous": 20820,
+      "missing_bars_total": 0,
+      "gaps": [],
+      "duplicates": 0,
+      "unsorted": false,
+      "misaligned_open_times": 0,
+      "malformed_rows": 0,
+      "source_months": 57,
+      "first_month": "2020-01",
+      "last_month": "2024-09",
+      "source_zip_checksums_verified": true
+    },
+    "SOLUSDT_2h.csv": {
+      "symbol": "SOLUSDT",
+      "sha256": "3931275cfe6ada7af1b85d147c509afa636e3cc2e71cbb1691f76dc443cc6034",
+      "bytes": 1211528,
+      "header": [
+        "open_time_ms",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_volume"
+      ],
+      "first_open_time_ms": 1600063200000,
+      "first_open_time": "2020-09-14T06:00:00Z",
+      "last_open_time_ms": 1727733600000,
+      "last_open_time": "2024-09-30T22:00:00Z",
+      "n_bars": 17673,
+      "expected_bars_contiguous": 17733,
+      "missing_bars_total": 60,
+      "gaps": [
+        {
+          "after": "2022-02-25T22:00:00Z",
+          "before": "2022-03-01T00:00:00Z",
+          "missing_bars": 36
+        },
+        {
+          "after": "2022-03-31T22:00:00Z",
+          "before": "2022-04-03T00:00:00Z",
+          "missing_bars": 24
+        }
+      ],
+      "duplicates": 0,
+      "unsorted": false,
+      "misaligned_open_times": 0,
+      "malformed_rows": 0,
+      "source_months": 49,
+      "first_month": "2020-09",
+      "last_month": "2024-09",
+      "source_zip_checksums_verified": true
+    },
+    "XRPUSDT_2h.csv": {
+      "symbol": "XRPUSDT",
+      "sha256": "fbfdb70fb5da5108b065d7f0ea56e1a3a96525af8b209e949dd71578f44001cd",
+      "bytes": 1412346,
+      "header": [
+        "open_time_ms",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_volume"
+      ],
+      "first_open_time_ms": 1578297600000,
+      "first_open_time": "2020-01-06T08:00:00Z",
+      "last_open_time_ms": 1727733600000,
+      "last_open_time": "2024-09-30T22:00:00Z",
+      "n_bars": 20696,
+      "expected_bars_contiguous": 20756,
+      "missing_bars_total": 60,
+      "gaps": [
+        {
+          "after": "2022-02-25T22:00:00Z",
+          "before": "2022-03-01T00:00:00Z",
+          "missing_bars": 36
+        },
+        {
+          "after": "2022-03-31T22:00:00Z",
+          "before": "2022-04-03T00:00:00Z",
+          "missing_bars": 24
+        }
+      ],
+      "duplicates": 0,
+      "unsorted": false,
+      "misaligned_open_times": 0,
+      "malformed_rows": 0,
+      "source_months": 57,
+      "first_month": "2020-01",
+      "last_month": "2024-09",
+      "source_zip_checksums_verified": true
+    },
+    "NEARUSDT_2h.csv": {
+      "symbol": "NEARUSDT",
+      "sha256": "62ed1687beed6667c1a9b0483ba79621fb176d184428320aa1b1599af1c07d61",
+      "bytes": 1103723,
+      "header": [
+        "open_time_ms",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_volume"
+      ],
+      "first_open_time_ms": 1602748800000,
+      "first_open_time": "2020-10-15T08:00:00Z",
+      "last_open_time_ms": 1727733600000,
+      "last_open_time": "2024-09-30T22:00:00Z",
+      "n_bars": 17300,
+      "expected_bars_contiguous": 17360,
+      "missing_bars_total": 60,
+      "gaps": [
+        {
+          "after": "2022-02-25T22:00:00Z",
+          "before": "2022-03-01T00:00:00Z",
+          "missing_bars": 36
+        },
+        {
+          "after": "2022-03-31T22:00:00Z",
+          "before": "2022-04-03T00:00:00Z",
+          "missing_bars": 24
+        }
+      ],
+      "duplicates": 0,
+      "unsorted": false,
+      "misaligned_open_times": 0,
+      "malformed_rows": 0,
+      "source_months": 48,
+      "first_month": "2020-10",
+      "last_month": "2024-09",
+      "source_zip_checksums_verified": true
+    },
+    "ZECUSDT_2h.csv": {
+      "symbol": "ZECUSDT",
+      "sha256": "e8ee5e442fe8068a41c1aad4a44c447ddfd02ddfcfdf640135b4c26339301d09",
+      "bytes": 1280498,
+      "header": [
+        "open_time_ms",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_volume"
+      ],
+      "first_open_time_ms": 1580889600000,
+      "first_open_time": "2020-02-05T08:00:00Z",
+      "last_open_time_ms": 1727733600000,
+      "last_open_time": "2024-09-30T22:00:00Z",
+      "n_bars": 20336,
+      "expected_bars_contiguous": 20396,
+      "missing_bars_total": 60,
+      "gaps": [
+        {
+          "after": "2022-02-25T22:00:00Z",
+          "before": "2022-03-01T00:00:00Z",
+          "missing_bars": 36
+        },
+        {
+          "after": "2022-03-31T22:00:00Z",
+          "before": "2022-04-03T00:00:00Z",
+          "missing_bars": 24
+        }
+      ],
+      "duplicates": 0,
+      "unsorted": false,
+      "misaligned_open_times": 0,
+      "malformed_rows": 0,
+      "source_months": 56,
+      "first_month": "2020-02",
+      "last_month": "2024-09",
+      "source_zip_checksums_verified": true
+    },
+    "BNBUSDT_2h.csv": {
+      "symbol": "BNBUSDT",
+      "sha256": "52d4aebc57544db4c27acdd4b52f3e7a22ef57fa9286307b12bbb0e810a78dce",
+      "bytes": 1414719,
+      "header": [
+        "open_time_ms",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_volume"
+      ],
+      "first_open_time_ms": 1581321600000,
+      "first_open_time": "2020-02-10T08:00:00Z",
+      "last_open_time_ms": 1727733600000,
+      "last_open_time": "2024-09-30T22:00:00Z",
+      "n_bars": 20336,
+      "expected_bars_contiguous": 20336,
+      "missing_bars_total": 0,
+      "gaps": [],
+      "duplicates": 0,
+      "unsorted": false,
+      "misaligned_open_times": 0,
+      "malformed_rows": 0,
+      "source_months": 56,
+      "first_month": "2020-02",
+      "last_month": "2024-09",
+      "source_zip_checksums_verified": true
+    },
+    "DOGEUSDT_2h.csv": {
+      "symbol": "DOGEUSDT",
+      "sha256": "187f0a8f33d9f4b0c6a3e0e260ba5295ec8968628f80275ac6448b2749dd0be2",
+      "bytes": 1404523,
+      "header": [
+        "open_time_ms",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_volume"
+      ],
+      "first_open_time_ms": 1594368000000,
+      "first_open_time": "2020-07-10T08:00:00Z",
+      "last_open_time_ms": 1727733600000,
+      "last_open_time": "2024-09-30T22:00:00Z",
+      "n_bars": 18524,
+      "expected_bars_contiguous": 18524,
+      "missing_bars_total": 0,
+      "gaps": [],
+      "duplicates": 0,
+      "unsorted": false,
+      "misaligned_open_times": 0,
+      "malformed_rows": 0,
+      "source_months": 51,
+      "first_month": "2020-07",
+      "last_month": "2024-09",
+      "source_zip_checksums_verified": true
+    },
+    "ADAUSDT_2h.csv": {
+      "symbol": "ADAUSDT",
+      "sha256": "48be140c3c2ecbe2f114d77752c5af752bd6e93e45224ad3941fa3d7e827c17d",
+      "bytes": 1429155,
+      "header": [
+        "open_time_ms",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_volume"
+      ],
+      "first_open_time_ms": 1580457600000,
+      "first_open_time": "2020-01-31T08:00:00Z",
+      "last_open_time_ms": 1727733600000,
+      "last_open_time": "2024-09-30T22:00:00Z",
+      "n_bars": 20456,
+      "expected_bars_contiguous": 20456,
+      "missing_bars_total": 0,
+      "gaps": [],
+      "duplicates": 0,
+      "unsorted": false,
+      "misaligned_open_times": 0,
+      "malformed_rows": 0,
+      "source_months": 57,
+      "first_month": "2020-01",
+      "last_month": "2024-09",
+      "source_zip_checksums_verified": true
+    },
+    "LINKUSDT_2h.csv": {
+      "symbol": "LINKUSDT",
+      "sha256": "a2501368fb44711bbc38d69e322ecf6b7503f88277eb0fd930b30c2ebeb2f2a1",
+      "bytes": 1357167,
+      "header": [
+        "open_time_ms",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_volume"
+      ],
+      "first_open_time_ms": 1579248000000,
+      "first_open_time": "2020-01-17T08:00:00Z",
+      "last_open_time_ms": 1727733600000,
+      "last_open_time": "2024-09-30T22:00:00Z",
+      "n_bars": 20624,
+      "expected_bars_contiguous": 20624,
+      "missing_bars_total": 0,
+      "gaps": [],
+      "duplicates": 0,
+      "unsorted": false,
+      "misaligned_open_times": 0,
+      "malformed_rows": 0,
+      "source_months": 57,
+      "first_month": "2020-01",
+      "last_month": "2024-09",
+      "source_zip_checksums_verified": true
+    },
+    "AVAXUSDT_2h.csv": {
+      "symbol": "AVAXUSDT",
+      "sha256": "16aec1e94ce30a72136cb0fa5e596863b69764129c44f01ef242f75b94e4e9a6",
+      "bytes": 1175609,
+      "header": [
+        "open_time_ms",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_volume"
+      ],
+      "first_open_time_ms": 1600840800000,
+      "first_open_time": "2020-09-23T06:00:00Z",
+      "last_open_time_ms": 1727733600000,
+      "last_open_time": "2024-09-30T22:00:00Z",
+      "n_bars": 17625,
+      "expected_bars_contiguous": 17625,
+      "missing_bars_total": 0,
+      "gaps": [],
+      "duplicates": 0,
+      "unsorted": false,
+      "misaligned_open_times": 0,
+      "malformed_rows": 0,
+      "source_months": 49,
+      "first_month": "2020-09",
+      "last_month": "2024-09",
+      "source_zip_checksums_verified": true
+    },
+    "LTCUSDT_2h.csv": {
+      "symbol": "LTCUSDT",
+      "sha256": "4d0d45763a91a6889e71c7dc69d9508cd54ab243856ab2e478176475eb2172b6",
+      "bytes": 1336179,
+      "header": [
+        "open_time_ms",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_volume"
+      ],
+      "first_open_time_ms": 1578556800000,
+      "first_open_time": "2020-01-09T08:00:00Z",
+      "last_open_time_ms": 1727733600000,
+      "last_open_time": "2024-09-30T22:00:00Z",
+      "n_bars": 20660,
+      "expected_bars_contiguous": 20720,
+      "missing_bars_total": 60,
+      "gaps": [
+        {
+          "after": "2022-02-25T22:00:00Z",
+          "before": "2022-03-01T00:00:00Z",
+          "missing_bars": 36
+        },
+        {
+          "after": "2022-03-31T22:00:00Z",
+          "before": "2022-04-03T00:00:00Z",
+          "missing_bars": 24
+        }
+      ],
+      "duplicates": 0,
+      "unsorted": false,
+      "misaligned_open_times": 0,
+      "malformed_rows": 0,
+      "source_months": 57,
+      "first_month": "2020-01",
+      "last_month": "2024-09",
+      "source_zip_checksums_verified": true
+    }
+  }
+}
