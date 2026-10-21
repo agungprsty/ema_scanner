@@ -1,4 +1,4 @@
-name: Deploy EMA Scanner to Contabo VPS
+name: Deploy simple-trade to Contabo VPS
 
 on:
   push:
@@ -100,6 +100,21 @@ jobs:
 
           echo "=== STATUS CONTAINER ==="
           docker compose -f docker-compose.prod.yml ps
+
+          echo "=== HEALTH CHECK ==="
+          # A bad .env (e.g. unsupported TIMEFRAME) crash-loops the app; fail the deploy instead of passing silently
+          for i in $(seq 1 20); do
+            if docker compose -f docker-compose.prod.yml exec -T app curl -fsS http://localhost:7860/api/health | grep -q '"status":"healthy"'; then
+              echo "App is healthy"
+              break
+            fi
+            if [ "$i" -eq 20 ]; then
+              echo "App did not become healthy"
+              docker compose -f docker-compose.prod.yml logs --tail 100 app
+              exit 1
+            fi
+            sleep 6
+          done
 
           echo "=== CLEANUP DISK ==="
           docker image prune -f || true

@@ -1,7 +1,7 @@
 services:
   app:
     image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-agungprsty}/ema-scanner:latest
-    container_name: macd_scanner_app
+    container_name: simple-trade-app
     restart: unless-stopped
     ports:
       - "${APP_BIND_ADDR:-127.0.0.1}:${PORT:-7860}:7860"
@@ -12,8 +12,8 @@ services:
       - POSTGRES_PORT=5432
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
-      - POSTGRES_DB=${POSTGRES_DB:-macd_scanner}
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-macd_scanner}
+      - POSTGRES_DB=${POSTGRES_DB:-simple-trade}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-simple-trade}
       - REDIS_URL=redis://redis:6379/0
     depends_on:
       postgres:
@@ -32,16 +32,16 @@ services:
 
   postgres:
     image: postgres:16-alpine
-    container_name: macd_scanner_postgres
+    container_name: simple-trade-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DB: ${POSTGRES_DB:-macd_scanner}
+      POSTGRES_DB: ${POSTGRES_DB:-simple-trade}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-macd_scanner}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-simple-trade}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -57,7 +57,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: macd_scanner_redis
+    container_name: simple-trade-redis
     restart: unless-stopped
     volumes:
       - redis_data:/data

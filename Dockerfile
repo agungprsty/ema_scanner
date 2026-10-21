@@ -6,6 +6,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app
 
+# nginx reaches the app through the Docker bridge gateway; trust X-Forwarded-* only from those networks
+ENV FORWARDED_ALLOW_IPS=172.16.0.0/12
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
@@ -26,4 +29,4 @@ EXPOSE 7860
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:7860/api/health || exit 1
 
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "7860"]
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "7860", "--proxy-headers"]

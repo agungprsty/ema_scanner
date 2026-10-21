@@ -1,80 +1,94 @@
 import asyncio
+import hashlib
 import logging
 import secrets
 import time
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Response
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+import pandas as pd
+from fastapi import Depends, FastAPI, Query, Request, Response
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import AfterValidator, BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
+from src.api import setup_http
+from src.api.exceptions import (
+    AppException,
+    BadGateway,
+    BadRequest,
+    Conflict,
+    NotFound,
+    ServiceUnavailable,
+    Unauthorized,
+    UnprocessableEntity,
+)
+from src.api.log import configure_logging
+from src.api.passwords import DUMMY_HASH, hash_password, verify_password
+from src.api.responses import Envelope, PageEnvelope, paginated, success
+from src.api.security import (
+    API_KEY_MIN_LENGTH,
+    Principal,
+    api_key_configured,
+    check_same_origin,
+    get_principal,
+    require_admin,
+)
 from src.config.settings import (
-    API_SECRET_KEY,
-    CORS_ORIGINS,
     DRY_RUN,
-    MACD_CANDLES,
-    MACD_CROSS_LOOKBACK_CANDLES,
-    MACD_FAST,
-    MACD_INCLUDE_CURRENT,
-    MACD_MAX_SYMBOLS,
-    MACD_SIGNAL,
-    MACD_SLOW,
-    MACD_TIMEFRAME,
-    RISK_REWARD_RATIO,
+    FILL_WINDOW_CANDLES,
+    INTERVAL_MS,
+    MAX_HOLD_CANDLES,
+    MAX_SYMBOLS,
     ROUND_TRIP_FEE_PERCENT,
-    SCAN_CONCURRENCY,
-    SIGNAL_EXPIRY_CANDLES,
-    TELEGRAM_BOT_TOKEN,
-    TELEGRAM_CHAT_ID,
-    VOLUME_THRESHOLD_USD,
+    RSI_OVERBOUGHT,
+    RSI_OVERSOLD,
+    RSI_PERIOD,
+    SESSION_COOKIE_SECURE,
+    SESSION_TTL_HOURS,
+    SL_PERCENT,
+    TIMEFRAME,
+    TIMEFRAME_MS,
+    TP_PERCENT,
 )
 from src.data_feed.binance_client import create_futures_client
-from src.data_feed.ohlcv import fetch_candles_payload, fetch_candles_range, fetch_klines
-from src.services.alerts import format_signal_alert, notify_closed_trades
+from src.data_feed.ohlcv import fetch_candles_range
 from src.services.cron_scheduler import cron_scheduler
 from src.services.db import (
+    ACTIVE_STATUSES,
     add_watchlist_symbol,
+    cleanup_expired_sessions,
     close_db,
+    create_session,
+    create_user,
     delete_journal_entry,
+    delete_session,
     delete_watchlist_symbol,
-    evaluate_pending_signals,
     get_journal,
-    get_macd_signals,
-    get_macd_signals_summary,
-    get_profitloss_history,
-    get_signal_by_id,
-    get_signals_by_keys,
+    get_journal_summary,
+    get_session_user,
+    get_signal,
+    get_user_by_email,
     get_watchlist,
     init_db,
     is_db_connected,
-    record_profit_loss,
-    save_macd_signal,
+    list_signals,
+    signal_conditions,
+    signal_stats,
     toggle_watchlist_symbol,
     upsert_journal_entry,
 )
 from src.services.redis_client import (
-    claim_cross,
     close_redis,
     get_cached_json,
     init_redis,
-    is_cross_detected,
     is_redis_connected,
-    release_cross,
     set_cached_json,
 )
-from src.services.telegram import send_alert
-from src.strategy.macd import compute_macd, detect_macd_cross
-from src.strategy.outcome import CANDLE_INTERVAL_MS
+from src.strategy.rsi import compute_rsi
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
+configure_logging()
 logger = logging.getLogger(__name__)
 
 _client = None
@@ -87,22 +101,13 @@ def _get_client():
     return _client
 
 
-_API_KEY_MIN_LENGTH = 16
-_API_KEY_PLACEHOLDERS = frozenset({"your_secret_api_key_here", "changeme", "change_me", "secret", "password"})
-
-
-def _api_key_configured() -> bool:
-    key = API_SECRET_KEY or ""
-    return len(key) >= _API_KEY_MIN_LENGTH and key.lower() not in _API_KEY_PLACEHOLDERS
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if not _api_key_configured():
+    if not api_key_configured():
         logger.warning(
             "API_SECRET_KEY is unset, a placeholder, or shorter than %d characters; "
-            "protected endpoints are disabled and will return 503",
-            _API_KEY_MIN_LENGTH,
+            "machine access via Bearer is disabled",
+            API_KEY_MIN_LENGTH,
         )
     await init_db()
     await init_redis()
@@ -113,45 +118,149 @@ async def lifespan(app: FastAPI):
     await close_db()
 
 
+APP_VERSION = "3.1.0"
+
 app = FastAPI(
-    title="Crossline",
-    description="Automated Binance Futures 2H MACD crossover scanner with PostgreSQL, Redis, Cron Scheduler, and Profit/Loss History",
-    version="2.2.0",
+    title="Simpletrade",
+    description="Binance Futures RSI 28/72 limit-entry scanner with PostgreSQL, Redis and a per-candle scheduler",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 
-_is_wildcard = CORS_ORIGINS == ["*"]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_credentials=not _is_wildcard,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-async def verify_api_key(
-    x_api_key: Annotated[str | None, Header(alias="X-API-KEY")] = None,
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
-) -> bool:
-    if not _api_key_configured():
-        raise HTTPException(status_code=503, detail="API key not configured on server")
-
-    token = None
-    if x_api_key:
-        token = x_api_key
-    elif authorization and authorization.lower().startswith("bearer "):
-        token = authorization[7:].strip()
-
-    if not token or not secrets.compare_digest(token.encode("utf-8"), API_SECRET_KEY.encode("utf-8")):
-        raise HTTPException(
-            status_code=401,
-            detail="Unauthorized: Invalid or missing API Key",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return True
+setup_http(app)
 
 app.mount("/static", StaticFiles(directory="src/static"), name="static")
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key="st_session",
+        value=token,
+        max_age=SESSION_TTL_HOURS * 3600,
+        httponly=True,
+        secure=SESSION_COOKIE_SECURE,
+        samesite="lax",
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key="st_session",
+        path="/",
+        httponly=True,
+        secure=SESSION_COOKIE_SECURE,
+        samesite="lax",
+    )
+
+
+EMAIL_REGEX = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+USERNAME_REGEX = r"^[A-Za-z0-9_]{3,32}$"
+
+
+def _trim_lower(v):
+    return v.strip().lower() if isinstance(v, str) else v
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(..., pattern=EMAIL_REGEX, max_length=254)
+    password: str = Field(..., min_length=1, max_length=128)
+
+    # mode="before" so the pattern and length checks see the trimmed value
+    _clean_email = field_validator("email", mode="before")(_trim_lower)
+
+
+class RegisterRequest(BaseModel):
+    # Field order matters: the password check reads the already validated email and username
+    email: str = Field(..., pattern=EMAIL_REGEX, max_length=254)
+    username: str = Field(..., pattern=USERNAME_REGEX)
+    password: str = Field(..., min_length=10, max_length=128)
+
+    _clean = field_validator("email", "username", mode="before")(_trim_lower)
+
+    @field_validator("password")
+    @classmethod
+    def _password_not_identity(cls, v: str, info: ValidationInfo) -> str:
+        if v.lower() in (info.data.get("email"), info.data.get("username")):
+            raise ValueError("Password cannot match email or username")
+        return v
+
+
+# Authentication Endpoints
+@app.post(
+    "/api/auth/register",
+    status_code=201,
+    dependencies=[Depends(check_same_origin)],
+    response_model=Envelope[dict],
+)
+async def register_endpoint(body: RegisterRequest):
+    password_hash = await hash_password(body.password)
+    user = await create_user(
+        email=body.email,
+        username=body.username,
+        password_hash=password_hash,
+        role="user",
+    )
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    expires_at = datetime.now(UTC) + timedelta(hours=SESSION_TTL_HOURS)
+    await create_session(token_hash, user["id"], expires_at)
+    res = success(user, "User registered successfully", code=201)
+    _set_session_cookie(res, token)
+    return res
+
+
+@app.post(
+    "/api/auth/login",
+    dependencies=[Depends(check_same_origin)],
+    response_model=Envelope[dict],
+)
+async def login_endpoint(body: LoginRequest):
+    user = await get_user_by_email(body.email)
+    stored_hash = user["password_hash"] if user else DUMMY_HASH
+    is_valid = await verify_password(body.password, stored_hash)
+    if not user or not is_valid:
+        raise Unauthorized("Invalid email or password")
+
+    await cleanup_expired_sessions()
+
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    expires_at = datetime.now(UTC) + timedelta(hours=SESSION_TTL_HOURS)
+    await create_session(token_hash, user["id"], expires_at)
+
+    user_data = {
+        "id": user["id"],
+        "email": user["email"],
+        "username": user["username"],
+        "role": user["role"],
+        "created_at": user["created_at"],
+    }
+    res = success(user_data, "Logged in successfully")
+    _set_session_cookie(res, token)
+    return res
+
+
+@app.post(
+    "/api/auth/logout",
+    dependencies=[Depends(check_same_origin)],
+    response_model=Envelope[None],
+)
+async def logout_endpoint(request: Request):
+    token = request.cookies.get("st_session")
+    if token:
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        await delete_session(token_hash)
+    res = success(None, "Logged out successfully")
+    _clear_session_cookie(res)
+    return res
+
+
+@app.get("/api/auth/me", response_model=Envelope[dict])
+async def get_current_user_profile(
+    principal: Annotated[Principal, Depends(get_principal)],
+):
+    return success(principal.to_dict())
 
 
 class WatchlistAddRequest(BaseModel):
@@ -176,90 +285,27 @@ class JournalRequest(BaseModel):
         return self
 
 
-class ProfitLossRecordRequest(BaseModel):
-    symbol: str
-    direction: str
-    entry_price: float
-    stop_loss: float
-    tp1: float
-    exit_price: float
-    result: str
-    timeframe: str = "2h"
-    signal_id: int | None = None
-    pnl_percent: float = 0.0
-    risk_reward_ratio: float = 1.5
-    cross_time: str = ""
-    exit_time: str = ""
-
-
-class SignalItem(BaseModel):
-    id: int | None = None
-    symbol: str
-    side: str
-    reason: str
-    cross_time: str
-    cross_price: float
-    close: float
-    entry_price: float
-    stop_loss: float
-    tp1: float
-    risk_reward_ratio: float
-    win_status: str = "PENDING"
-    macd: float
-    signal: float
-    histogram: float
-    bars_ago: int
-    confirmed: bool
-    is_new: bool = True
-
-
-class ScanResponse(BaseModel):
-    status: str
-    timeframe: str = "2h"
-    limit: int
-    lookback: int
-    include_current: bool
-    execution_time: str
-    total_scanned: int
-    new_signals_count: int
-    failed_symbols: list[str] = []
-    signals: list[SignalItem]
-
-
-class SignalsHistoryResponse(BaseModel):
-    total: int
-    limit: int
-    offset: int
-    summary: dict = {}
-    signals: list[dict]
-
-
-class ProfitLossHistoryResponse(BaseModel):
-    total: int
-    limit: int
-    offset: int
-    summary: dict
-    history: list[dict]
-
-
 class SummaryResponse(BaseModel):
     total_signals: int
     long_signals: int
     short_signals: int
     symbols_count: int
-    tp1_hit_count: int
-    sl_hit_count: int
     pending_count: int
-    expired_count: int = 0
+    open_count: int
+    tp_hit_count: int
+    sl_hit_count: int
+    expired_count: int
+    not_filled_count: int
+    filled_count: int
+    fill_rate: float
+    closed_trades: int
     winrate: float
-    avg_rr: float
+    total_net_pnl: float
+    total_r: float
+    avg_r: float
+    max_drawdown_r: float
     watchlist_count: int
     latest_signal_time: str | None = None
-    total_net_pnl: float = 0.0
-    closed_trades: int = 0
-    total_r: float = 0.0
-    avg_r: float = 0.0
-    max_drawdown_r: float = 0.0
 
 
 class HealthResponse(BaseModel):
@@ -267,89 +313,132 @@ class HealthResponse(BaseModel):
     database: bool
     redis: bool
     cron: dict
-    timeframe: str = "2h"
-    version: str = "2.2.0"
+    timeframe: str = TIMEFRAME
+    version: str = APP_VERSION
 
 
-@app.get("/")
-@app.head("/")
-async def root():
-    return FileResponse("src/static/index.html")
+async def _page(
+    request: Request,
+    filepath: str,
+    *,
+    require_session: bool = False,
+    redirect_if_authenticated: bool = False,
+) -> Response:
+    user = None
+    token = request.cookies.get("st_session")
+    if token:
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        try:
+            user = await get_session_user(token_hash)
+        except Exception:
+            # Database down: public pages still render, /dashboard falls back to /login
+            logger.warning("Session lookup failed while serving %s", request.url.path, exc_info=True)
+            user = None
+
+    if require_session:
+        if not user:
+            return RedirectResponse(url="/login", status_code=303)
+        return FileResponse(filepath, headers={"Cache-Control": "no-store"})
+
+    if redirect_if_authenticated and user:
+        return RedirectResponse(url="/dashboard", status_code=303)
+
+    return FileResponse(filepath)
 
 
-@app.get("/history")
-async def history():
-    return FileResponse("src/static/index.html")
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
+async def root(request: Request):
+    return await _page(request, "src/pages/landing.html")
 
 
-@app.get("/api/info")
+@app.api_route("/login", methods=["GET", "HEAD"], include_in_schema=False)
+async def login_page(request: Request):
+    return await _page(request, "src/pages/login.html", redirect_if_authenticated=True)
+
+
+@app.api_route("/register", methods=["GET", "HEAD"], include_in_schema=False)
+async def register_page(request: Request):
+    return await _page(request, "src/pages/register.html", redirect_if_authenticated=True)
+
+
+@app.api_route("/dashboard", methods=["GET", "HEAD"], include_in_schema=False)
+async def dashboard_page(request: Request):
+    return await _page(request, "src/pages/dashboard.html", require_session=True)
+
+
+# The page loads the signal itself, so an unknown id shows its message there
+@app.api_route("/signals/{signal_id:int}", methods=["GET", "HEAD"], include_in_schema=False)
+async def signal_page(request: Request, signal_id: int):
+    return await _page(request, "src/pages/signal.html", require_session=True)
+
+
+@app.get("/api/info", response_model=Envelope[dict])
 async def get_info():
-    return {
+    return success({
         "status": "running",
-        "app": "Crossline",
-        "version": "2.2.0",
+        "app": "Simpletrade",
+        "version": APP_VERSION,
         "mode": "DRY_RUN" if DRY_RUN else "PRODUCTION",
-        "strategy": f"MACD ({MACD_FAST}, {MACD_SLOW}, {MACD_SIGNAL}) Overcross with Dynamic Swing SL/TP1",
-        "enforced_timeframe": "2h",
-        "default_lookback": MACD_CROSS_LOOKBACK_CANDLES,
-        "risk_reward_ratio": RISK_REWARD_RATIO,
-        "signal_expiry_candles": SIGNAL_EXPIRY_CANDLES,
-        "round_trip_fee_percent": ROUND_TRIP_FEE_PERCENT,
-        "max_symbols": MACD_MAX_SYMBOLS,
+        "timeframe": TIMEFRAME,
+        "interval_ms": TIMEFRAME_MS,
+        "strategy": {
+            "rsi_period": RSI_PERIOD,
+            "oversold": RSI_OVERSOLD,
+            "overbought": RSI_OVERBOUGHT,
+            "tp_percent": TP_PERCENT,
+            "sl_percent": SL_PERCENT,
+            "fill_window_candles": FILL_WINDOW_CANDLES,
+            "max_hold_candles": MAX_HOLD_CANDLES,
+            "fee_percent": ROUND_TRIP_FEE_PERCENT,
+        },
+        "max_symbols": MAX_SYMBOLS,
         "cron": cron_scheduler.get_status(),
-    }
+    })
 
 
-@app.get("/api/health", response_model=HealthResponse)
+# Always 200, even when degraded: the deploy gate greps the body for "status":"healthy"
+@app.get("/api/health", response_model=Envelope[HealthResponse])
 async def health():
     db_ok = await is_db_connected()
     redis_ok = await is_redis_connected()
     cron_info = cron_scheduler.get_status()
     status_str = "healthy" if (db_ok and redis_ok) else "degraded"
-    return HealthResponse(
-        status=status_str,
-        database=db_ok,
-        redis=redis_ok,
-        cron=cron_info,
-        timeframe="2h",
-    )
+    return success(HealthResponse(status=status_str, database=db_ok, redis=redis_ok, cron=cron_info))
 
 
 # Watchlist Endpoints
-@app.get("/api/watchlist")
+@app.get("/api/watchlist", dependencies=[Depends(get_principal)], response_model=Envelope[list[dict]])
 async def list_watchlist(active_only: bool = False):
-    items = await get_watchlist(active_only=active_only)
-    return {"watchlist": items, "count": len(items)}
+    return success(await get_watchlist(active_only=active_only))
 
 
-@app.post("/api/watchlist", dependencies=[Depends(verify_api_key)])
+@app.post("/api/watchlist", dependencies=[Depends(require_admin)], response_model=Envelope[dict])
 async def add_symbol_to_watchlist(body: WatchlistAddRequest):
     item = await add_watchlist_symbol(symbol=body.symbol, notes=body.notes)
     if not item:
-        raise HTTPException(status_code=400, detail="Failed to add symbol to watchlist")
-    return {"status": "success", "item": item}
+        raise BadRequest("Failed to add symbol to watchlist")
+    return success(item, "Symbol added to watchlist")
 
 
-@app.delete("/api/watchlist/{symbol}", dependencies=[Depends(verify_api_key)])
+@app.delete("/api/watchlist/{symbol}", dependencies=[Depends(require_admin)], response_model=Envelope[dict])
 async def remove_symbol_from_watchlist(symbol: str):
     ok = await delete_watchlist_symbol(symbol=symbol)
     if not ok:
-        raise HTTPException(status_code=404, detail="Symbol not found in watchlist")
-    return {"status": "success", "deleted": symbol}
+        raise NotFound("Symbol not found in watchlist")
+    return success({"symbol": symbol}, "Symbol removed from watchlist")
 
 
-@app.patch("/api/watchlist/{symbol}/toggle", dependencies=[Depends(verify_api_key)])
+@app.patch("/api/watchlist/{symbol}/toggle", dependencies=[Depends(require_admin)], response_model=Envelope[dict])
 async def toggle_symbol_status(symbol: str, body: WatchlistToggleRequest):
     ok = await toggle_watchlist_symbol(symbol=symbol, is_active=body.is_active)
     if not ok:
-        raise HTTPException(status_code=404, detail="Symbol not found in watchlist")
-    return {"status": "success", "symbol": symbol, "is_active": body.is_active}
+        raise NotFound("Symbol not found in watchlist")
+    return success({"symbol": symbol, "is_active": body.is_active}, "Symbol updated")
 
 
-# Chart Klines Endpoint
+# Chart candles: upstream budget and single-flight shared by every chart request
 KLINES_CACHE_TTL = 60
 KLINES_MISS_TTL = 120
-KLINES_FETCH_LIMIT = 499
 KLINES_UPSTREAM_BUDGET = 60
 KLINES_BUDGET_WINDOW = 60
 _klines_budget = {"window": 0, "count": 0}
@@ -366,14 +455,6 @@ def _consume_klines_budget() -> bool:
     return True
 
 
-def _slice_klines(payload: dict, limit: int) -> dict:
-    return {**payload, "candles": payload["candles"][-limit:], "macd": payload["macd"][-limit:]}
-
-
-KLINES_SYMBOLS_KEY = "klines:symbols"
-KLINES_SYMBOLS_TTL = 3600
-KLINES_SYMBOLS_RETRY = 60
-_klines_symbols: dict = {"symbols": None, "expires": 0.0, "retry_at": 0.0}
 _klines_inflight: dict[tuple, asyncio.Future] = {}
 
 
@@ -391,125 +472,44 @@ async def _single_flight(key: tuple, factory):
     return await asyncio.shield(fut)
 
 
-def _normalize_symbol(value: str) -> str:
-    sym = value.strip().upper()
-    if not (2 <= len(sym) <= 30 and sym.isalnum()):
-        raise ValueError("symbol must be 2-30 letters or digits")
-    return sym
-
-
-async def _refresh_valid_symbols() -> dict[str, str] | None:
-    now = time.time()
-    cached = await get_cached_json(KLINES_SYMBOLS_KEY)
-    symbols = cached.get("symbols") if cached else None
-    fetched_at = cached.get("fetched_at", now) if cached else now
-    if not symbols:
-        try:
-            info = await asyncio.to_thread(_get_client().exchange_info)
-            symbols = [s["symbol"] for s in info.get("symbols", []) if s.get("symbol")]
-        except Exception:
-            logger.exception("Failed to load exchange info for symbol validation")
-            symbols = None
-        if symbols:
-            fetched_at = now
-            await set_cached_json(
-                KLINES_SYMBOLS_KEY, {"symbols": symbols, "fetched_at": now}, ttl=KLINES_SYMBOLS_TTL
-            )
-    if symbols:
-        _klines_symbols["symbols"] = {s.upper(): s for s in symbols}
-        _klines_symbols["expires"] = max(fetched_at + KLINES_SYMBOLS_TTL, now + KLINES_SYMBOLS_RETRY)
-    else:
-        _klines_symbols["retry_at"] = now + KLINES_SYMBOLS_RETRY
-    return _klines_symbols["symbols"]
-
-
-async def _get_valid_symbols() -> dict[str, str] | None:
-    now = time.time()
-    if now < _klines_symbols["expires"] or now < _klines_symbols["retry_at"]:
-        return _klines_symbols["symbols"]
-    try:
-        return await _single_flight(("symbols",), _refresh_valid_symbols)
-    except Exception:
-        logger.exception("Symbol list refresh failed")
-        return _klines_symbols["symbols"]
-
-
-async def _load_klines(sym: str, interval: str) -> dict:
-    cache_key = f"klines:{interval}:{sym}"
-    miss_key = f"{cache_key}:miss"
-    cached = await get_cached_json(cache_key)
-    if cached:
-        return cached
-
-    if await get_cached_json(miss_key):
-        raise HTTPException(status_code=502, detail="Failed to load candle data from upstream")
-
-    if not _consume_klines_budget():
-        raise HTTPException(status_code=503, detail="Chart data temporarily unavailable, retry later")
-
-    try:
-        client = _get_client()
-        payload = await asyncio.to_thread(
-            fetch_candles_payload,
-            client=client,
-            symbol=sym,
-            timeframe=interval,
-            limit=KLINES_FETCH_LIMIT,
-        )
-    except Exception:
-        logger.exception("Klines fetch failed for %s %s", sym, interval)
-        payload = None
-
-    if not payload:
-        await set_cached_json(miss_key, {"miss": True}, ttl=KLINES_MISS_TTL)
-        raise HTTPException(status_code=502, detail="Failed to load candle data from upstream")
-
-    await set_cached_json(cache_key, payload, ttl=KLINES_CACHE_TTL)
-    return payload
-
-
-@app.get("/api/klines")
-async def get_klines_chart(
-    response: Response,
-    symbol: Annotated[
-        str, Query(max_length=64, description="Symbol name e.g. BTCUSDT"), AfterValidator(_normalize_symbol)
-    ],
-    interval: Annotated[Literal["2h"], Query(description="Candle interval")] = "2h",
-    limit: Annotated[int, Query(ge=50, le=500, description="Candles count")] = 100,
-):
-    valid = await _get_valid_symbols()
-    if valid is not None:
-        if symbol not in valid:
-            raise HTTPException(status_code=404, detail="Unknown symbol")
-        symbol = valid[symbol]
-    payload = await _single_flight(("klines", interval, symbol), lambda: _load_klines(symbol, interval))
-    # Let the browser reuse candles for as long as the server cache does, so reopening a chart is free
-    response.headers["Cache-Control"] = f"public, max-age={KLINES_CACHE_TTL}"
-    return _slice_klines(payload, limit)
-
-
 # Single Signal Detail
-@app.get("/api/signals/{signal_id}")
-async def get_single_signal(signal_id: int):
-    sig = await get_signal_by_id(signal_id)
+@app.get("/api/signals/{signal_id}", response_model=Envelope[dict])
+async def get_single_signal(
+    signal_id: int,
+    principal: Annotated[Principal, Depends(get_principal)],
+):
+    sig = await get_signal(signal_id)
     if not sig:
-        raise HTTPException(status_code=404, detail="Signal not found")
-    return sig
+        raise NotFound("Signal not found")
+    if principal.role != "administrator":
+        sig.pop("journal", None)
+    return success(sig)
+
+
+# Upper bound keeps (page - 1) * per_page inside Postgres' bigint OFFSET
+Page = Annotated[int, Query(ge=1, le=1_000_000, description="Page number, from 1")]
+PerPage = Annotated[int, Query(ge=1, le=200, description="Items per page")]
 
 
 # Trade Journal Endpoints
-@app.get("/api/journal")
+@app.get("/api/journal", dependencies=[Depends(require_admin)], response_model=PageEnvelope[dict])
 async def list_journal(
     status: Annotated[Literal["TAKEN", "SKIPPED"] | None, Query(description="TAKEN or SKIPPED")] = None,
     symbol: Annotated[str | None, Query(max_length=30, description="Filter by symbol")] = None,
-    limit: Annotated[int, Query(ge=1, le=100)] = 50,
-    offset: Annotated[int, Query(ge=0)] = 0,
+    page: Page = 1,
+    per_page: PerPage = 50,
 ):
-    items, total, summary = await get_journal(status=status, symbol=symbol, limit=limit, offset=offset)
-    return {"total": total, "limit": limit, "offset": offset, "summary": summary, "entries": items}
+    items, total = await get_journal(status=status, symbol=symbol, limit=per_page, offset=(page - 1) * per_page)
+    return paginated(items, total, page, per_page)
 
 
-@app.put("/api/signals/{signal_id}/journal", dependencies=[Depends(verify_api_key)])
+@app.get("/api/journal/summary", dependencies=[Depends(require_admin)], response_model=Envelope[dict])
+async def journal_summary_endpoint():
+    """Summary across every journal entry, unfiltered, so the comparison is stable while browsing."""
+    return success(await get_journal_summary())
+
+
+@app.put("/api/signals/{signal_id}/journal", dependencies=[Depends(require_admin)], response_model=Envelope[dict])
 async def save_journal_entry(signal_id: int, body: JournalRequest):
     try:
         item = await upsert_journal_entry(
@@ -520,427 +520,180 @@ async def save_journal_entry(signal_id: int, body: JournalRequest):
             notes=body.notes.strip(),
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail="Failed to save journal entry") from exc
+        raise AppException("Failed to save journal entry", code=500) from exc
     if item is None:
-        raise HTTPException(status_code=404, detail="Signal not found")
-    return item
+        raise NotFound("Signal not found")
+    return success(item, "Journal entry saved")
 
 
-@app.delete("/api/signals/{signal_id}/journal", dependencies=[Depends(verify_api_key)])
+@app.delete("/api/signals/{signal_id}/journal", dependencies=[Depends(require_admin)], response_model=Envelope[None])
 async def remove_journal_entry(signal_id: int):
     if not await delete_journal_entry(signal_id):
-        raise HTTPException(status_code=404, detail="No journal entry for this signal")
-    return {"status": "success"}
+        raise NotFound("No journal entry for this signal")
+    return success(message="Journal entry deleted")
 
 
-# Candles framing one signal's trade, for its chart
+# Candles framing one signal's trade, with RSI, for its chart
 SIGNAL_CANDLES_BEFORE = 30
 SIGNAL_CANDLES_AFTER = 6
+SIGNAL_RSI_WARMUP = 300  # extra bars fetched before the window so the first charted RSI and EMA have settled
+SIGNAL_CHART_EMA = 50
 # A closed trade's window never changes once all its candles have closed
 SIGNAL_CANDLES_FINAL_TTL = 7 * 24 * 3600
-
-
-def _parse_utc_ms(value: str | None) -> int | None:
-    """Parse stored UTC times, with or without a zone ("2026-10-11T06:00:00Z", "2026-10-11 14:00:00")."""
-    if not value:
-        return None
-    try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return int(dt.timestamp() * 1000)
 
 
 def _signal_candle_window(sig: dict, now_ms: int) -> tuple[int, int, bool]:
     """(start_ms, end_ms, final) of the candles to chart for a signal.
 
-    Open signals run from before the cross to now. Closed ones stop a few candles after the exit,
-    and are final once every candle in that range has closed.
+    Active trades run from before the signal to now. Closed ones stop a few candles after the
+    close, and are final once every candle in that range has closed.
     """
-    interval_ms = CANDLE_INTERVAL_MS.get(sig.get("timeframe") or "2h", CANDLE_INTERVAL_MS["2h"])
-    cross_ms = int(sig["cross_candle_ms"])
-    start_ms = cross_ms - SIGNAL_CANDLES_BEFORE * interval_ms
-    if sig.get("win_status", "PENDING") == "PENDING":
+    interval_ms = INTERVAL_MS.get(sig.get("timeframe"))
+    if interval_ms is None:
+        raise AppException("Signal has an unsupported timeframe", code=500)
+    start_ms = int(sig["signal_candle_ms"]) - SIGNAL_CANDLES_BEFORE * interval_ms
+    closed_ms = sig.get("closed_ms")
+    if sig.get("status") in ACTIVE_STATUSES or closed_ms is None:
         return start_ms, now_ms, False
-    exit_ms = _parse_utc_ms(sig.get("exit_time")) or cross_ms + (SIGNAL_EXPIRY_CANDLES + 1) * interval_ms
-    last_open_ms = exit_ms - exit_ms % interval_ms + SIGNAL_CANDLES_AFTER * interval_ms
+    last_open_ms = closed_ms - closed_ms % interval_ms + SIGNAL_CANDLES_AFTER * interval_ms
     final = last_open_ms + interval_ms <= now_ms
     return start_ms, min(last_open_ms, now_ms), final
 
 
-async def _load_signal_candles(sig: dict, start_ms: int, end_ms: int, cache_key: str, ttl: int) -> dict:
+def _chart_payload(sig: dict, candles: list[dict], start_ms: int) -> dict:
+    """Candles from `start_ms` on, with RSI and EMA over the whole fetch so warm-up bars are dropped, not zeroed."""
+    close = pd.Series([c["close"] for c in candles], dtype=float)
+    rsi = compute_rsi(close)
+    ema = close.ewm(span=SIGNAL_CHART_EMA, min_periods=SIGNAL_CHART_EMA, adjust=False).mean()
+    start_s = start_ms // 1000
+    shown = [i for i, c in enumerate(candles) if c["time"] >= start_s]
+
+    def series(values, digits):
+        return [
+            {"time": candles[i]["time"], "value": round(float(values[i]), digits)} for i in shown if pd.notna(values[i])
+        ]
+
+    return {
+        "symbol": sig["symbol"],
+        "timeframe": sig["timeframe"],
+        "candles": [candles[i] for i in shown],
+        "rsi": series(rsi, 2),
+        "ema": series(ema, 8),
+        # Taker buy minus taker sell volume per candle, in the base asset
+        "volume_delta": [
+            {"time": candles[i]["time"], "value": round(2 * candles[i]["buy_volume"] - candles[i]["volume"], 8)}
+            for i in shown
+        ],
+    }
+
+
+async def _load_signal_chart(sig: dict, start_ms: int, end_ms: int, cache_key: str, ttl: int) -> dict:
     miss_key = f"{cache_key}:miss"
     cached = await get_cached_json(cache_key)
     if cached:
         return cached
     if await get_cached_json(miss_key):
-        raise HTTPException(status_code=502, detail="Failed to load candle data from upstream")
+        raise BadGateway("Failed to load candle data from upstream")
     if not _consume_klines_budget():
-        raise HTTPException(status_code=503, detail="Chart data temporarily unavailable, retry later")
+        raise ServiceUnavailable("Chart data temporarily unavailable, retry later", headers={"Retry-After": str(KLINES_BUDGET_WINDOW)})
 
-    timeframe = sig.get("timeframe") or "2h"
+    fetch_from = start_ms - SIGNAL_RSI_WARMUP * INTERVAL_MS[sig["timeframe"]]
     try:
+        # shortcut: one request caps at 1500 candles, so 1m/3m trades lose their tail; page if those TFs get used
         candles = await asyncio.to_thread(
-            fetch_candles_range, _get_client(), sig["symbol"], timeframe, start_ms, end_ms
+            fetch_candles_range, _get_client(), sig["symbol"], sig["timeframe"], fetch_from, end_ms
         )
     except Exception:
-        logger.exception("Signal candles fetch failed for signal %s", sig.get("id"))
+        logger.exception("Signal chart fetch failed for signal %s", sig.get("id"))
         candles = None
     if not candles:
         await set_cached_json(miss_key, {"miss": True}, ttl=KLINES_MISS_TTL)
-        raise HTTPException(status_code=502, detail="Failed to load candle data from upstream")
+        raise BadGateway("Failed to load candle data from upstream")
 
-    payload = {"symbol": sig["symbol"], "timeframe": timeframe, "candles": candles}
+    payload = _chart_payload(sig, candles, start_ms)
     await set_cached_json(cache_key, payload, ttl=ttl)
     return payload
 
 
-@app.get("/api/signals/{signal_id}/candles")
-async def get_signal_candles(signal_id: int, response: Response):
-    sig = await get_signal_by_id(signal_id)
+@app.get("/api/signals/{signal_id}/chart", dependencies=[Depends(get_principal)], response_model=Envelope[dict])
+async def get_signal_chart(signal_id: int):
+    sig = await get_signal(signal_id)
     if not sig:
-        raise HTTPException(status_code=404, detail="Signal not found")
+        raise NotFound("Signal not found")
 
     start_ms, end_ms, final = _signal_candle_window(sig, int(time.time() * 1000))
     ttl = SIGNAL_CANDLES_FINAL_TTL if final else KLINES_CACHE_TTL
-    cache_key = f"klines:signal:{signal_id}:{'final' if final else 'live'}"
+    # v2 added ema and volume_delta; the version keeps week-old final payloads without them from being served
+    cache_key = f"chart:v2:{signal_id}:{'final' if final else 'live'}"
     payload = await _single_flight(
-        ("signal-candles", signal_id, final),
-        lambda: _load_signal_candles(sig, start_ms, end_ms, cache_key, ttl),
+        ("signal-chart", signal_id, final),
+        lambda: _load_signal_chart(sig, start_ms, end_ms, cache_key, ttl),
     )
-    response.headers["Cache-Control"] = f"public, max-age={ttl}"
-    return {**payload, "final": final}
+    # Only a closed window is immutable; a live one must refetch to show new candles
+    headers = {"Cache-Control": f"public, max-age={ttl}"} if final else None
+    return success({**payload, "final": final}, headers=headers)
 
 
 # Cron Scheduler Management Endpoints
-@app.get("/api/cron/status")
+@app.get("/api/cron/status", dependencies=[Depends(get_principal)], response_model=Envelope[dict])
 async def get_cron_scheduler_status():
-    return cron_scheduler.get_status()
+    return success(cron_scheduler.get_status())
 
 
-@app.post("/api/cron/trigger", dependencies=[Depends(verify_api_key)])
+@app.post("/api/cron/trigger", dependencies=[Depends(require_admin)], response_model=Envelope[dict])
 async def trigger_cron_execution():
     res = await cron_scheduler.trigger_now()
     if res.get("status") in ("skipped", "busy"):
-        raise HTTPException(status_code=409, detail=res.get("message", "Cron job is busy"))
-    summary = await get_macd_signals_summary()
-    return {"status": "success", "result": res, "summary": summary}
+        raise Conflict(res.get("message", "Cron job is busy"))
+    if res.get("status") == "error":
+        raise ServiceUnavailable("Scan failed, see server logs")
+    summary = await signal_stats()
+    return success({"result": res, "summary": summary}, "Scan finished")
 
 
-async def _evaluate_and_notify(client) -> dict:
-    res = await evaluate_pending_signals(client)
-    closed = res.pop("closed", None) if isinstance(res, dict) else None
-    await notify_closed_trades(closed)
-    return res
+def signal_filters(
+    status: Annotated[str | None, Query(max_length=100, description="Comma-separated statuses, e.g. PENDING,OPEN")] = None,
+    side: Annotated[str | None, Query(max_length=5, description="Filter by side (LONG/SHORT)")] = None,
+    symbol: Annotated[str | None, Query(max_length=30, description="Filter by symbol")] = None,
+    timeframe: Annotated[str | None, Query(max_length=4, description="Filter by timeframe")] = None,
+    date: Annotated[str | None, Query(description="WIB day (YYYY-MM-DD)")] = None,
+    start_date: Annotated[str | None, Query(description="First WIB day (YYYY-MM-DD)")] = None,
+    end_date: Annotated[str | None, Query(description="Last WIB day, inclusive (YYYY-MM-DD)")] = None,
+) -> dict:
+    """Signal filters shared by the list and its summary, so both describe the same signals."""
+    filters = {
+        "status": status,
+        "side": side,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "date": date,
+        "start_date": start_date,
+        "end_date": end_date,
+    }
+    try:
+        signal_conditions(**filters)
+    except ValueError as exc:
+        raise UnprocessableEntity("Dates must be YYYY-MM-DD") from exc
+    return filters
 
 
-# Evaluate Outcome Endpoints
-@app.post("/api/evaluate", dependencies=[Depends(verify_api_key)])
-@app.post("/api/profitloss-history/evaluate", dependencies=[Depends(verify_api_key)])
-async def evaluate_trades():
-    eval_res = await _evaluate_and_notify(_get_client())
-    summary = await get_macd_signals_summary()
-    return {"status": "success", "evaluated": eval_res, "summary": summary}
+SignalFilters = Annotated[dict, Depends(signal_filters)]
 
 
-# Profit/Loss History Endpoints
-@app.get("/api/profitloss-history", response_model=ProfitLossHistoryResponse)
-async def list_profit_loss_history(
-    symbol: Annotated[str | None, Query(description="Filter by symbol")] = None,
-    direction: Annotated[str | None, Query(description="Filter by direction (LONG/SHORT)")] = None,
-    side: Annotated[str | None, Query(description="Alias for direction")] = None,
-    timeframe: Annotated[str | None, Query(description="Filter by timeframe (e.g. 2h)")] = None,
-    result: Annotated[str | None, Query(description="Filter by result (PROFIT/LOSS)")] = None,
-    date: Annotated[str | None, Query(description="Filter by date (YYYY-MM-DD)")] = None,
-    start_date: Annotated[str | None, Query(description="Start date")] = None,
-    end_date: Annotated[str | None, Query(description="End date")] = None,
-    limit: Annotated[int, Query(ge=1, le=100, description="Items per page")] = 50,
-    offset: Annotated[int, Query(ge=0, description="Page offset")] = 0,
+@app.get("/api/signals", response_model=PageEnvelope[dict])
+async def list_signals_endpoint(
+    filters: SignalFilters,
+    principal: Annotated[Principal, Depends(get_principal)],
+    page: Page = 1,
+    per_page: PerPage = 50,
 ):
-    target_dir = direction or side
-    records, total, summary = await get_profitloss_history(
-        symbol=symbol,
-        direction=target_dir,
-        timeframe=timeframe,
-        result=result,
-        date=date,
-        start_date=start_date,
-        end_date=end_date,
-        limit=limit,
-        offset=offset,
-    )
-    return ProfitLossHistoryResponse(
-        total=total,
-        limit=limit,
-        offset=offset,
-        summary=summary,
-        history=records,
-    )
+    records, total, _ = await list_signals(**filters, limit=per_page, offset=(page - 1) * per_page)
+    if principal.role != "administrator":
+        for r in records:
+            r.pop("journal_status", None)
+    return paginated(records, total, page, per_page)
 
 
-@app.post("/api/profitloss-history", dependencies=[Depends(verify_api_key)])
-async def add_profit_loss_record(body: ProfitLossRecordRequest):
-    item = await record_profit_loss(
-        symbol=body.symbol,
-        direction=body.direction,
-        entry_price=body.entry_price,
-        stop_loss=body.stop_loss,
-        tp1=body.tp1,
-        exit_price=body.exit_price,
-        result=body.result,
-        timeframe=body.timeframe,
-        signal_id=body.signal_id,
-        pnl_percent=body.pnl_percent,
-        risk_reward_ratio=body.risk_reward_ratio,
-        cross_time=body.cross_time,
-        exit_time=body.exit_time,
-    )
-    if not item:
-        raise HTTPException(status_code=400, detail="Failed to record profit/loss item")
-    return {"status": "success", "item": item}
-
-
-# Scanner Endpoints (Strict 2h timeframe)
-@app.get("/api/macd-scan", response_model=ScanResponse, dependencies=[Depends(verify_api_key)])
-@app.get("/api/scan", response_model=ScanResponse, dependencies=[Depends(verify_api_key)])
-async def run_macd_scan(
-    background_tasks: BackgroundTasks,
-    symbols: Annotated[
-        str | None,
-        Query(description="Comma-separated whitelist. If omitted, uses Database Watchlist."),
-    ] = None,
-    limit: Annotated[
-        int, Query(ge=35, le=1500, description="Candles to fetch")
-    ] = MACD_CANDLES,
-    lookback: Annotated[
-        int, Query(ge=1, le=20, description="Candles lookback for crossover")
-    ] = MACD_CROSS_LOOKBACK_CANDLES,
-    include_current: Annotated[
-        bool, Query(description="Include forming candle")
-    ] = MACD_INCLUDE_CURRENT,
-    volume_min: Annotated[
-        float | None, Query(description="Minimum 24h USD volume fallback")
-    ] = None,
-    send_telegram: Annotated[
-        bool, Query(description="Send Telegram alerts")
-    ] = True,
-    save_db: Annotated[
-        bool, Query(description="Save to PostgreSQL")
-    ] = True,
-):
-    start = time.perf_counter()
-    client = _get_client()
-    timeframe = MACD_TIMEFRAME
-
-    if symbols:
-        symbol_list = list(
-            dict.fromkeys(s.upper().strip() for s in symbols.split(",") if s.strip())
-        )[:MACD_MAX_SYMBOLS]
-    else:
-        watchlist_items = await get_watchlist(active_only=True)
-        if watchlist_items:
-            symbol_list = [item["symbol"] for item in watchlist_items][:MACD_MAX_SYMBOLS]
-        else:
-            threshold = volume_min if volume_min is not None else VOLUME_THRESHOLD_USD
-            stats_24h = await asyncio.to_thread(client.ticker_24hr_price_change)
-            if isinstance(stats_24h, dict) and "data" in stats_24h:
-                stats_24h = stats_24h["data"]
-            pairs = [
-                s
-                for s in stats_24h
-                if s.get("symbol", "").endswith("USDT")
-                and float(s.get("quoteVolume", 0)) >= threshold
-            ]
-            pairs.sort(key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)
-            symbol_list = [p["symbol"] for p in pairs[:MACD_MAX_SYMBOLS]]
-
-    if not symbol_list:
-        return ScanResponse(
-            status="error",
-            timeframe=timeframe,
-            limit=limit,
-            lookback=lookback,
-            include_current=include_current,
-            execution_time=f"{time.perf_counter() - start:.2f}s",
-            total_scanned=0,
-            new_signals_count=0,
-            signals=[],
-        )
-
-    sem = asyncio.Semaphore(SCAN_CONCURRENCY)
-
-    failed_symbols: list[str] = []
-
-    async def _detect(sym: str):
-        async with sem:
-            df = await asyncio.to_thread(fetch_klines, client, sym, timeframe, limit)
-            if df is None:
-                failed_symbols.append(sym)
-                return None
-            df = compute_macd(df, fast=MACD_FAST, slow=MACD_SLOW, signal=MACD_SIGNAL)
-            if df is None:
-                return None
-            return detect_macd_cross(
-                df, sym, lookback_candles=lookback, include_current=include_current
-            )
-
-    tasks = [_detect(sym) for sym in symbol_list]
-    results = await asyncio.gather(*tasks)
-    detected = [r for r in results if r is not None]
-
-    signals_output: list[SignalItem] = []
-    telegram_parts = []
-    new_signals_count = 0
-
-    preview = not save_db and not send_telegram
-    alert_enabled = send_telegram and bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
-
-    for sig in detected:
-        if not sig.is_confirmed:
-            # A cross on the forming candle can still disappear before the close, so it is shown
-            # but never claimed, stored or alerted; the confirmed cross is picked up after the close
-            is_new = False
-        elif preview:
-            is_new = not await is_cross_detected(
-                sig.side, sig.symbol, sig.cross_candle_ms, timeframe=timeframe
-            )
-        else:
-            is_new = await claim_cross(
-                sig.side, sig.symbol, sig.cross_candle_ms, timeframe=timeframe
-            )
-        db_id = None
-
-        if is_new and save_db:
-            saved = await save_macd_signal(sig, timeframe=timeframe)
-            if saved and "id" in saved:
-                db_id = saved["id"]
-                if saved.get("inserted") is False:
-                    is_new = False
-            elif alert_enabled:
-                logger.warning(
-                    "Failed to save MACD signal %s %s @ %s; alerting without persistence",
-                    sig.side,
-                    sig.symbol,
-                    sig.cross_candle_ms,
-                )
-            else:
-                is_new = False
-                await release_cross(
-                    sig.side, sig.symbol, sig.cross_candle_ms, timeframe=timeframe
-                )
-                logger.warning(
-                    "Failed to save MACD signal %s %s @ %s; dedup claim released",
-                    sig.side,
-                    sig.symbol,
-                    sig.cross_candle_ms,
-                )
-
-        if is_new:
-            new_signals_count += 1
-            telegram_parts.append(format_signal_alert(sig))
-
-        signals_output.append(
-            SignalItem(
-                id=db_id,
-                symbol=sig.symbol,
-                side=sig.side,
-                reason=sig.reason,
-                cross_time=sig.cross_time,
-                cross_price=round(sig.cross_price, 6),
-                close=round(sig.close, 6),
-                entry_price=round(sig.entry_price, 6),
-                stop_loss=round(sig.stop_loss, 6),
-                tp1=round(sig.tp1, 6),
-                risk_reward_ratio=round(sig.risk_reward_ratio, 2),
-                win_status=sig.win_status,
-                macd=round(sig.macd, 6),
-                signal=round(sig.signal, 6),
-                histogram=round(sig.histogram, 6),
-                bars_ago=sig.bars_ago,
-                confirmed=sig.is_confirmed,
-                is_new=is_new,
-            )
-        )
-
-    stored = await get_signals_by_keys(
-        [(sig.symbol, sig.side, sig.cross_candle_ms) for sig in detected], timeframe=timeframe
-    )
-    for sig, item in zip(detected, signals_output, strict=True):
-        record = stored.get((sig.symbol, sig.side, sig.cross_candle_ms))
-        if record:
-            item.id = record["id"]
-            item.win_status = record["win_status"]
-            item.cross_time = record["cross_time"]
-            item.cross_price = record["cross_price"]
-            item.close = record["close_price"]
-            item.entry_price = record["entry_price"]
-            item.stop_loss = record["stop_loss"]
-            item.tp1 = record["tp1"]
-            item.risk_reward_ratio = record["risk_reward_ratio"]
-            item.confirmed = record["is_confirmed"]
-
-    # Trigger outcome evaluation asynchronously
-    background_tasks.add_task(_evaluate_and_notify, client)
-
-    if send_telegram and telegram_parts:
-        header = "<b>Crossline: MACD 2H signals</b>\n\n"
-        alert_body = header + "\n\n".join(telegram_parts)
-        background_tasks.add_task(send_alert, alert_body)
-
-    elapsed = f"{time.perf_counter() - start:.2f}s"
-    return ScanResponse(
-        status="success",
-        timeframe=timeframe,
-        limit=limit,
-        lookback=lookback,
-        include_current=include_current,
-        execution_time=elapsed,
-        total_scanned=len(symbol_list),
-        new_signals_count=new_signals_count,
-        failed_symbols=sorted(failed_symbols),
-        signals=signals_output,
-    )
-
-
-@app.get("/api/signals", response_model=SignalsHistoryResponse)
-async def list_signals(
-    symbol: Annotated[str | None, Query(description="Filter by symbol")] = None,
-    side: Annotated[str | None, Query(description="Filter by side (LONG/SHORT)")] = None,
-    direction: Annotated[str | None, Query(description="Alias for side")] = None,
-    timeframe: Annotated[str | None, Query(description="Filter by timeframe")] = "2h",
-    win_status: Annotated[str | None, Query(description="Filter by win_status (TP1_HIT, SL_HIT, PENDING)")] = None,
-    result: Annotated[str | None, Query(description="Filter by result (PROFIT, LOSS, PENDING)")] = None,
-    date: Annotated[str | None, Query(description="Filter by date (YYYY-MM-DD)")] = None,
-    start_date: Annotated[str | None, Query(description="Start date")] = None,
-    end_date: Annotated[str | None, Query(description="End date")] = None,
-    limit: Annotated[int, Query(ge=1, le=100, description="Items per page")] = 50,
-    offset: Annotated[int, Query(ge=0, description="Page offset")] = 0,
-):
-    target_side = direction or side
-    records, total, summary = await get_macd_signals(
-        symbol=symbol,
-        side=target_side,
-        timeframe=timeframe,
-        win_status=win_status,
-        result=result,
-        date=date,
-        start_date=start_date,
-        end_date=end_date,
-        limit=limit,
-        offset=offset,
-    )
-    return SignalsHistoryResponse(
-        total=total,
-        limit=limit,
-        offset=offset,
-        summary=summary,
-        signals=records,
-    )
-
-
-@app.get("/api/summary", response_model=SummaryResponse)
-async def signals_summary():
-    data = await get_macd_signals_summary()
-    return SummaryResponse(**data)
+@app.get("/api/summary", dependencies=[Depends(get_principal)], response_model=Envelope[SummaryResponse])
+async def signals_summary(filters: SignalFilters):
+    return success(SummaryResponse(**await signal_stats(signal_conditions(**filters))))

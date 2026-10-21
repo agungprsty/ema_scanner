@@ -35,3 +35,7 @@ venv/
 .ruff_cache/
 .binance_api/
 tests/
+node_modules/
+package.json
+package-lock.json
+tailwind.config.js

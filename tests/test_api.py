@@ -1,18 +1,25 @@
+import hashlib
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from src.config import settings
 from src.main import app
+from src.services import db
 
 pytestmark = pytest.mark.unit
 
-TEST_API_KEY = "test_api_secret_key"
-AUTH_HEADERS = {"X-API-KEY": TEST_API_KEY}
+AUTH_COOKIES = {"st_session": "test_api_session_token"}
 
-
-@pytest.fixture(autouse=True)
-def api_secret_key(monkeypatch):
-    monkeypatch.setattr("src.main.API_SECRET_KEY", TEST_API_KEY)
-    return TEST_API_KEY
+SIGNAL = {
+    "id": 1,
+    "symbol": "BTCUSDT",
+    "side": "LONG",
+    "timeframe": "1h",
+    "signal_candle_ms": 1_760_140_800_000,
+    "status": "TP_HIT",
+    "journal_status": None,
+}
 
 
 @pytest.fixture(autouse=True)
@@ -21,10 +28,17 @@ def mock_db_services(monkeypatch):
         "BTCUSDT": {"symbol": "BTCUSDT", "is_active": True, "notes": "Default"},
         "ETHUSDT": {"symbol": "ETHUSDT", "is_active": True, "notes": "Default"},
     }
-    history_store = []
+    calls = {"signals": [], "stats": []}
 
     async def mock_is_db_connected():
         return True
+
+    async def fake_get_session_user(token_hash):
+        if token_hash == hashlib.sha256(b"test_api_session_token").hexdigest():
+            return {"id": 1, "username": "admin", "role": "administrator", "email": "admin@example.com"}
+        return None
+
+    monkeypatch.setattr("src.api.security.get_session_user", fake_get_session_user)
 
     async def mock_is_redis_connected():
         return True
@@ -53,76 +67,14 @@ def mock_db_services(monkeypatch):
             return True
         return False
 
-    async def mock_get_macd_signals_summary():
-        return {
-            "total_signals": 10,
-            "long_signals": 6,
-            "short_signals": 4,
-            "symbols_count": 2,
-            "tp1_hit_count": 5,
-            "sl_hit_count": 2,
-            "pending_count": 3,
-            "winrate": 71.4,
-            "avg_rr": 1.5,
-            "watchlist_count": len(watchlist_store),
-            "latest_signal_time": "2026-10-11 00:00:00",
-            "total_net_pnl": 12.5,
-            "closed_trades": 7,
-        }
+    async def mock_signal_stats(conditions=()):
+        calls["stats"].append(conditions)
+        counts = {"total": 3, "long": 2, "short": 1, "symbols": 2, "TP_HIT": 1, "NOT_FILLED": 1, "OPEN": 1}
+        return db.build_stats(counts, 1.9, [1.9])
 
-    async def mock_get_macd_signals(*args, **kwargs):
-        signals = [
-            {
-                "id": 1,
-                "symbol": "BTCUSDT",
-                "side": "LONG",
-                "timeframe": "2h",
-                "reason": "MACD_BULLISH_CROSS",
-                "cross_candle_ms": 1728500000000,
-                "cross_time": "2026-10-11 00:00:00",
-                "cross_price": 60000.0,
-                "close_price": 60050.0,
-                "entry_price": 60050.0,
-                "stop_loss": 59000.0,
-                "tp1": 61500.0,
-                "risk_reward_ratio": 1.5,
-                "win_status": "PROFIT",
-                "macd": 10.5,
-                "signal": 8.2,
-                "histogram": 2.3,
-                "bars_ago": 0,
-                "is_confirmed": True,
-            }
-        ]
-        return signals, len(signals), {"open_count": 0, "closed_count": len(signals), "total_r": 1.5}
-
-    async def mock_record_profit_loss(**kwargs):
-        item = {
-            "id": len(history_store) + 1,
-            **kwargs,
-        }
-        history_store.append(item)
-        return item
-
-    async def mock_get_profitloss_history(
-        symbol=None,
-        direction=None,
-        timeframe=None,
-        result=None,
-        date=None,
-        start_date=None,
-        end_date=None,
-        limit=50,
-        offset=0,
-    ):
-        summary = {
-            "total_trades": len(history_store),
-            "profit_count": len([x for x in history_store if x.get("result") == "PROFIT"]),
-            "loss_count": len([x for x in history_store if x.get("result") == "LOSS"]),
-            "winrate": 100.0 if history_store else 0.0,
-            "total_pnl_percent": sum(x.get("pnl_percent", 0.0) for x in history_store),
-        }
-        return history_store, len(history_store), summary
+    async def mock_list_signals(**kwargs):
+        calls["signals"].append(kwargs)
+        return [SIGNAL], 101, {}
 
     monkeypatch.setattr("src.main.is_db_connected", mock_is_db_connected)
     monkeypatch.setattr("src.main.is_redis_connected", mock_is_redis_connected)
@@ -130,10 +82,9 @@ def mock_db_services(monkeypatch):
     monkeypatch.setattr("src.main.add_watchlist_symbol", mock_add_watchlist_symbol)
     monkeypatch.setattr("src.main.delete_watchlist_symbol", mock_delete_watchlist_symbol)
     monkeypatch.setattr("src.main.toggle_watchlist_symbol", mock_toggle_watchlist_symbol)
-    monkeypatch.setattr("src.main.get_macd_signals_summary", mock_get_macd_signals_summary)
-    monkeypatch.setattr("src.main.get_macd_signals", mock_get_macd_signals)
-    monkeypatch.setattr("src.main.record_profit_loss", mock_record_profit_loss)
-    monkeypatch.setattr("src.main.get_profitloss_history", mock_get_profitloss_history)
+    monkeypatch.setattr("src.main.signal_stats", mock_signal_stats)
+    monkeypatch.setattr("src.main.list_signals", mock_list_signals)
+    return calls
 
 
 @pytest.mark.asyncio
@@ -142,12 +93,31 @@ async def test_health_endpoint():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/health")
         assert resp.status_code == 200
-        data = resp.json()
-        assert "status" in data
-        assert "database" in data
-        assert "redis" in data
+        assert '"status":"healthy"' in resp.text  # the deploy gate greps the compact body
+        body = resp.json()
+        assert body["code"] == 200 and body["status"] == "success"
+        assert body["meta"]["path"] == "/api/health"
+        data = body["data"]
+        assert data["status"] == "healthy"
+        assert data["database"] is True
+        assert data["redis"] is True
         assert "cron" in data
-        assert data["timeframe"] == "2h"
+        assert data["timeframe"] == settings.TIMEFRAME
+        assert data["version"] == "3.1.0"
+
+
+@pytest.mark.asyncio
+async def test_health_degraded_still_returns_200(monkeypatch):
+    async def down():
+        return False
+
+    monkeypatch.setattr("src.main.is_redis_connected", down)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/health")
+        assert resp.status_code == 200
+        assert resp.json()["data"]["status"] == "degraded"
+        assert '"status":"healthy"' not in resp.text
 
 
 @pytest.mark.asyncio
@@ -156,177 +126,218 @@ async def test_info_endpoint():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/info")
         assert resp.status_code == 200
-        data = resp.json()
-        assert data["enforced_timeframe"] == "2h"
+        data = resp.json()["data"]
+        assert data["app"] == "Simpletrade"
+        assert data["version"] == "3.1.0"
+        assert data["timeframe"] == settings.TIMEFRAME
+        assert data["interval_ms"] == settings.TIMEFRAME_MS
+        assert data["strategy"] == {
+            "rsi_period": settings.RSI_PERIOD,
+            "oversold": settings.RSI_OVERSOLD,
+            "overbought": settings.RSI_OVERBOUGHT,
+            "tp_percent": settings.TP_PERCENT,
+            "sl_percent": settings.SL_PERCENT,
+            "fill_window_candles": settings.FILL_WINDOW_CANDLES,
+            "max_hold_candles": settings.MAX_HOLD_CANDLES,
+            "fee_percent": settings.ROUND_TRIP_FEE_PERCENT,
+        }
         assert "cron" in data
+        assert "max_symbols" in data
 
 
 @pytest.mark.asyncio
 async def test_watchlist_lifecycle():
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test", headers=AUTH_HEADERS) as client:
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=AUTH_COOKIES) as client:
         # 1. List
         resp = await client.get("/api/watchlist")
         assert resp.status_code == 200
-        assert "watchlist" in resp.json()
+        assert [w["symbol"] for w in resp.json()["data"]] == ["BTCUSDT", "ETHUSDT"]
 
         # 2. Add
         add_resp = await client.post("/api/watchlist", json={"symbol": "TESTCOINUSDT", "notes": "Automated Test"})
         assert add_resp.status_code == 200
         assert add_resp.json()["status"] == "success"
+        assert add_resp.json()["data"]["symbol"] == "TESTCOINUSDT"
 
         # 3. Toggle
         toggle_resp = await client.patch("/api/watchlist/TESTCOINUSDT/toggle", json={"is_active": False})
         assert toggle_resp.status_code == 200
-        assert toggle_resp.json()["is_active"] is False
+        assert toggle_resp.json()["data"] == {"symbol": "TESTCOINUSDT", "is_active": False}
 
         # 4. Delete
         del_resp = await client.delete("/api/watchlist/TESTCOINUSDT")
         assert del_resp.status_code == 200
+        assert del_resp.json()["data"] == {"symbol": "TESTCOINUSDT"}
+
+        # 5. Gone
+        missing = await client.delete("/api/watchlist/TESTCOINUSDT")
+        assert missing.status_code == 404
+        assert missing.json()["message"] == "Symbol not found in watchlist"
 
 
 @pytest.mark.asyncio
-async def test_signals_summary_endpoint():
+async def test_signals_summary_endpoint(mock_db_services):
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/summary")
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=AUTH_COOKIES) as client:
+        assert (await client.get("/api/summary")).json()["data"]["total_signals"] == 3
+        assert mock_db_services["stats"][-1] == []  # no filters: every signal
+
+        resp = await client.get("/api/summary?status=TP_HIT&side=LONG&start_date=2025-10-01")
         assert resp.status_code == 200
-        data = resp.json()
-        assert "winrate" in data
-        assert "tp1_hit_count" in data
-        assert "sl_hit_count" in data
+        assert len(mock_db_services["stats"][-1]) == 3
+        data = resp.json()["data"]
+        assert data["tp_hit_count"] == 1
+        assert data["open_count"] == 1
+        assert data["not_filled_count"] == 1
+        assert data["fill_rate"] == 66.7
+        assert data["winrate"] == 100.0
+        assert data["closed_trades"] == 1
+        assert data["total_net_pnl"] == 1.9
         assert "watchlist_count" in data
-        assert "total_net_pnl" in data
-        assert "closed_trades" in data
+        assert "latest_signal_time" in data
 
 
 @pytest.mark.asyncio
-async def test_signals_list_and_filters():
+async def test_signals_list_and_filters(mock_db_services):
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/signals?limit=10&direction=LONG&result=PROFIT&timeframe=2h")
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=AUTH_COOKIES) as client:
+        resp = await client.get("/api/signals?status=PENDING,OPEN&side=LONG&date=2025-10-11&page=2&per_page=10")
         assert resp.status_code == 200
-        data = resp.json()
-        assert "total" in data
-        assert "signals" in data
-        assert isinstance(data["signals"], list)
-        assert data["summary"]["total_r"] == 1.5
+        body = resp.json()
+        assert body["data"][0]["status"] == "TP_HIT"
+        assert "summary" not in body
+        meta = body["meta"]
+        assert (meta["total_data"], meta["total_pages"], meta["current_page"], meta["per_page"]) == (101, 11, 2, 10)
+        assert meta["path"] == "/api/signals"
+    kwargs = mock_db_services["signals"][0]
+    assert kwargs["status"] == "PENDING,OPEN"
+    assert kwargs["date"] == "2025-10-11"
+    assert kwargs["timeframe"] is None  # no default timeframe filter
+    assert (kwargs["limit"], kwargs["offset"]) == (10, 10)
 
 
 @pytest.mark.asyncio
-async def test_profitloss_history_lifecycle():
+@pytest.mark.parametrize("path", ["/api/signals", "/api/summary"])
+async def test_signals_bad_date_returns_422(path, mock_db_services):
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test", headers=AUTH_HEADERS) as client:
-        # 1. Add record
-        record_payload = {
-            "symbol": "ETHUSDT",
-            "direction": "LONG",
-            "entry_price": 2500.0,
-            "stop_loss": 2450.0,
-            "tp1": 2575.0,
-            "exit_price": 2575.0,
-            "result": "PROFIT",
-            "timeframe": "2h",
-            "pnl_percent": 3.0,
-            "risk_reward_ratio": 1.5,
-            "cross_time": "2026-10-11 00:00:00",
-            "exit_time": "2026-10-11 02:00:00",
-        }
-        add_resp = await client.post("/api/profitloss-history", json=record_payload)
-        assert add_resp.status_code == 200
-        assert add_resp.json()["status"] == "success"
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=AUTH_COOKIES) as client:
+        resp = await client.get(f"{path}?date=11-10-2025")
+        assert resp.status_code == 422
+        assert resp.json()["message"] == "Dates must be YYYY-MM-DD"
+    assert mock_db_services["signals"] == [] and mock_db_services["stats"] == []
 
-        # 2. Get with filters
-        get_resp = await client.get("/api/profitloss-history?direction=LONG&result=PROFIT&symbol=ETHUSDT")
-        assert get_resp.status_code == 200
-        data = get_resp.json()
-        assert data["total"] >= 1
-        assert "summary" in data
-        assert data["summary"]["profit_count"] >= 1
-        assert len(data["history"]) >= 1
-        assert data["history"][0]["symbol"] == "ETHUSDT"
-        assert data["history"][0]["result"] == "PROFIT"
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query", ["page=0", "page=1000001", "per_page=0", "per_page=201", "limit=10&offset=-1&page=x"]
+)
+async def test_signals_rejects_bad_paging(query):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=AUTH_COOKIES) as client:
+        resp = await client.get(f"/api/signals?{query}")
+        assert resp.status_code == 422
+        assert resp.json()["errors"][0]["field"] in ("page", "per_page")
+
+
+@pytest.mark.asyncio
+async def test_single_signal(monkeypatch):
+    async def fake_get_signal(signal_id):
+        return {**SIGNAL, "journal": None} if signal_id == 1 else None
+
+    monkeypatch.setattr("src.main.get_signal", fake_get_signal)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=AUTH_COOKIES) as client:
+        resp = await client.get("/api/signals/1")
+        assert resp.status_code == 200
+        assert resp.json()["data"]["signal_candle_ms"] == SIGNAL["signal_candle_ms"]
+        missing = await client.get("/api/signals/2")
+        assert missing.status_code == 404
+        assert missing.json()["message"] == "Signal not found"
 
 
 @pytest.mark.asyncio
 async def test_cron_endpoints():
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # 1. Check status
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=AUTH_COOKIES) as client:
         status_resp = await client.get("/api/cron/status")
         assert status_resp.status_code == 200
-        status_data = status_resp.json()
+        status_data = status_resp.json()["data"]
         assert "enabled" in status_data
-        assert "interval_hours" in status_data
-        assert status_data["timeframe"] == "2h"
+        assert status_data["timeframe"] == settings.TIMEFRAME
+        assert status_data["interval_ms"] == settings.TIMEFRAME_MS
 
 
 @pytest.mark.asyncio
-async def test_api_key_protection():
+async def test_cron_trigger_success_and_error(monkeypatch):
+    results = iter([{"status": "success", "new_signals": 2}, {"status": "error", "message": "Database not ready"}])
+
+    async def fake_trigger():
+        return next(results)
+
+    monkeypatch.setattr("src.main.cron_scheduler.trigger_now", fake_trigger)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=AUTH_COOKIES) as client:
+        ok = await client.post("/api/cron/trigger")
+        assert ok.status_code == 200
+        assert ok.json()["data"]["result"]["new_signals"] == 2
+        assert ok.json()["data"]["summary"]["total_signals"] == 3
+
+        failed = await client.post("/api/cron/trigger")
+        assert failed.status_code == 503
+        assert failed.json()["message"] == "Scan failed, see server logs"
+        assert "Database not ready" not in failed.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/history"),
+        ("GET", "/api/scan"),
+        ("GET", "/api/macd-scan"),
+        ("GET", "/api/klines?symbol=BTCUSDT"),
+        ("POST", "/api/evaluate"),
+        ("POST", "/api/profitloss-history/evaluate"),
+        ("GET", "/api/profitloss-history"),
+        ("POST", "/api/profitloss-history"),
+        ("GET", "/api/signals/1/candles"),
+    ],
+)
+async def test_removed_routes_are_gone(method, path):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=AUTH_COOKIES) as client:
+        resp = await client.request(method, path)
+        assert resp.status_code == 404
+        assert resp.json()["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_session_cookie_protection():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         fail_resp = await client.post("/api/watchlist", json={"symbol": "KEYTESTUSDT"})
         assert fail_resp.status_code == 401
+        assert fail_resp.json()["message"] == "Authentication required"
 
-        ok_resp = await client.post(
-            "/api/watchlist",
-            json={"symbol": "KEYTESTUSDT"},
-            headers=AUTH_HEADERS,
-        )
+        ok_resp = await client.post("/api/watchlist", json={"symbol": "KEYTESTUSDT"}, cookies=AUTH_COOKIES)
         assert ok_resp.status_code == 200
 
-        bearer_resp = await client.post(
-            "/api/watchlist",
-            json={"symbol": "KEYTEST2USDT"},
-            headers={"Authorization": f"Bearer {TEST_API_KEY}"},
+        wrong_resp = await client.post(
+            "/api/watchlist", json={"symbol": "KEYTESTUSDT"}, cookies={"st_session": "wrong_cookie"}
         )
-        assert bearer_resp.status_code == 200
-
-        await client.delete("/api/watchlist/KEYTESTUSDT", headers=AUTH_HEADERS)
-        await client.delete("/api/watchlist/KEYTEST2USDT", headers=AUTH_HEADERS)
+        assert wrong_resp.status_code == 401
+        assert wrong_resp.json()["message"] == "Authentication required"
 
 
-@pytest.mark.asyncio
-async def test_api_key_unset_returns_503(monkeypatch):
-    monkeypatch.setattr("src.main.API_SECRET_KEY", "")
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/api/watchlist", json={"symbol": "KEYTESTUSDT"}, headers=AUTH_HEADERS)
-        assert resp.status_code == 503
-        assert resp.json()["detail"] == "API key not configured on server"
-
-        no_header_resp = await client.post("/api/cron/trigger")
-        assert no_header_resp.status_code == 503
-
-
-@pytest.mark.asyncio
-async def test_api_key_placeholder_returns_503(monkeypatch):
-    placeholder = "your_secret_api_key_here"
-    monkeypatch.setattr("src.main.API_SECRET_KEY", placeholder)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/api/watchlist", json={"symbol": "KEYTESTUSDT"}, headers={"X-API-KEY": placeholder}
-        )
-        assert resp.status_code == 503
-        assert resp.json()["detail"] == "API key not configured on server"
-
-
-@pytest.mark.asyncio
-async def test_api_key_wrong_returns_401():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/api/watchlist",
-            json={"symbol": "KEYTESTUSDT"},
-            headers={"X-API-KEY": "wrong_key"},
-        )
-        assert resp.status_code == 401
-        assert resp.headers["www-authenticate"] == "Bearer"
-
-        bearer_resp = await client.post(
-            "/api/watchlist",
-            json={"symbol": "KEYTESTUSDT"},
-            headers={"Authorization": "Bearer wrong_key"},
-        )
-        assert bearer_resp.status_code == 401
+def test_openapi_documents_envelopes():
+    spec = app.openapi()
+    assert spec["info"]["title"] == "Simpletrade"
+    signals = spec["paths"]["/api/signals"]["get"]
+    params = {p["name"] for p in signals["parameters"]}
+    assert {"page", "per_page", "status", "date"} <= params and not {"limit", "offset"} & params
+    assert signals["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("PageEnvelope_dict_")
+    assert {"page", "per_page"} & {p["name"] for p in spec["paths"]["/api/summary"]["get"]["parameters"]} == set()
+    # The cookie is read from request.cookies, so Bearer stays the only documented scheme
+    assert spec["components"]["securitySchemes"]["HTTPBearer"]["scheme"] == "bearer"
+    assert spec["paths"]["/api/cron/trigger"]["post"]["security"] == [{"HTTPBearer": []}]

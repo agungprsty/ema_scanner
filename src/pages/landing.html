@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0f1012">
+  <title>simple-trade — RSI 28/72 Limit-Entry Signals</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/tailwind.css">
+  <link rel="stylesheet" href="/static/base.css">
+</head>
+<body class="bg-bg text-brand-text font-sans antialiased min-h-screen">
+  <!-- Header / Navigation -->
+  <header class="border-b border-line bg-bg sticky top-0 z-20">
+    <div class="max-w-[1120px] mx-auto px-4 sm:px-6">
+      <nav class="flex items-center justify-between h-16 gap-4" aria-label="Main Navigation">
+        <a href="/" class="inline-flex items-center gap-2.5 text-base font-semibold tracking-tight text-brand-text">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"></polyline>
+            <polyline points="16 7 22 7 22 13"></polyline>
+          </svg>
+          <span>simple-trade</span>
+        </a>
+        <div class="flex items-center gap-3">
+          <a href="/login" class="inline-flex items-center justify-center h-[34px] px-3.5 rounded text-xs font-medium text-brand-muted hover:text-brand-text hover:bg-surface-2 transition-colors">Log in</a>
+          <a href="/register" class="inline-flex items-center justify-center h-[34px] px-3.5 rounded bg-trade-entry text-bg font-semibold text-xs hover:bg-[#92b4fa] transition-colors">Sign up</a>
+        </div>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <!-- Hero Section -->
+    <section class="py-14 lg:py-20 border-b border-line">
+      <div class="max-w-[1120px] mx-auto px-4 sm:px-6 grid lg:grid-cols-[1.15fr_0.85fr] gap-10 lg:gap-12 items-center">
+        <div class="max-w-xl">
+          <div class="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-surface-2 border border-line-strong text-xs font-medium text-brand-muted mb-5">
+            <span class="w-1.5 h-1.5 rounded-full bg-trade-long"></span>
+            <span>Binance USDⓈ-M Futures Scanner</span>
+          </div>
+          <h1 class="text-3xl sm:text-4xl lg:text-[40px] font-semibold tracking-tight text-brand-text leading-tight mb-4">
+            RSI 28/72 limit-entry signals for Binance USDⓈ-M futures
+          </h1>
+          <p class="text-base text-brand-muted leading-relaxed mb-8">
+            Automated limit orders at extremes, built-in TP/SL tracking, and trade-window charts.
+          </p>
+          <div class="flex flex-wrap gap-3">
+            <a href="/register" class="inline-flex items-center justify-center h-[40px] px-5 rounded bg-trade-entry text-bg font-semibold text-sm hover:bg-[#92b4fa] transition-colors max-sm:w-full">Create account</a>
+            <a href="/login" class="inline-flex items-center justify-center h-[40px] px-5 rounded border border-line-strong bg-surface-2 text-brand-text font-medium text-sm hover:border-[#43464d] transition-colors max-sm:w-full">Log in</a>
+          </div>
+        </div>
+
+        <div class="hero-mock" role="img" aria-label="Mock preview of a filled LONG signal and a pending SHORT signal">
+          <div class="bg-surface border border-line rounded p-5 shadow-2xl">
+            <div class="flex items-center justify-between pb-3.5 border-b border-line mb-3.5">
+              <div class="flex items-baseline gap-2">
+                <span class="text-base font-semibold font-mono text-brand-text">BTCUSDT</span>
+                <span class="px-2 py-0.5 rounded text-[11px] font-mono font-semibold tracking-wider bg-trade-long-bg text-trade-long border border-trade-long/30">LONG</span>
+              </div>
+              <span class="font-mono text-xs text-brand-faint">30m timeframe</span>
+            </div>
+            <div class="flex flex-col gap-2.5 text-xs text-brand-muted">
+              <div class="flex justify-between">
+                <span>RSI (14)</span>
+                <span class="font-mono font-medium text-trade-long">24.80 (Oversold)</span>
+              </div>
+              <div class="flex justify-between">
+                <span>Signal Candle Low</span>
+                <span class="font-mono font-medium text-brand-text">68,420.00</span>
+              </div>
+              <div class="flex justify-between">
+                <span>Limit Entry</span>
+                <span class="font-mono font-medium text-trade-entry">68,420.00</span>
+              </div>
+              <div class="flex justify-between">
+                <span>Target TP (+2.0%)</span>
+                <span class="font-mono font-medium text-trade-long">69,788.40</span>
+              </div>
+              <div class="flex justify-between">
+                <span>Stop Loss (-1.0%)</span>
+                <span class="font-mono font-medium text-trade-short">67,735.80</span>
+              </div>
+            </div>
+            <div class="mt-4 pt-3.5 border-t border-line flex items-center justify-between text-xs text-brand-faint">
+              <span>Status: <strong class="text-trade-long">OPEN</strong> (Filled at low)</span>
+              <span class="font-mono">Holding 3h</span>
+            </div>
+            <div class="mt-3 pt-3 border-t border-line flex items-center justify-between text-xs text-brand-muted">
+              <span class="flex items-baseline gap-2">
+                <span class="font-mono font-semibold text-brand-text">ETHUSDT</span>
+                <span class="px-2 py-0.5 rounded text-[11px] font-mono font-semibold tracking-wider bg-trade-short-bg text-trade-short border border-trade-short/30">SHORT</span>
+              </span>
+              <span class="font-mono"><span class="text-trade-short">RSI 76.10</span> &middot; limit pending</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- How It Works Section -->
+    <section class="py-14 lg:py-16 border-b border-line">
+      <div class="max-w-[1120px] mx-auto px-4 sm:px-6">
+        <div class="mb-9 max-w-2xl">
+          <p class="text-xs font-semibold uppercase tracking-wider text-trade-entry mb-2">Methodology</p>
+          <h2 class="text-2xl font-semibold text-brand-text tracking-tight mb-2.5">How the strategy works</h2>
+          <p class="text-sm text-brand-muted leading-relaxed">Every closed candle is systematically analyzed against disciplined RSI boundary criteria.</p>
+        </div>
+
+        <div class="grid md:grid-cols-3 gap-5">
+          <div class="bg-surface border border-line rounded p-6">
+            <div class="w-7 h-7 rounded-full bg-surface-2 border border-line-strong flex items-center justify-center text-xs font-mono font-semibold text-trade-entry mb-4">1</div>
+            <h3 class="text-base font-semibold text-brand-text mb-2">Candle Close Scan</h3>
+            <p class="text-xs text-brand-muted leading-relaxed">Each candle close across your configured watchlist triggers a single-flight scan against the Binance futures API.</p>
+          </div>
+          <div class="bg-surface border border-line rounded p-6">
+            <div class="w-7 h-7 rounded-full bg-surface-2 border border-line-strong flex items-center justify-center text-xs font-mono font-semibold text-trade-entry mb-4">2</div>
+            <h3 class="text-base font-semibold text-brand-text mb-2">Extreme Limit Entry</h3>
+            <p class="text-xs text-brand-muted leading-relaxed">When 14-period RSI reaches ≤28 (Oversold) or ≥72 (Overbought), a limit entry is set at the extreme high or low of that candle.</p>
+          </div>
+          <div class="bg-surface border border-line rounded p-6">
+            <div class="w-7 h-7 rounded-full bg-surface-2 border border-line-strong flex items-center justify-center text-xs font-mono font-semibold text-trade-entry mb-4">3</div>
+            <h3 class="text-base font-semibold text-brand-text mb-2">Automated Lifecycle</h3>
+            <p class="text-xs text-brand-muted leading-relaxed">Positions track fill confirmation, fixed 2.0% TP, 1.0% SL, and max holding periods, with instant alerts sent via Telegram.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Features Grid -->
+    <section class="py-14 lg:py-16 border-b border-line">
+      <div class="max-w-[1120px] mx-auto px-4 sm:px-6">
+        <div class="mb-9 max-w-2xl">
+          <p class="text-xs font-semibold uppercase tracking-wider text-trade-entry mb-2">Features</p>
+          <h2 class="text-2xl font-semibold text-brand-text tracking-tight mb-2.5">Engineered for signal clarity</h2>
+          <p class="text-sm text-brand-muted leading-relaxed">A purpose-built interface designed around trade execution without unnecessary noise.</p>
+        </div>
+
+        <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div class="bg-surface border border-line rounded p-5">
+            <div class="w-8 h-8 rounded bg-surface-2 flex items-center justify-center text-trade-entry mb-3.5" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            </div>
+            <h3 class="text-sm font-semibold text-brand-text mb-1.5">Watchlist Control</h3>
+            <p class="text-xs text-brand-muted leading-relaxed">The symbols the scanner watches, each with its own active state and notes.</p>
+          </div>
+
+          <div class="bg-surface border border-line rounded p-5">
+            <div class="w-8 h-8 rounded bg-surface-2 flex items-center justify-center text-trade-entry mb-3.5" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+            </div>
+            <h3 class="text-sm font-semibold text-brand-text mb-1.5">Active & History Tabs</h3>
+            <p class="text-xs text-brand-muted leading-relaxed">Separated views for live pending/open signals and completed historical outcomes.</p>
+          </div>
+
+          <div class="bg-surface border border-line rounded p-5">
+            <div class="w-8 h-8 rounded bg-surface-2 flex items-center justify-center text-trade-entry mb-3.5" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+            </div>
+            <h3 class="text-sm font-semibold text-brand-text mb-1.5">Trade-Window Charts</h3>
+            <p class="text-xs text-brand-muted leading-relaxed">Interactive candlestick charts scoped specifically to each signal's entry and exit lifespan.</p>
+          </div>
+
+          <div class="bg-surface border border-line rounded p-5">
+            <div class="w-8 h-8 rounded bg-surface-2 flex items-center justify-center text-trade-entry mb-3.5" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+            </div>
+            <h3 class="text-sm font-semibold text-brand-text mb-1.5">Performance Analytics</h3>
+            <p class="text-xs text-brand-muted leading-relaxed">Transparent reporting of win rates, profit factors, TP hit rates, and hold durations.</p>
+          </div>
+
+          <div class="bg-surface border border-line rounded p-5">
+            <div class="w-8 h-8 rounded bg-surface-2 flex items-center justify-center text-trade-entry mb-3.5" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            </div>
+            <h3 class="text-sm font-semibold text-brand-text mb-1.5">Deterministic Cron</h3>
+            <p class="text-xs text-brand-muted leading-relaxed">One scan right after every candle close, with the cron status and next run shown on the dashboard.</p>
+          </div>
+
+          <div class="bg-surface border border-line rounded p-5">
+            <div class="w-8 h-8 rounded bg-surface-2 flex items-center justify-center text-trade-entry mb-3.5" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+            </div>
+            <h3 class="text-sm font-semibold text-brand-text mb-1.5">WIB Clock</h3>
+            <p class="text-xs text-brand-muted leading-relaxed">Signal and candle times shown in Western Indonesia Time next to the live dashboard clock.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Strategy Parameters Section -->
+    <section class="py-14 lg:py-16">
+      <div class="max-w-[1120px] mx-auto px-4 sm:px-6">
+        <div class="mb-9 max-w-2xl">
+          <p class="text-xs font-semibold uppercase tracking-wider text-trade-entry mb-2">Specifications</p>
+          <h2 class="text-2xl font-semibold text-brand-text tracking-tight mb-2.5">Standard strategy parameters</h2>
+          <p class="text-sm text-brand-muted leading-relaxed">Default parameters used across all scanner iterations on Binance USDⓈ-M futures.</p>
+        </div>
+
+        <div class="overflow-x-auto border border-line rounded bg-surface">
+          <table class="w-full border-collapse text-xs sm:text-sm text-left">
+            <thead>
+              <tr class="bg-surface-2 border-b border-line text-brand-faint text-xs uppercase tracking-wider">
+                <th class="px-4 sm:px-5 py-3 font-medium">Parameter</th>
+                <th class="px-4 sm:px-5 py-3 font-medium">Setting</th>
+                <th class="px-4 sm:px-5 py-3 font-medium">Description</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-line text-brand-muted">
+              <tr>
+                <td class="px-4 sm:px-5 py-3 text-brand-text font-medium">RSI Period</td>
+                <td class="px-4 sm:px-5 py-3 font-mono font-medium text-trade-entry">14</td>
+                <td class="px-4 sm:px-5 py-3 text-brand-faint">Standard Wilder's RSI calculation period.</td>
+              </tr>
+              <tr>
+                <td class="px-4 sm:px-5 py-3 text-brand-text font-medium">Oversold Threshold</td>
+                <td class="px-4 sm:px-5 py-3 font-mono font-medium text-trade-entry">&le; 28.0</td>
+                <td class="px-4 sm:px-5 py-3 text-brand-faint">Generates a LONG signal with limit entry at candle low.</td>
+              </tr>
+              <tr>
+                <td class="px-4 sm:px-5 py-3 text-brand-text font-medium">Overbought Threshold</td>
+                <td class="px-4 sm:px-5 py-3 font-mono font-medium text-trade-entry">&ge; 72.0</td>
+                <td class="px-4 sm:px-5 py-3 text-brand-faint">Generates a SHORT signal with limit entry at candle high.</td>
+              </tr>
+              <tr>
+                <td class="px-4 sm:px-5 py-3 text-brand-text font-medium">Take Profit (TP)</td>
+                <td class="px-4 sm:px-5 py-3 font-mono font-medium text-trade-entry">+2.0%</td>
+                <td class="px-4 sm:px-5 py-3 text-brand-faint">Target exit level for automated gain realization.</td>
+              </tr>
+              <tr>
+                <td class="px-4 sm:px-5 py-3 text-brand-text font-medium">Stop Loss (SL)</td>
+                <td class="px-4 sm:px-5 py-3 font-mono font-medium text-trade-entry">-1.0%</td>
+                <td class="px-4 sm:px-5 py-3 text-brand-faint">Predefined risk boundary to protect trade capital.</td>
+              </tr>
+              <tr>
+                <td class="px-4 sm:px-5 py-3 text-brand-text font-medium">Estimated Fee</td>
+                <td class="px-4 sm:px-5 py-3 font-mono font-medium text-trade-entry">0.10%</td>
+                <td class="px-4 sm:px-5 py-3 text-brand-faint">Deducted on round-trip trades when calculating net performance.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Final CTA Banner -->
+        <div class="bg-surface border border-line-strong rounded p-8 sm:p-10 text-center my-12">
+          <h2 class="text-2xl font-semibold text-brand-text mb-2.5">Start watching signals</h2>
+          <p class="text-sm text-brand-muted max-w-md mx-auto mb-6">Join now to access live scanner signals, historical outcomes, and candlestick charts.</p>
+          <div class="flex flex-wrap justify-center gap-3">
+            <a href="/register" class="inline-flex items-center justify-center h-[40px] px-5 rounded bg-trade-entry text-bg font-semibold text-sm hover:bg-[#92b4fa] transition-colors max-sm:w-full">Sign up</a>
+          </div>
+        </div>
+
+        <div class="pt-6 border-t border-line text-xs text-brand-faint leading-relaxed">
+          <strong class="text-brand-muted">Risk Disclaimer:</strong> Not financial advice. Futures trading is high risk. simple-trade provides signals for informational purposes only.
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="border-t border-line py-8">
+    <div class="max-w-[1120px] mx-auto px-4 sm:px-6">
+      <div class="flex flex-wrap items-center justify-between gap-4 text-xs text-brand-faint">
+        <div>
+          <span>&copy; 2026 simple-trade. All rights reserved.</span>
+        </div>
+        <div class="flex gap-4">
+          <a href="/login" class="hover:text-brand-text transition-colors">Log in</a>
+          <a href="/register" class="hover:text-brand-text transition-colors">Sign up</a>
+          <a href="/dashboard" class="hover:text-brand-text transition-colors">Dashboard</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

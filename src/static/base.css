@@ -1,0 +1,357 @@
+/* base.css - Shared design tokens, reset, typography, and core components */
+
+:root {
+  --bg: #0f1012;
+  --surface: #151619;
+  --surface-2: #1b1c20;
+  --line: #25272c;
+  --line-strong: #34373d;
+
+  --text: #e6e7e9;
+  --text-2: #a3a6ad;
+  --text-3: #6f737b;
+
+  --long: #3fb68b;
+  --long-bg: rgba(63, 182, 139, 0.12);
+  --short: #e5605a;
+  --short-bg: rgba(229, 96, 90, 0.12);
+  --entry: #7aa2f7;
+  --entry-bg: rgba(122, 162, 247, 0.12);
+  --warn: #d4a72c;
+  --warn-bg: rgba(212, 167, 44, 0.12);
+
+  --font-sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+  --radius: 6px;
+  --control-h: 34px;
+  --gutter: max(16px, env(safe-area-inset-left), env(safe-area-inset-right));
+}
+
+@media (max-width: 599px) {
+  :root { --control-h: 40px; }
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  color-scheme: dark;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+
+button, input, select, textarea {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--entry);
+  outline-offset: 2px;
+}
+
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.muted { color: var(--text-3); }
+.is-long { color: var(--long); }
+.is-short { color: var(--short); }
+
+/* Buttons */
+.btn {
+  height: var(--control-h);
+  padding: 0 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  white-space: nowrap;
+  touch-action: manipulation;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  text-decoration: none;
+}
+
+.btn:hover {
+  background: #23252b;
+  border-color: #43464d;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--entry);
+  border-color: var(--entry);
+  color: #0f1012;
+  font-weight: 600;
+}
+
+.btn-primary:hover {
+  background: #92b4fa;
+  border-color: #92b4fa;
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-2);
+}
+
+.btn-ghost:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.btn-quiet {
+  height: auto;
+  min-height: 32px;
+  padding: 4px 8px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+.btn-quiet:hover {
+  color: var(--short);
+  background: transparent;
+}
+
+/* Inputs & Form Elements */
+.input,
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="date"],
+select,
+textarea {
+  height: var(--control-h);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 0 12px;
+  font-size: 13px;
+  min-width: 0;
+  width: 100%;
+  color: var(--text);
+  transition: border-color 0.15s ease;
+}
+
+@media (max-width: 599px) {
+  .input,
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="date"],
+  select,
+  textarea {
+    font-size: 16px; /* Prevents iOS Safari auto-zoom */
+  }
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-3);
+}
+
+.input:hover,
+input:hover,
+select:hover,
+textarea:hover {
+  border-color: #43464d;
+}
+
+.input:focus,
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--entry);
+  outline: none;
+}
+
+.input[aria-invalid="true"],
+input[aria-invalid="true"] {
+  border-color: var(--short);
+}
+
+/* Form Groups & Validation Feedback */
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+  text-align: left;
+}
+
+.field-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.field-error {
+  font-size: 12px;
+  color: var(--short);
+  min-height: 16px;
+  line-height: 1.3;
+}
+
+.form-alert {
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: var(--short-bg);
+  border: 1px solid var(--short);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+  margin-bottom: 16px;
+  display: none;
+}
+
+.form-alert:not(:empty) {
+  display: block;
+}
+
+.field-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+}
+
+.field-checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--entry);
+  cursor: pointer;
+}
+
+/* Auth Card Layout */
+.auth-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 32px var(--gutter);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 28px 24px;
+}
+
+.auth-header {
+  margin-bottom: 24px;
+  text-align: center;
+}
+
+.auth-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-2);
+  margin-bottom: 16px;
+}
+
+.auth-brand:hover {
+  color: var(--text);
+}
+
+.auth-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+  margin-bottom: 6px;
+}
+
+.auth-subtitle {
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.auth-footer {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.auth-footer a {
+  color: var(--entry);
+}
+
+.auth-footer a:hover {
+  text-decoration: underline;
+}
+
+.auth-back-link {
+  color: var(--text-3) !important;
+}
+
+.auth-back-link:hover {
+  color: var(--text) !important;
+}
+
+/* Role Visibility Helper */
+body:not([data-role]) .admin-only,
+body[data-role="user"] .admin-only {
+  display: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}

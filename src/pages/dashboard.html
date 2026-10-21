@@ -5,117 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#0f1012">
-  <title>Crossline</title>
+  <title>simple-trade</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
-
-  <!-- The chart library loads on demand (see app.js); warming the connection keeps the first chart quick -->
-  <link rel="preconnect" href="https://unpkg.com">
+  <link rel="stylesheet" href="/static/tailwind.css">
+  <link rel="stylesheet" href="/static/base.css">
+  <link rel="stylesheet" href="/static/app.css">
 
   <style>
-    :root {
-      --bg: #0f1012;
-      --surface: #151619;
-      --surface-2: #1b1c20;
-      --line: #25272c;
-      --line-strong: #34373d;
-
-      --text: #e6e7e9;
-      --text-2: #a3a6ad;
-      --text-3: #6f737b;
-
-      --long: #3fb68b;
-      --long-bg: rgba(63, 182, 139, 0.12);
-      --short: #e5605a;
-      --short-bg: rgba(229, 96, 90, 0.12);
-      --entry: #7aa2f7;
-      --warn: #d4a72c;
-      --warn-bg: rgba(212, 167, 44, 0.12);
-
-      --font-sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
-      --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
-
-      --radius: 6px;
-      --control-h: 34px;
-      --gutter: max(16px, env(safe-area-inset-left), env(safe-area-inset-right));
-    }
-
-    @media (max-width: 599px) {
-      :root { --control-h: 40px; }
-    }
-
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-    html { color-scheme: dark; -webkit-text-size-adjust: 100%; }
-
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: var(--font-sans);
-      font-size: 14px;
-      line-height: 1.5;
-      -webkit-font-smoothing: antialiased;
-      min-height: 100vh;
-    }
-
-    button, input, select, textarea { font: inherit; color: inherit; }
-
-    :focus-visible { outline: 2px solid var(--entry); outline-offset: 2px; }
-
-    .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-    .muted { color: var(--text-3); }
-    .is-long { color: var(--long); }
-    .is-short { color: var(--short); }
-
-    .wrap {
-      max-width: 1240px;
-      margin: 0 auto;
-      padding: 0 var(--gutter) calc(48px + env(safe-area-inset-bottom));
-    }
-
-    @media (min-width: 768px) {
-      .wrap { padding-left: 28px; padding-right: 28px; }
-    }
-
-    /* Top bar */
-    .topbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 8px 24px;
-      padding: 16px 0;
-      border-bottom: 1px solid var(--line);
-      margin-bottom: 20px;
-    }
-
-    .brand { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; min-width: 0; }
-    .brand-name { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
-    .brand-meta { font-size: 13px; color: var(--text-3); }
-
-    .status {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 4px 20px;
-      font-size: 13px;
-      color: var(--text-2);
-    }
-
-    .status div { display: flex; gap: 6px; align-items: center; }
-    .status dt { color: var(--text-3); }
-
-    .dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: var(--text-3);
-      display: inline-block;
-    }
-    .dot.ok { background: var(--long); }
-    .dot.warn { background: var(--warn); }
-    .dot.err { background: var(--short); }
 
     /* Stats */
     .stats {
@@ -130,7 +29,11 @@
     }
 
     @media (min-width: 900px) {
-      .stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .stats { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 899px) {
+      .stat:last-child { grid-column: 1 / -1; }
     }
 
     .stat { background: var(--surface); padding: 14px 16px; min-width: 0; }
@@ -157,26 +60,22 @@
     .split-bar .l { background: var(--short); }
     .split-bar .x { background: var(--text-3); }
 
-    /* Scan controls */
+    /* Run controls */
     .controls {
       display: flex;
-      align-items: flex-end;
+      align-items: center;
       justify-content: space-between;
       flex-wrap: wrap;
       gap: 12px;
       margin-bottom: 12px;
     }
 
-    .params { display: flex; gap: 12px; flex-wrap: wrap; }
-
-    .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-    .field-label { font-size: 12px; color: var(--text-3); }
+    .controls-note { font-size: 13px; color: var(--text-3); }
 
     .actions { display: flex; gap: 8px; }
 
     @media (max-width: 599px) {
-      .params, .actions { width: 100%; }
-      .params .field { flex: 1; }
+      .actions { width: 100%; }
       .actions .btn { flex: 1; justify-content: center; }
     }
 
@@ -190,8 +89,6 @@
       min-width: 0;
       width: 100%;
     }
-
-    textarea { height: auto; padding: 8px 10px; resize: vertical; line-height: 1.4; }
 
     /* 16px stops iOS Safari from zooming into focused fields */
     @media (max-width: 599px) {
@@ -249,19 +146,6 @@
     }
     .btn-quiet:hover { color: var(--short); background: transparent; }
 
-    .spinner {
-      width: 12px;
-      height: 12px;
-      border: 1.5px solid currentColor;
-      border-right-color: transparent;
-      border-radius: 50%;
-      animation: spin 0.7s linear infinite;
-      display: none;
-      flex-shrink: 0;
-    }
-    .spinner.on { display: inline-block; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-
     .notice {
       font-size: 13px;
       color: var(--short);
@@ -270,6 +154,7 @@
       padding: 8px 12px;
       margin-bottom: 12px;
     }
+    .notice.warn { color: var(--warn); background: var(--warn-bg); }
 
     /* Panel */
     .panel {
@@ -348,7 +233,7 @@
       #filter-symbol { width: 130px; }
       #filter-date { width: 150px; }
       #filter-side { width: 115px; }
-      #filter-result { width: 140px; }
+      #filter-status { width: 140px; }
       #filter-journal { width: 140px; }
     }
 
@@ -427,20 +312,6 @@
       color: var(--text-3);
     }
     .tag-new { color: var(--warn); }
-    .tag-forming { color: var(--entry); }
-
-    .outcome {
-      display: inline-block;
-      font-size: 12px;
-      padding: 1px 8px;
-      border-radius: 4px;
-      background: var(--surface-2);
-      color: var(--text-2);
-      white-space: nowrap;
-    }
-    .outcome.win { background: var(--long-bg); color: var(--long); }
-    .outcome.loss { background: var(--short-bg); color: var(--short); }
-    .outcome.expired { background: var(--warn-bg); color: var(--warn); }
 
     .empty {
       padding: 40px 16px;
@@ -532,185 +403,6 @@
     .toggle input:checked + .track::after { transform: translateX(12px); background: #fff; }
     .toggle input:focus-visible + .track { outline: 2px solid var(--entry); outline-offset: 2px; }
 
-    /* Signal detail dialog */
-    dialog {
-      border: 1px solid var(--line-strong);
-      border-radius: 8px;
-      background: var(--surface);
-      color: var(--text);
-      width: min(1000px, calc(100vw - 24px));
-      max-height: calc(100vh - 24px);
-      margin: auto;
-      padding: 0;
-      overscroll-behavior: contain;
-    }
-    dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
-
-    .dlg-head {
-      position: sticky;
-      top: 0;
-      z-index: 5;
-      background: var(--surface);
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      gap: 16px;
-      padding: 16px 20px;
-      border-bottom: 1px solid var(--line);
-    }
-    .dlg-title { font-size: 16px; font-weight: 600; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
-    .dlg-sub { font-size: 12px; color: var(--text-3); margin-top: 2px; }
-
-    .dlg-close {
-      background: none;
-      border: none;
-      color: var(--text-3);
-      font-size: 22px;
-      line-height: 1;
-      width: 40px;
-      height: 40px;
-      margin: -6px -10px 0 0;
-      border-radius: var(--radius);
-      cursor: pointer;
-      flex-shrink: 0;
-    }
-    .dlg-close:hover { color: var(--text); background: var(--surface-2); }
-
-    .dlg-body { padding: 16px 20px 20px; }
-
-    @media (max-width: 599px) {
-      dialog {
-        width: 100%;
-        max-width: 100%;
-        height: 100%;
-        max-height: 100%;
-        border: none;
-        border-radius: 0;
-      }
-      .dlg-head { padding: calc(12px + env(safe-area-inset-top)) var(--gutter) 12px; }
-      .dlg-body { padding: 16px var(--gutter) calc(24px + env(safe-area-inset-bottom)); }
-    }
-
-    .chart {
-      height: 280px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      margin-bottom: 16px;
-      overflow: hidden;
-    }
-
-    @media (min-width: 768px) {
-      .chart { height: 360px; }
-    }
-
-    .chart-msg {
-      height: 100%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      padding: 0 16px;
-      text-align: center;
-      font-size: 13px;
-      color: var(--text-3);
-    }
-    .chart-msg.err { color: var(--short); }
-
-    .levels {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 14px 24px;
-    }
-
-    @media (min-width: 640px) {
-      .levels { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-    }
-
-    .levels dt { font-size: 12px; color: var(--text-3); }
-    .levels dd { font-size: 15px; margin-top: 2px; overflow-wrap: anywhere; }
-    .levels dd small { font-size: 12px; color: var(--text-3); margin-left: 6px; }
-    .levels .hint { display: block; font-size: 12px; color: var(--text-3); margin-top: 2px; font-family: var(--font-sans); }
-    .levels hr { grid-column: 1 / -1; border: none; border-top: 1px solid var(--line); }
-
-    /* Journal form */
-    .journal {
-      margin-top: 20px;
-      padding-top: 16px;
-      border-top: 1px solid var(--line);
-    }
-    .journal h3 { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
-    .journal-help { font-size: 12px; color: var(--text-3); margin-bottom: 12px; }
-
-    .seg {
-      display: inline-flex;
-      border: 1px solid var(--line-strong);
-      border-radius: var(--radius);
-      overflow: hidden;
-      margin-bottom: 12px;
-    }
-    .seg label { position: relative; }
-    .seg input { position: absolute; opacity: 0; width: 1px; height: 1px; }
-    .seg span {
-      display: inline-flex;
-      align-items: center;
-      height: var(--control-h);
-      padding: 0 14px;
-      font-size: 13px;
-      color: var(--text-2);
-      cursor: pointer;
-      border-left: 1px solid var(--line-strong);
-    }
-    .seg label:first-child span { border-left: none; }
-    .seg input:checked + span { background: var(--surface-2); color: var(--text); font-weight: 500; }
-    .seg input:focus-visible + span { outline: 2px solid var(--entry); outline-offset: -2px; }
-
-    .journal-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
-      max-width: 560px;
-    }
-    .journal-grid .wide { grid-column: 1 / -1; }
-
-    .journal-foot {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 12px;
-      margin-top: 12px;
-      max-width: 560px;
-    }
-    .journal-result { font-size: 13px; color: var(--text-2); }
-
-    @media (max-width: 599px) {
-      .seg { display: flex; }
-      .seg label { flex: 1; }
-      .seg span { width: 100%; justify-content: center; }
-      .journal-foot .btn { width: 100%; }
-    }
-
-    /* Toast */
-    .toast {
-      position: fixed;
-      left: 50%;
-      bottom: calc(20px + env(safe-area-inset-bottom));
-      transform: translateX(-50%);
-      z-index: 2000;
-      background: var(--text);
-      color: #111214;
-      font-size: 13px;
-      font-weight: 500;
-      padding: 8px 14px;
-      border-radius: var(--radius);
-      max-width: calc(100vw - 32px);
-    }
-
-    [hidden] { display: none; }
-
-    @media (prefers-reduced-motion: reduce) {
-      *, *::before, *::after { transition: none !important; }
-      .spinner { animation-duration: 2s; }
     }
   </style>
 </head>
@@ -718,14 +410,21 @@
   <div class="wrap">
     <header class="topbar">
       <div class="brand">
-        <span class="brand-name">Crossline</span>
-        <span class="brand-meta">MACD crossover scanner, 2H, Binance USDⓈ-M futures</span>
+        <span class="brand-name">simple-trade</span>
+        <span class="brand-meta" id="brand-meta">RSI 28/72 scanner · Binance USDⓈ-M futures</span>
       </div>
-      <dl class="status">
-        <div><dt>API</dt><dd><span class="dot" id="health-dot"></span> <span id="health-text">Checking</span></dd></div>
-        <div><dt>Next cron</dt><dd class="num" id="cron-text">--:--</dd></div>
-        <div><dt>WIB</dt><dd class="num" id="clock">--:--:--</dd></div>
-      </dl>
+      <div class="topbar-right">
+        <dl class="status">
+          <div><dt>API</dt><dd><span class="dot" id="health-dot"></span> <span id="health-text">Checking</span></dd></div>
+          <div><dt>Next cron</dt><dd class="num" id="cron-text">--:--</dd></div>
+          <div><dt>WIB</dt><dd class="num" id="clock">--:--:--</dd></div>
+        </dl>
+        <div class="user-info">
+          <span class="num user-name" id="user-name"></span>
+          <span class="user-role-badge" id="user-role"></span>
+          <button class="btn btn-quiet" id="btn-logout" type="button">Log out</button>
+        </div>
+      </div>
     </header>
 
     <section class="stats" aria-label="Summary">
@@ -734,6 +433,11 @@
         <div class="stat-value num" id="stat-winrate">–</div>
         <div class="split-bar" aria-hidden="true"><span class="w" id="bar-wins" style="width:0"></span><span class="l" id="bar-losses" style="width:0"></span><span class="x" id="bar-expired" style="width:0"></span></div>
         <div class="stat-sub" id="stat-win-ratio">No closed trades yet</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Fill rate</div>
+        <div class="stat-value num" id="stat-fillrate">–</div>
+        <div class="stat-sub" id="stat-fill-sub">No fill windows closed yet</div>
       </div>
       <div class="stat">
         <div class="stat-label">Net result</div>
@@ -746,66 +450,51 @@
         <div class="stat-sub">Largest fall from a peak</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Open signals</div>
+        <div class="stat-label">Active trades</div>
         <div class="stat-value num" id="stat-open">–</div>
         <div class="stat-sub" id="stat-open-sub">0 recorded</div>
       </div>
     </section>
 
-    <section class="controls" aria-label="Scan">
-      <div class="params">
-        <label class="field">
-          <span class="field-label">Look back</span>
-          <select id="select-lookback">
-            <option value="1">1 bar</option>
-            <option value="3">3 bars</option>
-            <option value="5" selected>5 bars</option>
-            <option value="10">10 bars</option>
-          </select>
-        </label>
-        <label class="field">
-          <span class="field-label">Candle</span>
-          <select id="select-forming">
-            <option value="false" selected>Closed only</option>
-            <option value="true">Include forming</option>
-          </select>
-        </label>
-      </div>
+    <section class="controls admin-only" aria-label="Run">
+      <p class="controls-note">Runs after every candle close. Run now scans the watchlist and updates open trades immediately.</p>
       <div class="actions">
-        <button class="btn" id="btn-eval" type="button">Evaluate outcomes</button>
         <button class="btn btn-primary" id="btn-scan" type="button">
           <span class="spinner" id="scan-icon"></span>
-          <span id="scan-label">Run scan</span>
+          <span id="scan-label">Run now</span>
         </button>
       </div>
     </section>
 
     <div class="notice" id="action-notice" role="alert" hidden></div>
+    <div class="notice warn" id="watchlist-notice" hidden>The watchlist has no active symbols, so runs scan nothing. Add or turn on a symbol in the Watchlist tab.</div>
 
     <section class="panel">
       <div class="panel-head">
         <div class="tabs" role="tablist" aria-label="Views">
-          <button class="tab" role="tab" id="tab-scan" data-tab="scan" aria-selected="true">Latest scan</button>
-          <button class="tab" role="tab" id="tab-history" data-tab="history" aria-selected="false">Signals</button>
-          <button class="tab" role="tab" id="tab-journal" data-tab="journal" aria-selected="false">Journal</button>
+          <button class="tab" role="tab" id="tab-active" data-tab="active" aria-selected="true">Active</button>
+          <button class="tab" role="tab" id="tab-history" data-tab="history" aria-selected="false">History</button>
+          <button class="tab admin-only" role="tab" id="tab-journal" data-tab="journal" aria-selected="false">Journal</button>
           <button class="tab" role="tab" id="tab-watchlist" data-tab="watchlist" aria-selected="false">Watchlist<span class="count num" id="wl-count"></span></button>
         </div>
         <div class="filters" id="filters">
-          <input type="text" id="filter-symbol" data-tabs="scan history journal" placeholder="Symbol" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Filter by symbol">
-          <input type="date" id="filter-date" data-tabs="scan history" aria-label="Filter by date">
-          <select id="filter-side" data-tabs="scan history" aria-label="Filter by side">
+          <input type="text" id="filter-symbol" data-tabs="active history journal" placeholder="Symbol" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Filter by symbol">
+          <input type="date" id="filter-date" data-tabs="active history" aria-label="Filter by date">
+          <select id="filter-side" data-tabs="active history" aria-label="Filter by side">
             <option value="">Any side</option>
             <option value="LONG">Long</option>
             <option value="SHORT">Short</option>
           </select>
-          <select id="filter-result" data-tabs="scan history" aria-label="Filter by outcome">
-            <option value="">Any outcome</option>
-            <option value="PROFIT">Target hit</option>
-            <option value="LOSS">Stopped out</option>
+          <select id="filter-status" data-tabs="active history" aria-label="Filter by status">
+            <option value="">Any status</option>
+            <option value="PENDING">Awaiting fill</option>
+            <option value="OPEN">Open</option>
+            <option value="TP_HIT">Target hit</option>
+            <option value="SL_HIT">Stopped out</option>
             <option value="EXPIRED">Expired</option>
-            <option value="PENDING">Open</option>
+            <option value="NOT_FILLED">Not filled</option>
           </select>
-          <select id="filter-journal" data-tabs="journal" aria-label="Filter by journal status">
+          <select id="filter-journal" class="admin-only" data-tabs="journal" aria-label="Filter by journal status">
             <option value="">Any decision</option>
             <option value="TAKEN">Taken</option>
             <option value="SKIPPED">Skipped</option>
@@ -822,19 +511,18 @@
               <tr>
                 <th>Symbol</th>
                 <th>Side</th>
-                <th class="r">Entry</th>
-                <th class="r">Stop</th>
-                <th class="r">Target</th>
-                <th>Outcome</th>
-                <th class="r">Result</th>
-                <th>Crossed (WIB)</th>
+                <th class="r">RSI</th>
+                <th class="r">Entry (limit)</th>
+                <th>Status</th>
+                <th class="r">R</th>
+                <th>Signal (WIB)</th>
               </tr>
             </thead>
             <tbody id="signals-tbody"></tbody>
           </table>
         </div>
         <div class="card-view" id="signals-cards"></div>
-        <nav class="pager" data-pager="history" aria-label="Pages" hidden>
+        <nav class="pager" data-pager="signals" aria-label="Pages" hidden>
           <span class="pager-info num"></span>
           <div class="pager-btns">
             <button class="btn" type="button" data-step="-1">Previous</button>
@@ -854,8 +542,8 @@
                 <th class="r">Entry fill</th>
                 <th class="r">Exit fill</th>
                 <th class="r">Your result</th>
-                <th>Signal outcome</th>
-                <th>Crossed (WIB)</th>
+                <th>Signal status</th>
+                <th>Signal (WIB)</th>
               </tr>
             </thead>
             <tbody id="journal-tbody"></tbody>
@@ -872,7 +560,7 @@
       </div>
 
       <div id="view-watchlist" hidden>
-        <form class="wl-add" id="wl-form">
+        <form class="wl-add admin-only" id="wl-form">
           <input type="text" id="input-new-symbol" placeholder="Add symbol, e.g. SUIUSDT" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Symbol to add">
           <button class="btn" id="btn-add-symbol" type="submit">Add</button>
         </form>
@@ -881,62 +569,9 @@
     </section>
   </div>
 
-  <dialog id="signal-modal" aria-labelledby="modal-title">
-    <div class="dlg-head">
-      <div>
-        <h2 class="dlg-title" id="modal-title">Signal</h2>
-        <p class="dlg-sub" id="modal-time"></p>
-      </div>
-      <button class="dlg-close" id="modal-close" type="button" aria-label="Close">&times;</button>
-    </div>
-    <div class="dlg-body">
-      <div class="chart" id="chart-viewport"></div>
-      <dl class="levels">
-        <div><dt>Entry</dt><dd class="num" id="detail-entry">–</dd></div>
-        <div><dt>Stop loss</dt><dd class="num is-short" id="detail-sl">–</dd></div>
-        <div><dt>Target (TP1)</dt><dd class="num is-long" id="detail-tp">–</dd></div>
-        <div><dt>Outcome</dt><dd id="detail-outcome">–</dd></div>
-        <hr>
-        <div><dt>MACD</dt><dd class="num" id="detail-macd">–</dd></div>
-        <div><dt>Signal line</dt><dd class="num" id="detail-signal">–</dd></div>
-        <div><dt>Histogram</dt><dd class="num" id="detail-hist">–</dd></div>
-        <div><dt>Risk / reward</dt><dd class="num" id="detail-rr">–</dd></div>
-      </dl>
-
-      <form class="journal" id="journal-form" novalidate>
-        <h3>Your trade</h3>
-        <p class="journal-help" id="journal-help">Record whether you took this signal and at what prices, to compare your results with the signal's.</p>
-        <div id="journal-fields">
-          <div class="seg" role="radiogroup" aria-label="Decision">
-            <label><input type="radio" name="journal-status" value=""><span>Not recorded</span></label>
-            <label><input type="radio" name="journal-status" value="TAKEN"><span>Taken</span></label>
-            <label><input type="radio" name="journal-status" value="SKIPPED"><span>Skipped</span></label>
-          </div>
-          <div class="journal-grid">
-            <label class="field" data-taken>
-              <span class="field-label">Entry fill</span>
-              <input type="text" id="journal-entry" inputmode="decimal" autocomplete="off">
-            </label>
-            <label class="field" data-taken>
-              <span class="field-label">Exit fill (leave empty while open)</span>
-              <input type="text" id="journal-exit" inputmode="decimal" autocomplete="off">
-            </label>
-            <label class="field wide">
-              <span class="field-label">Notes</span>
-              <textarea id="journal-notes" rows="2" maxlength="500"></textarea>
-            </label>
-          </div>
-          <div class="journal-foot">
-            <span class="journal-result" id="journal-result" aria-live="polite"></span>
-            <button class="btn btn-primary" id="journal-save" type="submit">Save</button>
-          </div>
-        </div>
-      </form>
-    </div>
-  </dialog>
-
   <output class="toast" id="toast" hidden></output>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/common.js?v=1"></script>
+  <script src="/static/app.js?v=6"></script>
 </body>
 </html>
