@@ -1,15 +1,18 @@
 import asyncio
+import logging
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from src.services import cron_scheduler as cron_module
 from src.services import redis_client
-from src.services.cron_scheduler import MacdCronScheduler
+from src.services.cron_scheduler import TIMEFRAME, TIMEFRAME_MS, Scheduler
 
 pytestmark = pytest.mark.unit
 
-LOCK_KEY = "lock:cron:2h_execution"
+BOUNDARY = 1_792_540_800_000  # an exact multiple of every supported interval
+BOUNDARY_KEY = f"lock:job:{TIMEFRAME}:{BOUNDARY}"
+MANUAL_KEY = f"lock:job:{TIMEFRAME}:manual"
 
 
 class FakeRedis:
@@ -52,50 +55,50 @@ def no_redis(monkeypatch):
 
 
 @pytest.fixture
-def job_mocks(monkeypatch):
-    calls = {"evaluate": 0}
+def runs(monkeypatch):
+    calls = []
 
-    async def mock_evaluate(client):
-        calls["evaluate"] += 1
-        return {"evaluated_count": 0, "profit_count": 0, "loss_count": 0}
+    async def fake_run_job(client):
+        calls.append(client)
+        return {"new_signals": 0, "failed_symbols": []}
 
-    async def mock_get_watchlist(active_only: bool = False):
-        return []
-
-    monkeypatch.setattr(cron_module, "evaluate_pending_signals", mock_evaluate)
-    monkeypatch.setattr(cron_module, "get_watchlist", mock_get_watchlist)
+    monkeypatch.setattr(cron_module, "run_job", fake_run_job)
     return calls
 
 
-def _scheduler() -> MacdCronScheduler:
-    sched = MacdCronScheduler()
+def _scheduler() -> Scheduler:
+    sched = Scheduler()
     sched._client_getter = lambda: object()
     return sched
 
 
+def _scheduled(sched: Scheduler):
+    return sched._execute_job(f"job:{TIMEFRAME}:{BOUNDARY}", TIMEFRAME_MS // 1000, is_manual=False)
+
+
 async def test_acquire_lock_returns_owner_token(fake_redis):
-    token = await redis_client.acquire_lock("cron:2h_execution", timeout_seconds=180)
+    token = await redis_client.acquire_lock("job:1h:1", timeout_seconds=180)
     assert token
     assert token != redis_client.LOCAL_LOCK_TOKEN
-    assert fake_redis.store[LOCK_KEY] == token
-    assert fake_redis.ttls[LOCK_KEY] == 180
-    assert await redis_client.acquire_lock("cron:2h_execution", timeout_seconds=180) is None
+    assert fake_redis.store["lock:job:1h:1"] == token
+    assert fake_redis.ttls["lock:job:1h:1"] == 180
+    assert await redis_client.acquire_lock("job:1h:1", timeout_seconds=180) is None
 
 
 async def test_release_lock_with_wrong_token_keeps_lock(fake_redis):
-    token = await redis_client.acquire_lock("cron:2h_execution", timeout_seconds=180)
-    await redis_client.release_lock("cron:2h_execution", "not-the-owner")
-    assert fake_redis.store[LOCK_KEY] == token
-    await redis_client.release_lock("cron:2h_execution", redis_client.LOCAL_LOCK_TOKEN)
-    assert fake_redis.store[LOCK_KEY] == token
-    await redis_client.release_lock("cron:2h_execution", token)
-    assert LOCK_KEY not in fake_redis.store
+    token = await redis_client.acquire_lock("job:1h:1")
+    await redis_client.release_lock("job:1h:1", "not-the-owner")
+    assert fake_redis.store["lock:job:1h:1"] == token
+    await redis_client.release_lock("job:1h:1", redis_client.LOCAL_LOCK_TOKEN)
+    assert fake_redis.store["lock:job:1h:1"] == token
+    await redis_client.release_lock("job:1h:1", token)
+    assert "lock:job:1h:1" not in fake_redis.store
 
 
 async def test_lock_fails_open_without_redis(no_redis):
-    token = await redis_client.acquire_lock("cron:2h_execution")
+    token = await redis_client.acquire_lock("job:1h:1")
     assert token == redis_client.LOCAL_LOCK_TOKEN
-    await redis_client.release_lock("cron:2h_execution", token)
+    await redis_client.release_lock("job:1h:1", token)
 
 
 async def test_lock_fails_open_on_redis_error(monkeypatch):
@@ -104,99 +107,139 @@ async def test_lock_fails_open_on_redis_error(monkeypatch):
             raise ConnectionError("down")
 
     monkeypatch.setattr(redis_client, "_redis", BrokenRedis())
-    assert await redis_client.acquire_lock("cron:2h_execution") == redis_client.LOCAL_LOCK_TOKEN
+    assert await redis_client.acquire_lock("job:1h:1") == redis_client.LOCAL_LOCK_TOKEN
 
 
-async def test_manual_trigger_busy_when_scheduled_lock_held(fake_redis, job_mocks):
-    fake_redis.store[LOCK_KEY] = "scheduled-owner"
+async def test_loop_runs_the_boundary_with_a_kept_per_boundary_lock(fake_redis, monkeypatch):
+    delay_ms = cron_module.CRON_SAFETY_DELAY_SECONDS * 1000
+    now = BOUNDARY + delay_ms - 1000
+    sleeps = []
     sched = _scheduler()
+    sched._is_active = True
 
-    res = await sched.trigger_now()
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
 
-    assert res["status"] == "busy"
-    assert fake_redis.store[LOCK_KEY] == "scheduled-owner"
-    assert job_mocks["evaluate"] == 0
-    assert not sched._lock.locked()
+    async def fake_run_job(client):
+        sched._is_active = False
+        return {"new_signals": 0}
+
+    monkeypatch.setattr(cron_module, "now_ms", lambda: now)
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(cron_module, "run_job", fake_run_job)
+
+    await sched._cron_loop()
+
+    assert sleeps == [1.0]
+    assert BOUNDARY_KEY in fake_redis.store
+    assert fake_redis.ttls[BOUNDARY_KEY] == TIMEFRAME_MS // 1000
+    assert sched.get_status()["next_run"].endswith("+07:00")
+    assert sched.get_status()["last_status"] == "success"
 
 
-async def test_scheduled_run_skipped_when_lock_held(fake_redis, job_mocks):
-    fake_redis.store[LOCK_KEY] = "other-worker"
-    sched = _scheduler()
+async def test_scheduled_run_skipped_when_boundary_taken_by_other_worker(fake_redis, runs):
+    fake_redis.store[BOUNDARY_KEY] = "other-worker"
 
-    res = await sched._execute_job(is_manual=False)
+    res = await _scheduled(_scheduler())
 
     assert res["status"] == "skipped"
-    assert fake_redis.store[LOCK_KEY] == "other-worker"
-    assert job_mocks["evaluate"] == 0
+    assert fake_redis.store[BOUNDARY_KEY] == "other-worker"
+    assert runs == []
 
 
-async def test_manual_run_releases_own_lock(fake_redis, job_mocks):
+async def test_scheduled_run_skipped_while_a_job_is_running(no_redis, runs):
     sched = _scheduler()
+    await sched._lock.acquire()
+    try:
+        res = await _scheduled(sched)
+    finally:
+        sched._lock.release()
 
-    res = await sched.trigger_now()
-
-    assert res["status"] == "success"
-    assert LOCK_KEY not in fake_redis.store
-    assert job_mocks["evaluate"] == 1
-
-
-async def test_scheduled_run_keeps_lock_until_ttl(fake_redis, job_mocks):
-    sched = _scheduler()
-
-    res = await sched._execute_job(is_manual=False)
-
-    assert res["status"] == "success"
-    assert LOCK_KEY in fake_redis.store
-    assert fake_redis.ttls[LOCK_KEY] == 180
+    assert res["status"] == "skipped"
+    assert runs == []
 
 
-async def test_local_lock_held_for_whole_job_body(no_redis, monkeypatch):
+async def test_manual_run_busy_while_scheduled_job_runs(fake_redis, monkeypatch):
     release = asyncio.Event()
     started = asyncio.Event()
-    calls = {"evaluate": 0}
+    calls = []
 
-    async def slow_evaluate(client):
-        calls["evaluate"] += 1
+    async def slow_run_job(client):
+        calls.append(client)
         started.set()
         await release.wait()
-        return {"evaluated_count": 0, "profit_count": 0, "loss_count": 0}
+        return {"new_signals": 0}
 
-    async def mock_get_watchlist(active_only: bool = False):
-        return []
-
-    monkeypatch.setattr(cron_module, "evaluate_pending_signals", slow_evaluate)
-    monkeypatch.setattr(cron_module, "get_watchlist", mock_get_watchlist)
+    monkeypatch.setattr(cron_module, "run_job", slow_run_job)
     sched = _scheduler()
 
-    first = asyncio.create_task(sched._execute_job(is_manual=False))
+    first = asyncio.create_task(_scheduled(sched))
     await started.wait()
-    second = asyncio.create_task(sched._execute_job(is_manual=False))
-    for _ in range(5):
-        await asyncio.sleep(0)
-
-    assert sched._lock.locked()
-    assert calls["evaluate"] == 1
-    assert not second.done()
-
     manual = await sched.trigger_now()
     assert manual["status"] == "busy"
-    assert calls["evaluate"] == 1
+    assert MANUAL_KEY not in fake_redis.store
+    assert len(calls) == 1
 
     release.set()
-    first_res, second_res = await asyncio.wait_for(asyncio.gather(first, second), timeout=5)
-
-    assert first_res["status"] == "success"
-    assert second_res["status"] == "success"
-    assert calls["evaluate"] == 2
+    assert (await asyncio.wait_for(first, timeout=5))["status"] == "success"
     assert not sched._lock.locked()
 
 
-async def test_trigger_endpoint_returns_409_when_busy(fake_redis, job_mocks, monkeypatch):
+async def test_manual_run_releases_its_lock(fake_redis, runs):
+    res = await _scheduler().trigger_now()
+
+    assert res["status"] == "success"
+    assert fake_redis.ttls[MANUAL_KEY] == cron_module.MANUAL_LOCK_SECONDS
+    assert MANUAL_KEY not in fake_redis.store
+    assert len(runs) == 1
+
+
+async def test_manual_run_busy_when_other_worker_runs_it(fake_redis, runs):
+    fake_redis.store[MANUAL_KEY] = "other-worker"
+
+    res = await _scheduler().trigger_now()
+
+    assert res["status"] == "busy"
+    assert fake_redis.store[MANUAL_KEY] == "other-worker"
+    assert runs == []
+
+
+async def test_client_getter_kept_when_cron_disabled(monkeypatch):
+    monkeypatch.setattr(cron_module, "CRON_ENABLED", False)
+    sched = Scheduler()
+
+    def getter():
+        return None
+
+    sched.start(getter)
+
+    assert sched._client_getter is getter
+    assert sched._task is None
+
+
+async def test_failed_run_is_logged_and_shown_in_status(no_redis, monkeypatch, caplog):
+    async def broken_run_job(client):
+        raise RuntimeError("Database not ready")
+
+    monkeypatch.setattr(cron_module, "run_job", broken_run_job)
+    sched = _scheduler()
+
+    with caplog.at_level(logging.ERROR, logger=cron_module.__name__):
+        res = await sched.trigger_now()
+
+    assert res == {"status": "error", "message": "Database not ready"}
+    status = sched.get_status()
+    assert status["last_status"] == "failed"
+    assert status["last_error"] == "Database not ready"
+    assert "Database not ready" in caplog.text
+    assert not sched._lock.locked()
+
+
+async def test_trigger_endpoint_returns_409_when_busy(fake_redis, runs, monkeypatch):
     from src import main
 
-    fake_redis.store[LOCK_KEY] = "scheduled-owner"
-    sched = _scheduler()
-    monkeypatch.setattr(main, "cron_scheduler", sched)
+    fake_redis.store[MANUAL_KEY] = "other-worker"
+    monkeypatch.setattr(main, "cron_scheduler", _scheduler())
     main.app.dependency_overrides[main.verify_api_key] = lambda: True
     try:
         transport = ASGITransport(app=main.app)
@@ -207,5 +250,5 @@ async def test_trigger_endpoint_returns_409_when_busy(fake_redis, job_mocks, mon
 
     assert resp.status_code == 409
     assert "try again later" in resp.json()["detail"]
-    assert fake_redis.store[LOCK_KEY] == "scheduled-owner"
-    assert job_mocks["evaluate"] == 0
+    assert fake_redis.store[MANUAL_KEY] == "other-worker"
+    assert runs == []

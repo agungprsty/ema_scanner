@@ -1,6 +1,6 @@
 # ==============================================================================
-# NGINX REVERSE PROXY CONFIGURATION FOR CROSSLINE
-# Place in: /etc/nginx/sites-available/macd_scanner
+# NGINX REVERSE PROXY CONFIGURATION FOR SIMPLE-TRADE (CROSSLINE)
+# Place in: /etc/nginx/sites-available/simple-trade
 # Symlink to: /etc/nginx/sites-enabled/
 # ==============================================================================
 

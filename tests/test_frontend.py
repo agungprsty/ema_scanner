@@ -10,6 +10,7 @@ pytestmark = pytest.mark.unit
 
 API_KEY = "frontend_test_key"
 APP_JS = Path(__file__).resolve().parent.parent / "src" / "static" / "app.js"
+INDEX_HTML = APP_JS.parent / "index.html"
 
 
 @pytest.fixture
@@ -83,28 +84,99 @@ def test_app_js_defines_escape_helper():
         assert needle not in source
 
 
-def test_app_js_does_not_scan_on_page_load():
+def test_app_js_runs_the_job_only_on_click():
     source = APP_JS.read_text()
-    calls = [line.strip() for line in source.splitlines() if "runScan" in line]
-    assert calls == ["async function runScan() {", "btnScan.addEventListener('click', runScan);"]
-    assert "renderScanView();\n});" in source
+    calls = [line.strip() for line in source.splitlines() if "runNow" in line]
+    assert calls == ["async function runNow() {", "btnScan.addEventListener('click', runNow);"]
+    assert source.count("/api/cron/trigger") == 1
+    assert "authFetch('/api/cron/trigger', { method: 'POST' })" in source
+
+
+def test_frontend_has_no_macd_era_remnants():
+    source = APP_JS.read_text()
+    html = INDEX_HTML.read_text()
+    for needle in ("macd", "/api/klines", "/api/evaluate", "/api/scan", "include_current", "forming"):
+        assert needle not in source.lower()
+        assert needle not in html.lower()
+    for needle in (
+        "timeframe: '2h'",
+        "CANDLE_MS",
+        "cross_time",
+        "tp1",
+        "win_status",
+        "lookback",
+        "'/history'",
+        "/candles",
+        "round_trip_fee_percent",
+    ):
+        assert needle not in source
+    assert "select-lookback" not in html and "btn-eval" not in html
+
+
+def test_tabs_split_active_and_closed_signals():
+    html = INDEX_HTML.read_text()
+    source = APP_JS.read_text()
+    for tab in ("active", "history", "journal", "watchlist"):
+        assert f'data-tab="{tab}"' in html
+    assert 'data-tab="scan"' not in html
+    assert "active: ['PENDING', 'OPEN']," in source
+    assert "history: ['TP_HIT', 'SL_HIT', 'EXPIRED', 'NOT_FILLED']," in source
+    assert "status: statuses.join(',')" in source
+    assert "params.append('side'" in source and "'direction'" not in source
+
+
+def test_status_filter_and_labels_cover_every_status():
+    html = INDEX_HTML.read_text()
+    source = APP_JS.read_text()
+    for status in ("PENDING", "OPEN", "TP_HIT", "SL_HIT", "EXPIRED", "NOT_FILLED"):
+        assert f'<option value="{status}">' in html
+        assert f"    {status}: {{ cls: " in source
+    assert "PENDING: { cls: '', label: 'Awaiting fill' }" in source
+
+
+def test_dashboard_shows_fill_rate_and_brand():
+    html = INDEX_HTML.read_text()
+    assert 'id="stat-fillrate"' in html
+    assert "data.fill_rate" in APP_JS.read_text()
+    assert '<span class="brand-name">simple-trade</span>' in html
+    assert '<script src="/static/app.js?v=3"></script>' in html
+
+
+def test_journal_preview_uses_planned_risk():
+    source = APP_JS.read_text()
+    assert "function tradeReturn(sig, entry, exit) {" in source
+    assert "Math.abs(sig.entry_price - sig.stop_loss) / sig.entry_price * 100" in source
+    assert "tradeReturn(currentSignal, entry, exit)" in source
+    assert "Object.assign(config, info.strategy || {});" in source
+
+
+def test_chart_draws_rsi_pane_and_skips_levels_when_not_filled():
+    source = APP_JS.read_text()
+    assert "/chart`" in source
+    assert "priceScaleId: 'rsi'" in source
+    assert "[config.oversold, config.overbought]" in source
+    assert "time: p.time + UTC7_OFFSET_SEC" in source
+    assert "intervalMs(sig.timeframe)" in source
+    assert "if (sig.status !== 'NOT_FILLED') {" in source
+    for marker in ("'Signal'", "'Fill'", "'Exit'"):
+        assert f"text: {marker}" in source
 
 
 def test_app_js_pages_lists_twenty_rows_at_a_time():
     source = APP_JS.read_text()
     assert "const PAGE_SIZE = 20;" in source
     assert "limit: '100'" not in source
-    for loader in ("pageParams('history')", "pageParams('journal')"):
+    for loader in ("pageParams(tab)", "pageParams('journal')"):
         assert loader in source
 
 
 def test_dashboard_has_no_separate_closed_trades_tab():
-    html = (APP_JS.parent / "index.html").read_text()
+    html = INDEX_HTML.read_text()
     assert 'data-tab="profitloss"' not in html
     assert "loadProfitLossHistory" not in APP_JS.read_text()
 
 
 def test_chart_library_loads_on_demand():
-    html = (APP_JS.parent / "index.html").read_text()
+    html = INDEX_HTML.read_text()
     assert "lightweight-charts" not in html.split("<body>")[0].replace('href="https://unpkg.com"', "")
     assert "function loadChartLibrary(" in APP_JS.read_text()

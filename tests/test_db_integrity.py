@@ -1,37 +1,64 @@
 import asyncio
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.dialects import postgresql
 
 from src.services import db
-from src.strategy.macd import MacdSignal
+from src.strategy.outcome import Trade
+from src.strategy.rsi import Signal
 
 pytestmark = pytest.mark.unit
+
+HOUR = 3_600_000
+S = 1_700_000_000_000 - 1_700_000_000_000 % HOUR
+
+
+@pytest.fixture(autouse=True)
+def windows(monkeypatch):
+    monkeypatch.setattr(db, "FILL_WINDOW_HOURS", 12.0)
+    monkeypatch.setattr(db, "MAX_HOLD_HOURS", 24.0)
 
 
 def _compile(stmt) -> str:
     return str(stmt.compile(dialect=postgresql.dialect()))
 
 
-def _make_signal() -> MacdSignal:
-    return MacdSignal(
-        symbol="BTCUSDT",
-        side="LONG",
-        reason="MACD_GOLDEN_CROSS",
-        cross_candle_ms=1_700_000_000_000,
-        cross_time="2026-10-11 00:00:00",
-        cross_price=100.0,
-        entry_price=100.0,
-        stop_loss=95.0,
-        tp1=107.5,
-        risk_reward_ratio=1.5,
-        macd=1.0,
-        signal=0.5,
-        histogram=0.5,
-        close=101.0,
-        bars_ago=1,
-    )
+def _signal(**overrides) -> Signal:
+    values = {
+        "symbol": "BTCUSDT",
+        "side": "LONG",
+        "signal_candle_ms": S,
+        "rsi": 27.4,
+        "prev_rsi": 30.1,
+        "candle_close": 100.5,
+        "entry_price": 100.0,
+        "take_profit": 102.0,
+        "stop_loss": 99.0,
+        "bars_ago": 0,
+    }
+    values.update(overrides)
+    return Signal(**values)
+
+
+def _rec(**overrides) -> db.SignalModel:
+    values = {
+        "id": 21,
+        "symbol": "BTCUSDT",
+        "side": "LONG",
+        "timeframe": "1h",
+        "signal_candle_ms": S,
+        "rsi": 27.4,
+        "prev_rsi": 30.1,
+        "candle_close": 100.5,
+        "entry_price": 100.0,
+        "take_profit": 102.0,
+        "stop_loss": 99.0,
+        "status": "PENDING",
+    }
+    values.update(overrides)
+    return db.SignalModel(**values)
 
 
 class FakeResult:
@@ -43,7 +70,7 @@ class FakeResult:
         return self._value
 
     def scalars(self):
-        return SimpleNamespace(first=lambda: self._rows[0] if self._rows else None, all=lambda: self._rows)
+        return SimpleNamespace(all=lambda: self._rows)
 
 
 class FakeSession:
@@ -66,272 +93,277 @@ class FakeSession:
         self.commits += 1
 
 
-def test_macd_signal_unique_index_declared():
-    indexes = {idx.name: idx for idx in db.MacdSignalModel.__table__.indexes}
-    idx = indexes["uq_macd_signals_symbol_side_tf_candle"]
-    assert idx.unique
-    assert [c.name for c in idx.columns] == list(db.SIGNAL_UNIQUE_COLUMNS)
+class FakeClient:
+    def __init__(self, candles):
+        self.candles = candles
+        self.calls = []
+
+    def klines(self, symbol, interval, startTime, limit):
+        self.calls.append((symbol, interval, startTime, limit))
+        return [c for c in self.candles if c[0] >= startTime][:limit]
 
 
-def test_profitloss_signal_id_unique_index_declared():
-    indexes = {idx.name: idx for idx in db.ProfitLossHistoryModel.__table__.indexes}
-    idx = indexes["uq_profitloss_history_signal_id"]
-    assert idx.unique
-    assert [c.name for c in idx.columns] == ["signal_id"]
-    assert db.ProfitLossHistoryModel.__table__.c.signal_id.nullable
+def test_signal_table_schema():
+    table = db.SignalModel.__table__
+    unique = next(c for c in table.constraints if c.name == "uq_signals_key")
+    assert [c.name for c in unique.columns] == ["symbol", "side", "timeframe", "signal_candle_ms"]
+    checks = {c.name: str(c.sqltext) for c in table.constraints if c.name and c.name.startswith("ck_")}
+    assert checks["ck_signals_side"] == "side IN ('LONG', 'SHORT')"
+    assert "'NOT_FILLED'" in checks["ck_signals_status"]
+    active = next(i for i in table.indexes if i.name == "ix_signals_active")
+    assert str(active.dialect_options["postgresql"]["where"]) == "status IN ('PENDING', 'OPEN')"
 
 
-def test_signal_insert_uses_on_conflict_do_nothing_returning_id():
-    sql = _compile(db.build_signal_insert(_make_signal(), "2h"))
-    assert "INSERT INTO macd_signals" in sql
-    assert "ON CONFLICT (symbol, side, timeframe, cross_candle_ms) DO NOTHING" in sql
-    assert "RETURNING macd_signals.id" in sql
+def test_journal_references_signals_with_cascade():
+    table = db.JournalModel.__table__
+    assert table.name == "signal_journal"
+    fk = next(iter(table.c.signal_id.foreign_keys))
+    assert fk.target_fullname == "signals.id"
+    assert fk.ondelete == "CASCADE"
+    assert table.c.signal_id.unique and not table.c.signal_id.nullable
 
 
-def test_profitloss_insert_uses_on_conflict_signal_id():
-    sql = _compile(
-        db.build_profitloss_insert(
-            signal_id=1,
-            symbol="BTCUSDT",
-            timeframe="2h",
-            direction="LONG",
-            entry_price=100.0,
-            stop_loss=95.0,
-            tp1=107.5,
-            exit_price=107.5,
-            result="PROFIT",
-            pnl_percent=7.5,
-            risk_reward_ratio=1.5,
-            cross_time="2026-10-11 00:00:00",
-            exit_time="2026-10-11 02:00:00",
-        )
-    )
-    assert "INSERT INTO profitloss_history" in sql
-    assert "ON CONFLICT (signal_id) DO NOTHING" in sql
+def test_signals_insert_skips_conflicts_and_returns_new_rows():
+    sql = _compile(db.build_signals_insert([_signal(), _signal(side="SHORT")], "1h"))
+    assert "INSERT INTO signals" in sql
+    assert "ON CONFLICT ON CONSTRAINT uq_signals_key DO NOTHING" in sql
+    assert "RETURNING signals.id" in sql
+    assert "timeframe_m1" in sql  # one statement for every hit
 
 
-def test_migrations_dedupe_before_creating_unique_indexes():
-    statements = [" ".join(m.split()) for m in db.UNIQUE_INDEX_MIGRATIONS]
-    delete_signals = next(i for i, s in enumerate(statements) if s.startswith("DELETE FROM macd_signals"))
-    delete_pl = next(i for i, s in enumerate(statements) if s.startswith("DELETE FROM profitloss_history"))
-    create_signals = next(
-        i for i, s in enumerate(statements)
-        if "CREATE UNIQUE INDEX IF NOT EXISTS uq_macd_signals_symbol_side_tf_candle" in s
-    )
-    create_pl = next(
-        i for i, s in enumerate(statements)
-        if "CREATE UNIQUE INDEX IF NOT EXISTS uq_profitloss_history_signal_id" in s
-    )
-    repoint = next(i for i, s in enumerate(statements) if s.startswith("UPDATE profitloss_history"))
-    assert repoint < delete_signals < create_signals
-    assert delete_signals < delete_pl < create_pl
-    assert all("r.rn > 1" in statements[i] for i in (repoint, delete_signals, delete_pl))
+def test_transition_update_only_wins_from_the_old_status():
+    sql = _compile(db.build_transition_update(21, "PENDING", {"status": "OPEN", "fill_price": 100.0}))
+    assert "UPDATE signals SET status=" in sql
+    assert "WHERE signals.id = %(id_1)s::BIGINT AND signals.status = %(status_1)s::VARCHAR" in sql
+    assert "updated_at=now()" in sql
+    assert sql.endswith("RETURNING signals.id")
 
 
-def test_migration_survivor_prefers_resolved_signal():
-    rank = " ".join(db.SIGNAL_SURVIVOR_RANK.split())
-    assert "PARTITION BY symbol, side, timeframe, cross_candle_ms" in rank
-    assert "ORDER BY (COALESCE(win_status, 'PENDING') <> 'PENDING') DESC, id ASC" in rank
-    assert "ROW_NUMBER() OVER w AS rn" in rank
-    assert "FIRST_VALUE(id) OVER w AS keep_id" in rank
-
-    statements = [" ".join(m.split()) for m in db.UNIQUE_INDEX_MIGRATIONS]
-    repoint = next(s for s in statements if s.startswith("UPDATE profitloss_history"))
-    delete_signals = next(s for s in statements if s.startswith("DELETE FROM macd_signals"))
-    assert rank in repoint
-    assert rank in delete_signals
-    assert "SET signal_id = r.keep_id" in repoint
+def test_alert_claim_only_takes_recent_unalerted_rows():
+    sql = _compile(db.build_alert_claim(S))
+    assert "UPDATE signals SET alerted_at=now()" in sql
+    assert "WHERE signals.alerted_at IS NULL AND signals.signal_candle_ms >= %(signal_candle_ms_1)s" in sql
+    assert "RETURNING signals.id" in sql
 
 
-def test_migration_profitloss_dedupe_prefers_result_matching_survivor():
-    statements = [" ".join(m.split()) for m in db.UNIQUE_INDEX_MIGRATIONS]
-    delete_pl = next(s for s in statements if s.startswith("DELETE FROM profitloss_history"))
-    assert "PARTITION BY pl.signal_id" in delete_pl
-    assert "LEFT JOIN macd_signals s ON s.id = pl.signal_id" in delete_pl
-    assert (
-        "ORDER BY ( (s.win_status = 'TP1_HIT' AND pl.result = 'PROFIT') "
-        "OR (s.win_status = 'SL_HIT' AND pl.result = 'LOSS') ) IS TRUE DESC, pl.id ASC"
-    ) in delete_pl
-
-
-async def test_save_macd_signal_returns_inserted_row(monkeypatch):
-    row = SimpleNamespace(to_dict=lambda: {"id": 7, "symbol": "BTCUSDT"})
-    session = FakeSession([FakeResult(value=7), FakeResult(rows=[row])])
+async def test_claim_unalerted_signals_returns_rows_oldest_first(monkeypatch):
+    session = FakeSession([FakeResult(rows=[_rec(id=9), _rec(id=4)])])
     monkeypatch.setattr(db, "_session_maker", lambda: session)
 
-    saved = await db.save_macd_signal(_make_signal(), timeframe="2h")
+    rows = await db.claim_unalerted_signals(S)
 
-    assert saved == {"id": 7, "symbol": "BTCUSDT", "inserted": True}
-    assert "ON CONFLICT" in _compile(session.statements[0])
-    assert "macd_signals.id = " in _compile(session.statements[1])
+    assert [r["id"] for r in rows] == [4, 9]
     assert session.commits == 1
 
 
-async def test_save_macd_signal_returns_existing_row_on_conflict(monkeypatch):
-    row = SimpleNamespace(to_dict=lambda: {"id": 3, "symbol": "BTCUSDT"})
-    session = FakeSession([FakeResult(value=None), FakeResult(rows=[row])])
+async def test_insert_signals_returns_inserted_rows(monkeypatch):
+    session = FakeSession([FakeResult(rows=[_rec(id=7)])])
     monkeypatch.setattr(db, "_session_maker", lambda: session)
 
-    saved = await db.save_macd_signal(_make_signal(), timeframe="2h")
+    rows = await db.insert_signals([_signal(), _signal()], "1h")
 
-    assert saved == {"id": 3, "symbol": "BTCUSDT", "inserted": False}
-    lookup_sql = _compile(session.statements[1])
-    assert "macd_signals.cross_candle_ms = " in lookup_sql
-    assert "macd_signals.timeframe = " in lookup_sql
-
-
-async def test_save_macd_signal_returns_none_when_conflict_row_missing(monkeypatch):
-    session = FakeSession([FakeResult(value=None), FakeResult(rows=[])])
-    monkeypatch.setattr(db, "_session_maker", lambda: session)
-
-    assert await db.save_macd_signal(_make_signal(), timeframe="2h") is None
+    assert [r["id"] for r in rows] == [7]
+    assert rows[0]["fill_deadline"] == db._ms_to_iso(S + 13 * HOUR)
+    assert session.commits == 1
 
 
-async def test_save_macd_signal_returns_none_without_db(monkeypatch):
+async def test_insert_signals_without_db_raises(monkeypatch):
     monkeypatch.setattr(db, "_session_maker", None)
-
-    assert await db.save_macd_signal(_make_signal(), timeframe="2h") is None
-
-
-async def test_save_macd_signal_returns_none_on_error(monkeypatch):
-    class BrokenSession(FakeSession):
-        async def execute(self, stmt):
-            raise RuntimeError("db down")
-
-    monkeypatch.setattr(db, "_session_maker", lambda: BrokenSession([]))
-
-    assert await db.save_macd_signal(_make_signal(), timeframe="2h") is None
+    assert await db.insert_signals([]) == []
+    with pytest.raises(RuntimeError):
+        await db.insert_signals([_signal()])
 
 
-async def test_backfill_skips_signals_with_existing_profitloss(monkeypatch):
-    rec = SimpleNamespace(
-        id=11,
-        symbol="ETHUSDT",
-        side="SHORT",
-        timeframe="2h",
-        win_status="SL_HIT",
-        entry_price=100.0,
-        cross_price=100.0,
-        stop_loss=105.0,
-        tp1=92.5,
-        risk_reward_ratio=1.5,
-        cross_time="2026-10-11 00:00:00",
+def test_signal_row_deadlines_follow_its_timeframe():
+    row = _rec(timeframe="15m", fill_ms=S + 900_000).to_dict()
+    assert row["fill_deadline"] == db._ms_to_iso(S + 49 * 900_000)
+    assert row["hold_deadline"] == db._ms_to_iso(S + 900_000 + 96 * 900_000)
+    assert _rec().to_dict()["hold_deadline"] is None
+
+
+def test_trade_values_use_planned_risk():
+    gap = db.trade_values(_rec(), Trade("SL_HIT", 99.2, S + HOUR, 98.9, S + 2 * HOUR))
+    assert gap["r_multiple"] == pytest.approx((98.9 - 99.2) / 99.2 * 100 - db.ROUND_TRIP_FEE_PERCENT)
+
+    not_filled = db.trade_values(_rec(), Trade("NOT_FILLED", closed_ms=S + 13 * HOUR))
+    assert not_filled["status"] == "NOT_FILLED"
+    assert not_filled["pnl_percent"] is None and not_filled["r_multiple"] is None
+    assert not_filled["closed_ms"] == S + 13 * HOUR
+
+
+def test_fetch_trade_klines_pages_long_windows():
+    candles = [[S + i * 60_000, "1", "1", "1", "1"] for i in range(2200)]
+    client = FakeClient(candles)
+
+    got = db.fetch_trade_klines(client, "BTCUSDT", "1m", S, 2160, 60_000)
+
+    assert got == candles[:2160]
+    assert [(c[2], c[3]) for c in client.calls] == [(S, 1500), (S + 1500 * 60_000, 660)]
+
+
+def test_fetch_trade_klines_stops_at_the_latest_candle():
+    client = FakeClient([[S + i * HOUR, "1", "1", "1", "1"] for i in range(5)])
+    assert len(db.fetch_trade_klines(client, "BTCUSDT", "1h", S, 36, HOUR)) == 5
+    assert len(client.calls) == 1
+
+
+async def test_evaluate_active_records_the_transition(monkeypatch):
+    rec = _rec()
+    client = FakeClient(
+        [
+            # Fills at the limit; the open was above it, so this candle's high cannot count as TP
+            [S + HOUR, "100.5", "102.5", "99.8", "100.2"],
+            [S + 2 * HOUR, "100.2", "102.5", "100.0", "102.0"],
+        ]
     )
-    session = FakeSession([FakeResult(rows=[rec])])
+    session = FakeSession([FakeResult(rows=[rec]), FakeResult(value=21)])
+    monkeypatch.setattr(db, "_session_maker", lambda: session)
+    monkeypatch.setattr(db, "_evaluation_lock", asyncio.Lock())
 
-    await db.backfill_resolved_signals_to_profitloss_history(session)
+    result = await db.evaluate_active(client)
 
-    select_sql = _compile(session.statements[0])
-    assert "NOT (EXISTS" in select_sql
-    insert_sql = _compile(session.statements[1])
-    assert "ON CONFLICT (signal_id) DO NOTHING" in insert_sql
+    transitions = result.pop("transitions")
+    assert result == {
+        "evaluated": 1, "filled": 1, "tp": 1, "sl": 0, "expired": 0, "not_filled": 0, "failed": 0
+    }
+    assert client.calls == [("BTCUSDT", "1h", S + HOUR, 36)]
+    assert len(transitions) == 1
+    moved = transitions[0]
+    assert moved["previous_status"] == "PENDING"
+    assert moved["status"] == "TP_HIT"
+    assert moved["fill_price"] == 100.0 and moved["exit_price"] == 102.0
+    assert moved["r_multiple"] == pytest.approx(2 - db.ROUND_TRIP_FEE_PERCENT, abs=0.01)
+    assert "signals.status = " in _compile(session.statements[1])
     assert session.commits == 1
 
 
-async def test_evaluate_pending_signals_is_serialized(monkeypatch):
-    state = {"active": 0, "max_active": 0, "calls": 0}
+async def test_evaluate_active_lost_update_sends_nothing(monkeypatch):
+    client = FakeClient([[S + HOUR, "100.0", "100.5", "98.5", "99.0"]])
+    session = FakeSession([FakeResult(rows=[_rec()]), FakeResult(value=None)])
+    monkeypatch.setattr(db, "_session_maker", lambda: session)
+    monkeypatch.setattr(db, "_evaluation_lock", asyncio.Lock())
+
+    result = await db.evaluate_active(client)
+
+    assert result["transitions"] == [] and result["sl"] == 0
+    assert len(session.statements) == 2
+
+
+async def test_evaluate_active_never_moves_a_trade_backwards(monkeypatch):
+    # An empty klines reply replays as PENDING; the open trade must stay open
+    rec = _rec(status="OPEN", fill_price=100.0, fill_ms=S + HOUR)
+    session = FakeSession([FakeResult(rows=[rec])])
+    monkeypatch.setattr(db, "_session_maker", lambda: session)
+    monkeypatch.setattr(db, "_evaluation_lock", asyncio.Lock())
+
+    result = await db.evaluate_active(FakeClient([]))
+
+    assert result["transitions"] == []
+    assert len(session.statements) == 1
+
+
+async def test_evaluate_active_marks_not_filled_without_pnl(monkeypatch):
+    candles = [[S + i * HOUR, "101", "101.5", "100.5", "101"] for i in range(1, 13)]
+    session = FakeSession([FakeResult(rows=[_rec()]), FakeResult(value=21)])
+    monkeypatch.setattr(db, "_session_maker", lambda: session)
+    monkeypatch.setattr(db, "_evaluation_lock", asyncio.Lock())
+
+    result = await db.evaluate_active(FakeClient(candles))
+
+    assert result["not_filled"] == 1 and result["filled"] == 0
+    moved = result["transitions"][0]
+    assert moved["status"] == "NOT_FILLED"
+    assert moved["closed_ms"] == S + 13 * HOUR
+    assert moved["pnl_percent"] is None and moved["r_multiple"] is None
+
+
+async def test_evaluate_active_skips_unknown_timeframe(monkeypatch):
+    client = FakeClient([])
+    session = FakeSession([FakeResult(rows=[_rec(timeframe="1w")])])
+    monkeypatch.setattr(db, "_session_maker", lambda: session)
+    monkeypatch.setattr(db, "_evaluation_lock", asyncio.Lock())
+
+    result = await db.evaluate_active(client)
+
+    assert result["failed"] == 1
+    assert client.calls == []
+
+
+async def test_evaluate_active_row_errors_do_not_stop_the_run(monkeypatch):
+    class FlakyClient(FakeClient):
+        def klines(self, symbol, **kwargs):
+            if symbol == "ETHUSDT":
+                raise RuntimeError("binance down")
+            return super().klines(symbol, **kwargs)
+
+    client = FlakyClient([[S + HOUR, "100.0", "100.5", "98.5", "99.0"]])
+    records = [_rec(id=1, symbol="ETHUSDT"), _rec(id=2)]
+    session = FakeSession([FakeResult(rows=records), FakeResult(value=2)])
+    monkeypatch.setattr(db, "_session_maker", lambda: session)
+    monkeypatch.setattr(db, "_evaluation_lock", asyncio.Lock())
+
+    result = await db.evaluate_active(client)
+
+    assert result["failed"] == 1 and result["sl"] == 1
+    assert [t["id"] for t in result["transitions"]] == [2]
+
+
+async def test_evaluate_active_is_serialized(monkeypatch):
+    state = {"active": 0, "max_active": 0}
 
     async def fake_unlocked(client):
         state["active"] += 1
-        state["calls"] += 1
         state["max_active"] = max(state["max_active"], state["active"])
         await asyncio.sleep(0.01)
         state["active"] -= 1
-        return {"evaluated_count": 1, "profit_count": 1, "loss_count": 0}
+        return db._empty_evaluation()
 
     monkeypatch.setattr(db, "_session_maker", object())
     monkeypatch.setattr(db, "_evaluation_lock", asyncio.Lock())
-    monkeypatch.setattr(db, "_evaluate_pending_signals_unlocked", fake_unlocked)
+    monkeypatch.setattr(db, "_evaluate_active_unlocked", fake_unlocked)
 
-    results = await asyncio.gather(*(db.evaluate_pending_signals(object()) for _ in range(4)))
+    await asyncio.gather(*(db.evaluate_active(object()) for _ in range(4)))
 
-    assert state["calls"] == 4
     assert state["max_active"] == 1
-    assert all(r == {"evaluated_count": 1, "profit_count": 1, "loss_count": 0} for r in results)
 
 
-async def test_evaluate_pending_signals_without_db_skips_lock(monkeypatch):
-    lock = asyncio.Lock()
-    await lock.acquire()
+async def test_evaluate_active_without_db_raises(monkeypatch):
     monkeypatch.setattr(db, "_session_maker", None)
-    monkeypatch.setattr(db, "_evaluation_lock", lock)
-
-    result = await asyncio.wait_for(db.evaluate_pending_signals(object()), timeout=1)
-
-    assert result == {"evaluated_count": 0, "profit_count": 0, "loss_count": 0, "expired_count": 0, "closed": []}
-    lock.release()
+    with pytest.raises(RuntimeError):
+        await db.evaluate_active(object())
 
 
-async def test_evaluate_pending_signals_inserts_profitloss_with_on_conflict(monkeypatch):
-    rec = SimpleNamespace(
-        id=21,
-        symbol="BTCUSDT",
-        side="LONG",
-        timeframe="2h",
-        win_status="PENDING",
-        cross_candle_ms=1_700_000_000_000,
-        entry_price=100.0,
-        cross_price=100.0,
-        stop_loss=95.0,
-        tp1=107.5,
-        risk_reward_ratio=1.5,
-        cross_time="2026-10-11 00:00:00",
-    )
-    session = FakeSession([FakeResult(rows=[rec]), FakeResult(value=1)])
-    client = SimpleNamespace(
-        klines=lambda **kwargs: [
-            [1_700_000_000_000, "100", "101", "99", "100"],
-            [1_700_007_200_000, "100", "108", "99", "107"],
-        ]
-    )
-    monkeypatch.setattr(db, "_session_maker", lambda: session)
-    monkeypatch.setattr(db, "_evaluation_lock", asyncio.Lock())
+def test_stats_leave_not_filled_out_of_the_win_rate():
+    counts = {"total": 10, "PENDING": 1, "OPEN": 1, "TP_HIT": 2, "SL_HIT": 1, "EXPIRED": 1, "NOT_FILLED": 4}
+    stats = db.build_stats(counts, 2.5, [1.9, -1.1, 1.9, 0.3], watchlist_count=3, latest_signal_ms=S)
 
-    result = await db.evaluate_pending_signals(client)
-
-    closed = result.pop("closed")
-    assert result == {"evaluated_count": 1, "profit_count": 1, "loss_count": 0, "expired_count": 0}
-    assert rec.win_status == "TP1_HIT"
-    assert [t["signal_id"] for t in closed] == [21]
-    assert closed[0]["exit_time"] == "2023-11-15T00:13:20Z"
-    assert closed[0]["r_multiple"] == pytest.approx((7.5 - db.ROUND_TRIP_FEE_PERCENT) / 5.0)
-    insert_sql = _compile(session.statements[1])
-    assert "INSERT INTO profitloss_history" in insert_sql
-    assert "ON CONFLICT (signal_id) DO NOTHING" in insert_sql
-    assert session.commits == 1
+    assert stats["filled_count"] == 5
+    assert stats["fill_rate"] == pytest.approx(5 / 9 * 100, abs=0.1)
+    assert stats["closed_trades"] == 4
+    assert stats["winrate"] == 50.0
+    assert stats["total_r"] == pytest.approx(3.0)
+    assert stats["avg_r"] == pytest.approx(0.75)
+    assert stats["max_drawdown_r"] == pytest.approx(1.1)
+    assert stats["pending_count"] == 1 and stats["open_count"] == 1 and stats["not_filled_count"] == 4
+    assert stats["latest_signal_time"] == db._ms_to_iso(S)
 
 
-async def test_evaluate_reports_only_newly_inserted_trades(monkeypatch):
-    rec = SimpleNamespace(
-        id=22,
-        symbol="ETHUSDT",
-        side="SHORT",
-        timeframe="2h",
-        win_status="PENDING",
-        cross_candle_ms=1_700_000_000_000,
-        entry_price=100.0,
-        cross_price=100.0,
-        stop_loss=105.0,
-        tp1=92.5,
-        risk_reward_ratio=1.5,
-        cross_time="2026-10-11 00:00:00",
-    )
-    # The P/L row already exists (another worker closed it), so the insert returns no id
-    session = FakeSession([FakeResult(rows=[rec]), FakeResult(value=None)])
-    client = SimpleNamespace(
-        klines=lambda **kwargs: [
-            [1_700_000_000_000, "100", "101", "99", "100"],
-            [1_700_007_200_000, "100", "106", "99", "105"],
-        ]
-    )
-    monkeypatch.setattr(db, "_session_maker", lambda: session)
-    monkeypatch.setattr(db, "_evaluation_lock", asyncio.Lock())
+def test_stats_when_empty():
+    stats = db.build_stats({})
+    assert stats["fill_rate"] == stats["winrate"] == stats["avg_r"] == 0.0
+    assert stats["latest_signal_time"] is None
 
-    result = await db.evaluate_pending_signals(client)
 
-    assert result["loss_count"] == 1
-    assert result["closed"] == []
-    assert rec.win_status == "SL_HIT"
+def test_signal_conditions_use_wib_days_and_status_lists():
+    day = int(datetime(2026, 10, 20, 17, tzinfo=UTC).timestamp() * 1000)  # 00:00 WIB 21 Oct
+    sql = _compile(db.signal_conditions(status="pending, OPEN", date="2026-10-21")[0])
+    assert "signals.status IN" in sql
+    conds = db.signal_conditions(date="2026-10-21")
+    assert [c.right.value for c in conds] == [day, day + db.DAY_MS]
+    end = db.signal_conditions(end_date="2026-10-21")[0]
+    assert end.right.value == day + db.DAY_MS
+    with pytest.raises(ValueError):
+        db.signal_conditions(date="21-10-2026")
 
 
 def test_max_drawdown_measures_peak_to_trough():

@@ -1,21 +1,24 @@
 import asyncio
 import logging
-from datetime import UTC, datetime
+import math
+from datetime import UTC, datetime, timedelta, timezone
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
+    ForeignKey,
     Index,
     Integer,
     String,
+    UniqueConstraint,
     desc,
-    exists,
     func,
     select,
     text,
-    tuple_,
+    update,
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import (
@@ -28,12 +31,14 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from src.config.settings import (
     DATABASE_URL,
-    RISK_REWARD_RATIO,
+    FILL_WINDOW_HOURS,
+    INTERVAL_MS,
+    MAX_HOLD_HOURS,
     ROUND_TRIP_FEE_PERCENT,
-    SIGNAL_EXPIRY_CANDLES,
+    TIMEFRAME,
 )
-from src.strategy.macd import MacdSignal
-from src.strategy.outcome import CANDLE_INTERVAL_MS, resolve_outcome, trade_return
+from src.strategy.outcome import resolve, trade_return
+from src.strategy.rsi import Signal
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +50,34 @@ DEFAULT_WATCHLIST = [
     "BTCUSDT",
     "ETHUSDT"
 ]
+
+STATUSES = ("PENDING", "OPEN", "TP_HIT", "SL_HIT", "EXPIRED", "NOT_FILLED")
+ACTIVE_STATUSES = ("PENDING", "OPEN")
+# Forward moves only, so a short or empty klines reply can never reopen or unfill a trade
+NEXT_STATUSES = {
+    "PENDING": {"OPEN", "TP_HIT", "SL_HIT", "EXPIRED", "NOT_FILLED"},
+    "OPEN": {"TP_HIT", "SL_HIT", "EXPIRED"},
+}
+KLINES_PAGE_LIMIT = 1500
+UTC_ISO = "%Y-%m-%dT%H:%M:%SZ"
+WIB = timezone(timedelta(hours=7))
+DAY_MS = 86_400_000
+
+
+def _ms_to_iso(ms: int | None) -> str | None:
+    return datetime.fromtimestamp(ms / 1000, tz=UTC).strftime(UTC_ISO) if ms is not None else None
+
+
+def window_candles(interval_ms: int) -> tuple[int, int]:
+    """(fill window, max hold) in candles of `interval_ms`, from the hour settings.
+
+    Same rounding as settings.FILL_WINDOW_CANDLES, but per row, so rows of an earlier
+    TIMEFRAME keep their own windows.
+    """
+    def count(hours: float) -> int:
+        return max(1, math.ceil(hours * 3_600_000 / interval_ms))
+
+    return count(FILL_WINDOW_HOURS), count(MAX_HOLD_HOURS)
 
 
 class Base(DeclarativeBase):
@@ -73,130 +106,103 @@ class WatchlistModel(Base):
         }
 
 
-class MacdSignalModel(Base):
-    __tablename__ = "macd_signals"
+class SignalModel(Base):
+    """An RSI signal and the limit-entry trade replayed from it."""
+
+    __tablename__ = "signals"
     __table_args__ = (
-        Index(
-            "uq_macd_signals_symbol_side_tf_candle",
-            "symbol",
-            "side",
-            "timeframe",
-            "cross_candle_ms",
-            unique=True,
+        UniqueConstraint("symbol", "side", "timeframe", "signal_candle_ms", name="uq_signals_key"),
+        CheckConstraint("side IN ('LONG', 'SHORT')", name="ck_signals_side"),
+        CheckConstraint(
+            "status IN (" + ", ".join(f"'{s}'" for s in STATUSES) + ")", name="ck_signals_status"
         ),
+        Index(
+            "ix_signals_active",
+            "status",
+            postgresql_where=text("status IN ('PENDING', 'OPEN')"),
+        ),
+        Index("ix_signals_candle", "signal_candle_ms"),
     )
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    symbol: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
-    side: Mapped[str] = mapped_column(String(10), index=True, nullable=False)
-    timeframe: Mapped[str] = mapped_column(String(10), default="2h", index=True, nullable=False)
-    reason: Mapped[str] = mapped_column(String(50), nullable=False)
-    cross_candle_ms: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
-    cross_time: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
-    cross_price: Mapped[float] = mapped_column(Float, nullable=False)
-    close_price: Mapped[float] = mapped_column(Float, nullable=False)
-    entry_price: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    stop_loss: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    tp1: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    risk_reward_ratio: Mapped[float] = mapped_column(Float, nullable=False, default=1.5)
-    win_status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING", index=True)
-    macd: Mapped[float] = mapped_column(Float, nullable=False)
-    signal: Mapped[float] = mapped_column(Float, nullable=False)
-    histogram: Mapped[float] = mapped_column(Float, nullable=False)
-    bars_ago: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    is_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    side: Mapped[str] = mapped_column(String(5), nullable=False)
+    timeframe: Mapped[str] = mapped_column(String(4), nullable=False)
+    signal_candle_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)  # open time of the closed signal candle
+    rsi: Mapped[float] = mapped_column(Float, nullable=False)
+    prev_rsi: Mapped[float] = mapped_column(Float, nullable=False)
+    candle_close: Mapped[float] = mapped_column(Float, nullable=False)
+    entry_price: Mapped[float] = mapped_column(Float, nullable=False)  # limit: low (LONG) / high (SHORT)
+    take_profit: Mapped[float] = mapped_column(Float, nullable=False)
+    stop_loss: Mapped[float] = mapped_column(Float, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="PENDING", server_default="PENDING"
+    )
+    fill_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fill_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    closed_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    pnl_percent: Mapped[float | None] = mapped_column(Float, nullable=True)  # net of fees, closed trades only
+    r_multiple: Mapped[float | None] = mapped_column(Float, nullable=True)
+    alerted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        index=True,
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
     def to_dict(self) -> dict:
+        interval_ms = INTERVAL_MS.get(self.timeframe)
+        fill_deadline = hold_deadline = None
+        if interval_ms:
+            fill_window, max_hold = window_candles(interval_ms)
+            fill_deadline = self.signal_candle_ms + (fill_window + 1) * interval_ms
+            if self.fill_ms is not None:
+                hold_deadline = self.fill_ms + max_hold * interval_ms
         return {
             "id": self.id,
             "symbol": self.symbol,
             "side": self.side,
             "timeframe": self.timeframe,
-            "reason": self.reason,
-            "cross_candle_ms": self.cross_candle_ms,
-            "cross_time": self.cross_time,
-            "cross_price": round(self.cross_price, 6),
-            "close_price": round(self.close_price, 6),
-            "entry_price": round(self.entry_price, 6),
-            "stop_loss": round(self.stop_loss, 6),
-            "tp1": round(self.tp1, 6),
-            "risk_reward_ratio": round(self.risk_reward_ratio, 2),
-            "win_status": self.win_status,
-            "macd": round(self.macd, 6),
-            "signal": round(self.signal, 6),
-            "histogram": round(self.histogram, 6),
-            "bars_ago": self.bars_ago,
-            "is_confirmed": self.is_confirmed,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-        }
-
-
-class ProfitLossHistoryModel(Base):
-    __tablename__ = "profitloss_history"
-    __table_args__ = (
-        Index("uq_profitloss_history_signal_id", "signal_id", unique=True),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    signal_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    symbol: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
-    timeframe: Mapped[str] = mapped_column(String(10), default="2h", index=True, nullable=False)
-    direction: Mapped[str] = mapped_column(String(10), index=True, nullable=False)
-    entry_price: Mapped[float] = mapped_column(Float, nullable=False)
-    stop_loss: Mapped[float] = mapped_column(Float, nullable=False)
-    tp1: Mapped[float] = mapped_column(Float, nullable=False)
-    exit_price: Mapped[float] = mapped_column(Float, nullable=False)
-    result: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
-    pnl_percent: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    r_multiple: Mapped[float | None] = mapped_column(Float, nullable=True)
-    fee_percent: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    risk_reward_ratio: Mapped[float] = mapped_column(Float, nullable=False, default=1.5)
-    cross_time: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
-    exit_time: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        index=True,
-    )
-
-    def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "signal_id": self.signal_id,
-            "symbol": self.symbol,
-            "timeframe": self.timeframe,
-            "direction": self.direction,
-            "entry_price": round(self.entry_price, 6),
-            "stop_loss": round(self.stop_loss, 6),
-            "tp1": round(self.tp1, 6),
-            "exit_price": round(self.exit_price, 6),
-            "result": self.result,
-            "pnl_percent": round(self.pnl_percent, 2),
+            "signal_candle_ms": self.signal_candle_ms,
+            "signal_time": _ms_to_iso(self.signal_candle_ms),
+            "rsi": round(self.rsi, 2),
+            "prev_rsi": round(self.prev_rsi, 2),
+            "candle_close": self.candle_close,
+            "entry_price": self.entry_price,
+            "take_profit": self.take_profit,
+            "stop_loss": self.stop_loss,
+            "status": self.status,
+            "fill_price": self.fill_price,
+            "fill_ms": self.fill_ms,
+            "fill_time": _ms_to_iso(self.fill_ms),
+            "exit_price": self.exit_price,
+            "closed_ms": self.closed_ms,
+            "exit_time": _ms_to_iso(self.closed_ms),
+            "pnl_percent": round(self.pnl_percent, 2) if self.pnl_percent is not None else None,
             "r_multiple": round(self.r_multiple, 2) if self.r_multiple is not None else None,
-            "fee_percent": round(self.fee_percent or 0.0, 3),
-            "risk_reward_ratio": round(self.risk_reward_ratio, 2),
-            "cross_time": self.cross_time,
-            "exit_time": self.exit_time,
+            "fill_deadline": _ms_to_iso(fill_deadline),
+            "hold_deadline": _ms_to_iso(hold_deadline),
             "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 
 
-class TradeJournalModel(Base):
+class JournalModel(Base):
     """What the user actually did with a signal: taken or skipped, and at which fills."""
 
-    __tablename__ = "trade_journal"
+    __tablename__ = "signal_journal"
+    __table_args__ = (CheckConstraint("status IN ('TAKEN', 'SKIPPED')", name="ck_signal_journal_status"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    signal_id: Mapped[int] = mapped_column(Integer, unique=True, index=True, nullable=False)
-    status: Mapped[str] = mapped_column(String(10), index=True, nullable=False)
+    signal_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("signals.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(10), nullable=False)
     entry_fill: Mapped[float | None] = mapped_column(Float, nullable=True)
     exit_fill: Mapped[float | None] = mapped_column(Float, nullable=True)
-    notes: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    notes: Mapped[str] = mapped_column(String(500), default="", server_default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -212,113 +218,50 @@ class TradeJournalModel(Base):
         }
 
 
-SIGNAL_UNIQUE_COLUMNS = ("symbol", "side", "timeframe", "cross_candle_ms")
-
-SIGNAL_SURVIVOR_RANK = """
-    SELECT id,
-           ROW_NUMBER() OVER w AS rn,
-           FIRST_VALUE(id) OVER w AS keep_id
-    FROM macd_signals
-    WINDOW w AS (
-        PARTITION BY symbol, side, timeframe, cross_candle_ms
-        ORDER BY (COALESCE(win_status, 'PENDING') <> 'PENDING') DESC, id ASC
-    )
-"""
-
-UNIQUE_INDEX_MIGRATIONS = (
-    f"""
-    UPDATE profitloss_history AS p
-    SET signal_id = r.keep_id
-    FROM ({SIGNAL_SURVIVOR_RANK}) AS r
-    WHERE p.signal_id = r.id
-      AND r.rn > 1;
-    """,
-    f"""
-    DELETE FROM macd_signals AS m
-    USING ({SIGNAL_SURVIVOR_RANK}) AS r
-    WHERE m.id = r.id
-      AND r.rn > 1;
-    """,
-    """
-    DELETE FROM profitloss_history AS p
-    USING (
-        SELECT pl.id, ROW_NUMBER() OVER (
-            PARTITION BY pl.signal_id
-            ORDER BY (
-                (s.win_status = 'TP1_HIT' AND pl.result = 'PROFIT')
-                OR (s.win_status = 'SL_HIT' AND pl.result = 'LOSS')
-            ) IS TRUE DESC, pl.id ASC
-        ) AS rn
-        FROM profitloss_history pl
-        LEFT JOIN macd_signals s ON s.id = pl.signal_id
-        WHERE pl.signal_id IS NOT NULL
-    ) AS r
-    WHERE p.id = r.id
-      AND r.rn > 1;
-    """,
-    """
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_macd_signals_symbol_side_tf_candle
-    ON macd_signals (symbol, side, timeframe, cross_candle_ms);
-    """,
-    """
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_profitloss_history_signal_id
-    ON profitloss_history (signal_id);
-    """,
-    "DROP INDEX IF EXISTS ix_profitloss_history_signal_id;",
-)
-
-PROFITLOSS_R_MIGRATIONS = (
-    "ALTER TABLE profitloss_history ADD COLUMN IF NOT EXISTS r_multiple DOUBLE PRECISION;",
-    "ALTER TABLE profitloss_history ADD COLUMN IF NOT EXISTS fee_percent DOUBLE PRECISION NOT NULL DEFAULT 0.0;",
-    # Rows written before R tracking: derive R from the stored PnL and the planned risk
-    """
-    UPDATE profitloss_history
-    SET r_multiple = pnl_percent / (ABS(entry_price - stop_loss) / entry_price * 100)
-    WHERE r_multiple IS NULL AND entry_price > 0 AND stop_loss <> entry_price;
-    """,
-)
-
-UTC_ISO = "%Y-%m-%dT%H:%M:%SZ"
-
-
-def _ms_to_iso(ms: int) -> str:
-    return datetime.fromtimestamp(ms / 1000, tz=UTC).strftime(UTC_ISO)
-
-
-def build_signal_insert(signal: MacdSignal, timeframe: str):
+def build_signals_insert(signals: list[Signal], timeframe: str = TIMEFRAME):
+    """One INSERT for a run's hits; signals already stored are skipped and not returned."""
     return (
-        pg_insert(MacdSignalModel)
-        .values(
-            symbol=signal.symbol,
-            side=signal.side,
-            timeframe=timeframe,
-            reason=signal.reason,
-            cross_candle_ms=signal.cross_candle_ms,
-            cross_time=signal.cross_time,
-            cross_price=signal.cross_price,
-            close_price=signal.close,
-            entry_price=signal.entry_price,
-            stop_loss=signal.stop_loss,
-            tp1=signal.tp1,
-            risk_reward_ratio=signal.risk_reward_ratio,
-            win_status=signal.win_status,
-            macd=signal.macd,
-            signal=signal.signal,
-            histogram=signal.histogram,
-            bars_ago=signal.bars_ago,
-            is_confirmed=signal.is_confirmed,
-        )
-        .on_conflict_do_nothing(index_elements=list(SIGNAL_UNIQUE_COLUMNS))
-        .returning(MacdSignalModel.id)
+        pg_insert(SignalModel)
+        .values([
+            {
+                "symbol": s.symbol,
+                "side": s.side,
+                "timeframe": timeframe,
+                "signal_candle_ms": s.signal_candle_ms,
+                "rsi": s.rsi,
+                "prev_rsi": s.prev_rsi,
+                "candle_close": s.candle_close,
+                "entry_price": s.entry_price,
+                "take_profit": s.take_profit,
+                "stop_loss": s.stop_loss,
+            }
+            for s in signals
+        ])
+        .on_conflict_do_nothing(constraint="uq_signals_key")
+        .returning(SignalModel)
     )
 
 
-def build_profitloss_insert(**values):
+def build_transition_update(signal_id: int, old_status: str, values: dict):
+    """UPDATE that only wins while the row still has `old_status`, so of two workers replaying
+    the same trade only one sees the transition and alerts it."""
     return (
-        pg_insert(ProfitLossHistoryModel)
+        update(SignalModel)
+        .where(SignalModel.id == signal_id, SignalModel.status == old_status)
         .values(**values)
-        .on_conflict_do_nothing(index_elements=["signal_id"])
-        .returning(ProfitLossHistoryModel.id)
+        .returning(SignalModel.id)
+    )
+
+
+def build_alert_claim(since_ms: int):
+    """UPDATE that marks recent never-alerted signals as alerted and returns them, so of two
+    runs only one sends each. Older rows are past the scan lookback and are left alone."""
+    return (
+        update(SignalModel)
+        .where(SignalModel.alerted_at.is_(None), SignalModel.signal_candle_ms >= since_ms)
+        .values(alerted_at=func.now())
+        .returning(SignalModel)
+        .execution_options(synchronize_session=False)
     )
 
 
@@ -330,42 +273,6 @@ async def seed_default_watchlist(session: AsyncSession) -> None:
             session.add(WatchlistModel(symbol=sym, is_active=True, notes="Default Pair"))
         await session.commit()
         logger.info("Default watchlist seeded with %d symbols", len(DEFAULT_WATCHLIST))
-
-
-async def backfill_resolved_signals_to_profitloss_history(session: AsyncSession) -> None:
-    try:
-        stmt = select(MacdSignalModel).where(
-            MacdSignalModel.win_status.in_(["TP1_HIT", "SL_HIT"]),
-            ~exists().where(ProfitLossHistoryModel.signal_id == MacdSignalModel.id),
-        )
-        resolved = (await session.execute(stmt)).scalars().all()
-        for rec in resolved:
-            is_win = rec.win_status == "TP1_HIT"
-            exit_price = rec.tp1 if is_win else rec.stop_loss
-            entry_val = rec.entry_price or rec.cross_price or exit_price
-            pnl, r_multiple = trade_return(rec.side, entry_val, rec.stop_loss, exit_price, 0.0)
-
-            await session.execute(
-                build_profitloss_insert(
-                    signal_id=rec.id,
-                    symbol=rec.symbol,
-                    timeframe=rec.timeframe,
-                    direction=rec.side,
-                    entry_price=entry_val,
-                    stop_loss=rec.stop_loss,
-                    tp1=rec.tp1,
-                    exit_price=exit_price,
-                    result="PROFIT" if is_win else "LOSS",
-                    pnl_percent=pnl,
-                    r_multiple=r_multiple,
-                    risk_reward_ratio=rec.risk_reward_ratio,
-                    cross_time=rec.cross_time,
-                    exit_time=rec.cross_time,
-                )
-            )
-        await session.commit()
-    except Exception as e:
-        logger.debug("Backfill profitloss_history error: %s", e)
 
 
 async def init_db(max_retries: int = 5, retry_interval: float = 2.0) -> bool:
@@ -392,37 +299,9 @@ async def init_db(max_retries: int = 5, retry_interval: float = 2.0) -> bool:
             )
             async with _engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
-                # Ensure columns and tables exist in existing databases
-                await conn.execute(text("ALTER TABLE macd_signals ADD COLUMN IF NOT EXISTS entry_price DOUBLE PRECISION DEFAULT 0.0;"))
-                await conn.execute(text("ALTER TABLE macd_signals ADD COLUMN IF NOT EXISTS stop_loss DOUBLE PRECISION DEFAULT 0.0;"))
-                await conn.execute(text("ALTER TABLE macd_signals ADD COLUMN IF NOT EXISTS tp1 DOUBLE PRECISION DEFAULT 0.0;"))
-                await conn.execute(text("ALTER TABLE macd_signals ADD COLUMN IF NOT EXISTS risk_reward_ratio DOUBLE PRECISION DEFAULT 1.5;"))
-                await conn.execute(text("ALTER TABLE macd_signals ADD COLUMN IF NOT EXISTS win_status VARCHAR(20) DEFAULT 'PENDING';"))
-                await conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS profitloss_history (
-                        id SERIAL PRIMARY KEY,
-                        signal_id INTEGER,
-                        symbol VARCHAR(20) NOT NULL,
-                        timeframe VARCHAR(10) NOT NULL DEFAULT '2h',
-                        direction VARCHAR(10) NOT NULL,
-                        entry_price DOUBLE PRECISION NOT NULL,
-                        stop_loss DOUBLE PRECISION NOT NULL,
-                        tp1 DOUBLE PRECISION NOT NULL,
-                        exit_price DOUBLE PRECISION NOT NULL,
-                        result VARCHAR(20) NOT NULL,
-                        pnl_percent DOUBLE PRECISION NOT NULL DEFAULT 0.0,
-                        risk_reward_ratio DOUBLE PRECISION NOT NULL DEFAULT 1.5,
-                        cross_time VARCHAR(40) NOT NULL,
-                        exit_time VARCHAR(40) NOT NULL,
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-                    );
-                """))
-                for migration in (*UNIQUE_INDEX_MIGRATIONS, *PROFITLOSS_R_MIGRATIONS):
-                    await conn.execute(text(migration))
 
             async with _session_maker() as session:
                 await seed_default_watchlist(session)
-                await backfill_resolved_signals_to_profitloss_history(session)
 
             logger.info("Database initialized successfully")
             return True
@@ -437,7 +316,6 @@ async def init_db(max_retries: int = 5, retry_interval: float = 2.0) -> bool:
 
     logger.error("Could not connect to PostgreSQL after %d attempts", max_retries)
     return False
-
 
 async def close_db() -> None:
     global _engine, _session_maker
@@ -545,353 +423,80 @@ async def toggle_watchlist_symbol(symbol: str, is_active: bool) -> bool:
 
 
 # Signal Operations
-async def save_macd_signal(signal: MacdSignal, timeframe: str = "2h") -> dict | None:
+async def insert_signals(signals: list[Signal], timeframe: str = TIMEFRAME) -> list[dict]:
+    """Store a run's hits and return only the rows that were new. Raises when the database is
+    unavailable, so a run never reports zero signals because nothing could be stored."""
+    if not signals:
+        return []
     if _session_maker is None:
-        return None
+        raise RuntimeError("Database not initialized")
 
-    try:
-        async with _session_maker() as session:
-            inserted_id = (await session.execute(build_signal_insert(signal, timeframe))).scalar_one_or_none()
-            await session.commit()
-
-            if inserted_id is not None:
-                stmt = select(MacdSignalModel).where(MacdSignalModel.id == inserted_id)
-            else:
-                stmt = select(MacdSignalModel).where(
-                    MacdSignalModel.symbol == signal.symbol,
-                    MacdSignalModel.side == signal.side,
-                    MacdSignalModel.timeframe == timeframe,
-                    MacdSignalModel.cross_candle_ms == signal.cross_candle_ms,
-                )
-            record = (await session.execute(stmt)).scalars().first()
-            if record is None:
-                return None
-            return {**record.to_dict(), "inserted": inserted_id is not None}
-    except Exception as e:
-        logger.exception("Failed to save MACD signal to database: %s", e)
-        return None
+    async with _session_maker() as session:
+        rows = (await session.execute(build_signals_insert(signals, timeframe))).scalars().all()
+        await session.commit()
+        return [r.to_dict() for r in rows]
 
 
-def _empty_signals_summary() -> dict:
-    return {
-        "open_count": 0,
-        "profit_count": 0,
-        "loss_count": 0,
-        "expired_count": 0,
-        "closed_count": 0,
-        "total_r": 0.0,
-        "total_pnl_percent": 0.0,
-    }
+async def claim_unalerted_signals(since_ms: int) -> list[dict]:
+    """Signals from `since_ms` on that no run has alerted yet, oldest first, now marked alerted.
+
+    Alerting from here instead of from insert_signals' new rows means a run that dies after
+    storing its signals leaves them for the next run. Raises when the database is unavailable.
+    """
+    if _session_maker is None:
+        raise RuntimeError("Database not initialized")
+
+    async with _session_maker() as session:
+        rows = (await session.execute(build_alert_claim(since_ms))).scalars().all()
+        await session.commit()
+        return [r.to_dict() for r in sorted(rows, key=lambda r: r.id)]
 
 
-def _trade_result(pl) -> dict:
-    """Result fields shown with a signal; all None while the signal is still open."""
-    if pl is None:
-        return {"exit_price": None, "exit_time": None, "r_multiple": None, "pnl_percent": None}
-    return {
-        "exit_price": round(pl.exit_price, 6),
-        "exit_time": pl.exit_time,
-        "r_multiple": round(pl.r_multiple, 2) if pl.r_multiple is not None else None,
-        "pnl_percent": round(pl.pnl_percent, 2),
-    }
+async def release_signal_alerts(signal_ids: list[int]) -> None:
+    """Undo a claim whose alert was not delivered, so the next run sends it again."""
+    if not signal_ids or _session_maker is None:
+        return
+    async with _session_maker() as session:
+        await session.execute(
+            update(SignalModel).where(SignalModel.id.in_(signal_ids)).values(alerted_at=None)
+        )
+        await session.commit()
 
 
-async def _trade_results_by_signal(session: AsyncSession, signal_ids: list[int]) -> dict[int, dict]:
-    if not signal_ids:
-        return {}
-    rows = await session.execute(
-        select(ProfitLossHistoryModel).where(ProfitLossHistoryModel.signal_id.in_(signal_ids))
-    )
-    return {pl.signal_id: _trade_result(pl) for pl in rows.scalars().all()}
+def _wib_day_ms(day: str) -> int:
+    """Midnight WIB at the start of a YYYY-MM-DD day, in UTC ms. Raises ValueError on bad input."""
+    return int(datetime.strptime(day.strip(), "%Y-%m-%d").replace(tzinfo=WIB).timestamp() * 1000)
 
 
-async def get_macd_signals(
-    symbol: str | None = None,
+def signal_conditions(
+    status: str | None = None,
     side: str | None = None,
-    direction: str | None = None,
-    timeframe: str | None = "2h",
-    win_status: str | None = None,
-    result: str | None = None,
+    symbol: str | None = None,
+    timeframe: str | None = None,
     date: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
-    limit: int = 50,
-    offset: int = 0,
-) -> tuple[list[dict], int, dict]:
-    """Signals newest first, each with its journal status and trade result, plus a summary of
-    every signal matching the filters."""
-    if _session_maker is None:
-        return [], 0, _empty_signals_summary()
-
-    sig, pl = MacdSignalModel, ProfitLossHistoryModel
-    target_side = (direction or side or "").strip().upper() or None
-    target_status = None
-    if result:
-        res_upper = result.strip().upper()
-        target_status = {"PROFIT": "TP1_HIT", "LOSS": "SL_HIT"}.get(res_upper, res_upper)
-    elif win_status:
-        target_status = win_status.strip().upper()
-
+) -> list:
+    """Filters on signals. `status` may list several, comma separated; dates are WIB days."""
+    sig = SignalModel
     conditions = []
+    statuses = [s.strip().upper() for s in (status or "").split(",") if s.strip()]
+    if statuses:
+        conditions.append(sig.status.in_(statuses))
+    if side:
+        conditions.append(sig.side == side.strip().upper())
     if symbol:
-        conditions.append(sig.symbol == symbol.upper().strip())
-    if target_side:
-        conditions.append(sig.side == target_side)
+        conditions.append(sig.symbol == symbol.strip().upper())
     if timeframe:
-        conditions.append(sig.timeframe == timeframe.strip().lower())
-    if target_status:
-        conditions.append(sig.win_status == target_status)
+        conditions.append(sig.timeframe == timeframe.strip())
     if date:
-        conditions.append(sig.cross_time.like(f"{date.strip()}%"))
+        day = _wib_day_ms(date)
+        conditions += [sig.signal_candle_ms >= day, sig.signal_candle_ms < day + DAY_MS]
     if start_date:
-        conditions.append(sig.cross_time >= start_date.strip())
+        conditions.append(sig.signal_candle_ms >= _wib_day_ms(start_date))
     if end_date:
-        conditions.append(sig.cross_time <= f"{end_date.strip()} 23:59:59")
-
-    try:
-        async with _session_maker() as session:
-            agg = (
-                await session.execute(
-                    select(
-                        func.count(sig.id).label("total"),
-                        func.count().filter(sig.win_status == "PENDING").label("open"),
-                        func.count().filter(sig.win_status == "TP1_HIT").label("profit"),
-                        func.count().filter(sig.win_status == "SL_HIT").label("loss"),
-                        func.count().filter(sig.win_status == "EXPIRED").label("expired"),
-                        func.count(pl.id).label("closed"),
-                        func.coalesce(func.sum(pl.r_multiple), 0.0).label("total_r"),
-                        func.coalesce(func.sum(pl.pnl_percent), 0.0).label("pnl"),
-                    )
-                    .select_from(sig)
-                    .outerjoin(pl, pl.signal_id == sig.id)
-                    .where(*conditions)
-                )
-            ).one()
-
-            query = select(sig).where(*conditions).order_by(desc(sig.id)).limit(limit).offset(offset)
-            records = (await session.execute(query)).scalars().all()
-            ids = [r.id for r in records]
-            journal = await _journal_status_by_signal(session, ids)
-            results = await _trade_results_by_signal(session, ids)
-            items = [
-                {**r.to_dict(), **results.get(r.id, _trade_result(None)), "journal_status": journal.get(r.id)}
-                for r in records
-            ]
-            summary = {
-                "open_count": agg.open or 0,
-                "profit_count": agg.profit or 0,
-                "loss_count": agg.loss or 0,
-                "expired_count": agg.expired or 0,
-                "closed_count": agg.closed or 0,
-                "total_r": round(float(agg.total_r or 0.0), 2),
-                "total_pnl_percent": round(float(agg.pnl or 0.0), 2),
-            }
-            return items, agg.total or 0, summary
-    except Exception as e:
-        logger.exception("Failed to query MACD signals: %s", e)
-        return [], 0, _empty_signals_summary()
-
-
-async def get_signals_by_keys(
-    keys: list[tuple[str, str, int]], timeframe: str = "2h"
-) -> dict[tuple[str, str, int], dict]:
-    if _session_maker is None or not keys:
-        return {}
-
-    try:
-        async with _session_maker() as session:
-            stmt = select(MacdSignalModel).where(
-                MacdSignalModel.timeframe == timeframe,
-                tuple_(
-                    MacdSignalModel.symbol,
-                    MacdSignalModel.side,
-                    MacdSignalModel.cross_candle_ms,
-                ).in_(list(set(keys))),
-            )
-            records = (await session.execute(stmt)).scalars().all()
-            return {(r.symbol, r.side, r.cross_candle_ms): r.to_dict() for r in records}
-    except Exception as e:
-        logger.error("Failed to look up signals by key: %s", e)
-        return {}
-
-
-async def get_signal_by_id(signal_id: int) -> dict | None:
-    if _session_maker is None:
-        return None
-
-    try:
-        async with _session_maker() as session:
-            stmt = select(MacdSignalModel).where(MacdSignalModel.id == signal_id)
-            res = await session.execute(stmt)
-            sig = res.scalar_one_or_none()
-            if sig is None:
-                return None
-            entry = (
-                await session.execute(select(TradeJournalModel).where(TradeJournalModel.signal_id == signal_id))
-            ).scalar_one_or_none()
-            results = await _trade_results_by_signal(session, [signal_id])
-            return {
-                **sig.to_dict(),
-                **results.get(signal_id, _trade_result(None)),
-                "journal": journal_view(sig, entry),
-            }
-    except Exception as e:
-        logger.error("Failed to get signal %d: %s", signal_id, e)
-        return None
-
-
-def _empty_evaluation() -> dict:
-    return {"evaluated_count": 0, "profit_count": 0, "loss_count": 0, "expired_count": 0, "closed": []}
-
-
-async def _evaluate_pending_signals_unlocked(client) -> dict:
-    """Close pending signals that reached their target, their stop, or their expiry.
-
-    Returns counts plus `closed`, the trades this run recorded, for outcome alerts.
-    """
-    if _session_maker is None or client is None:
-        return _empty_evaluation()
-
-    summary = _empty_evaluation()
-    counters = {"PROFIT": "profit_count", "LOSS": "loss_count", "EXPIRED": "expired_count"}
-    now_ms = int(datetime.now(UTC).timestamp() * 1000)
-
-    try:
-        async with _session_maker() as session:
-            stmt = select(MacdSignalModel).where(MacdSignalModel.win_status == "PENDING")
-            pending_records = (await session.execute(stmt)).scalars().all()
-
-            for rec in pending_records:
-                try:
-                    interval_ms = CANDLE_INTERVAL_MS.get(rec.timeframe, CANDLE_INTERVAL_MS["2h"])
-                    raw_klines = await asyncio.to_thread(
-                        client.klines,
-                        symbol=rec.symbol,
-                        interval=rec.timeframe,
-                        startTime=rec.cross_candle_ms,
-                        limit=min(SIGNAL_EXPIRY_CANDLES + 1, 1500),
-                    )
-                    if isinstance(raw_klines, dict) and "data" in raw_klines:
-                        raw_klines = raw_klines["data"]
-                    if not raw_klines or len(raw_klines) < 2:
-                        continue
-
-                    # The first kline is the cross candle itself; the trade starts on the next one
-                    outcome = resolve_outcome(
-                        rec.side,
-                        rec.stop_loss,
-                        rec.tp1,
-                        raw_klines[1:],
-                        SIGNAL_EXPIRY_CANDLES,
-                        now_ms,
-                        interval_ms,
-                    )
-                    if outcome is None:
-                        continue
-
-                    entry_val = rec.entry_price or rec.cross_price or outcome.exit_price
-                    pnl, r_multiple = trade_return(
-                        rec.side, entry_val, rec.stop_loss, outcome.exit_price, ROUND_TRIP_FEE_PERCENT
-                    )
-                    values = {
-                        "signal_id": rec.id,
-                        "symbol": rec.symbol,
-                        "timeframe": rec.timeframe,
-                        "direction": rec.side,
-                        "entry_price": entry_val,
-                        "stop_loss": rec.stop_loss,
-                        "tp1": rec.tp1,
-                        "exit_price": outcome.exit_price,
-                        "result": outcome.result,
-                        "pnl_percent": pnl,
-                        "r_multiple": r_multiple,
-                        "fee_percent": ROUND_TRIP_FEE_PERCENT,
-                        "risk_reward_ratio": rec.risk_reward_ratio,
-                        "cross_time": rec.cross_time,
-                        "exit_time": _ms_to_iso(outcome.exit_time_ms),
-                    }
-                    inserted = (await session.execute(build_profitloss_insert(**values))).scalar_one_or_none()
-                    rec.win_status = outcome.win_status
-
-                    summary["evaluated_count"] += 1
-                    summary[counters[outcome.result]] += 1
-                    if inserted is not None:
-                        summary["closed"].append(values)
-
-                except Exception as ex:
-                    logger.warning("Evaluation error for %s: %s", rec.symbol, ex)
-
-            await session.commit()
-            return summary
-    except Exception as e:
-        logger.error("evaluate_pending_signals error: %s", e)
-        return _empty_evaluation()
-
-
-async def evaluate_pending_signals(client) -> dict:
-    if _session_maker is None or client is None:
-        return _empty_evaluation()
-
-    async with _evaluation_lock:
-        return await _evaluate_pending_signals_unlocked(client)
-
-
-# Profit/Loss History Operations
-async def record_profit_loss(
-    symbol: str,
-    direction: str,
-    entry_price: float,
-    stop_loss: float,
-    tp1: float,
-    exit_price: float,
-    result: str,
-    timeframe: str = "2h",
-    signal_id: int | None = None,
-    pnl_percent: float = 0.0,
-    risk_reward_ratio: float = 1.5,
-    cross_time: str = "",
-    exit_time: str = "",
-) -> dict | None:
-    if _session_maker is None:
-        return None
-
-    try:
-        async with _session_maker() as session:
-            record = ProfitLossHistoryModel(
-                signal_id=signal_id,
-                symbol=symbol.upper().strip(),
-                timeframe=timeframe,
-                direction=direction.upper().strip(),
-                entry_price=entry_price,
-                stop_loss=stop_loss,
-                tp1=tp1,
-                exit_price=exit_price,
-                result=result.upper().strip(),
-                pnl_percent=pnl_percent,
-                risk_reward_ratio=risk_reward_ratio,
-                cross_time=cross_time,
-                exit_time=exit_time or cross_time,
-            )
-            session.add(record)
-            await session.commit()
-            await session.refresh(record)
-            return record.to_dict()
-    except Exception as e:
-        logger.error("Failed to record profit/loss history: %s", e)
-        return None
-
-
-def _empty_profitloss_summary() -> dict:
-    return {
-        "total_trades": 0,
-        "profit_count": 0,
-        "loss_count": 0,
-        "expired_count": 0,
-        "winrate": 0.0,
-        "total_pnl_percent": 0.0,
-        "total_r": 0.0,
-        "avg_r": 0.0,
-    }
+        conditions.append(sig.signal_candle_ms < _wib_day_ms(end_date) + DAY_MS)
+    return conditions
 
 
 def _max_drawdown(values: list[float]) -> float:
@@ -904,195 +509,276 @@ def _max_drawdown(values: list[float]) -> float:
     return worst
 
 
-async def get_profitloss_history(
+def build_stats(
+    counts: dict,
+    total_pnl: float = 0.0,
+    r_values: list[float] | None = None,
+    watchlist_count: int = 0,
+    latest_signal_ms: int | None = None,
+) -> dict:
+    """Summary from per-status counts (`counts` also holds total/long/short/symbols).
+
+    Not filled signals never traded, so they count against the fill rate but not the win rate.
+    """
+    r_values = r_values or []
+    tp, sl, expired = counts.get("TP_HIT", 0), counts.get("SL_HIT", 0), counts.get("EXPIRED", 0)
+    not_filled = counts.get("NOT_FILLED", 0)
+    closed = tp + sl + expired
+    filled = counts.get("OPEN", 0) + closed
+    total_r = sum(r_values)
+    return {
+        "total_signals": counts.get("total", 0),
+        "long_signals": counts.get("long", 0),
+        "short_signals": counts.get("short", 0),
+        "symbols_count": counts.get("symbols", 0),
+        "pending_count": counts.get("PENDING", 0),
+        "open_count": counts.get("OPEN", 0),
+        "tp_hit_count": tp,
+        "sl_hit_count": sl,
+        "expired_count": expired,
+        "not_filled_count": not_filled,
+        "filled_count": filled,
+        "fill_rate": round(filled / (filled + not_filled) * 100, 1) if filled + not_filled else 0.0,
+        "closed_trades": closed,
+        "winrate": round(tp / closed * 100, 1) if closed else 0.0,
+        "total_net_pnl": round(float(total_pnl or 0.0), 2),
+        "total_r": round(total_r, 2),
+        "avg_r": round(total_r / closed, 3) if closed else 0.0,
+        "max_drawdown_r": round(_max_drawdown(r_values), 2),
+        "watchlist_count": watchlist_count,
+        "latest_signal_time": _ms_to_iso(latest_signal_ms),
+    }
+
+
+async def signal_stats(conditions: list | tuple = ()) -> dict:
+    """Summary of every signal matching `conditions` (from signal_conditions); all signals by default."""
+    if _session_maker is None:
+        return build_stats({}, watchlist_count=len(DEFAULT_WATCHLIST))
+
+    sig = SignalModel
+    try:
+        async with _session_maker() as session:
+            row = (
+                await session.execute(
+                    select(
+                        func.count(sig.id).label("total"),
+                        func.count().filter(sig.side == "LONG").label("long"),
+                        func.count().filter(sig.side == "SHORT").label("short"),
+                        func.count(func.distinct(sig.symbol)).label("symbols"),
+                        *(func.count().filter(sig.status == s).label(s) for s in STATUSES),
+                        func.coalesce(func.sum(sig.pnl_percent), 0.0).label("pnl"),
+                        func.max(sig.signal_candle_ms).label("latest"),
+                    ).where(*conditions)
+                )
+            ).one()
+            r_values = [
+                float(v)
+                for v in (
+                    await session.execute(
+                        select(sig.r_multiple)
+                        .where(*conditions, sig.r_multiple.is_not(None))
+                        .order_by(sig.closed_ms, sig.id)
+                    )
+                ).scalars().all()
+            ]
+            wl_count = (
+                await session.execute(
+                    select(func.count(WatchlistModel.id)).where(WatchlistModel.is_active.is_(True))
+                )
+            ).scalar_one() or 0
+            counts = {k: getattr(row, k) or 0 for k in ("total", "long", "short", "symbols", *STATUSES)}
+            return build_stats(counts, row.pnl, r_values, wl_count, row.latest)
+    except Exception as e:
+        logger.exception("Failed to calculate signal stats: %s", e)
+        return build_stats({})
+
+
+async def list_signals(
+    status: str | None = None,
+    side: str | None = None,
     symbol: str | None = None,
-    direction: str | None = None,
     timeframe: str | None = None,
-    result: str | None = None,
     date: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[dict], int, dict]:
+    """Signals newest first, each with its journal status, plus the total and summary of every
+    signal matching the filters. Raises ValueError on a malformed date."""
+    conditions = signal_conditions(status, side, symbol, timeframe, date, start_date, end_date)
+    summary = await signal_stats(conditions)
     if _session_maker is None:
-        return [], 0, _empty_profitloss_summary()
+        return [], 0, summary
 
-    pl = ProfitLossHistoryModel
-    conditions = []
-    if symbol:
-        conditions.append(pl.symbol == symbol.strip().upper())
-    if direction:
-        conditions.append(pl.direction == direction.strip().upper())
-    if timeframe:
-        conditions.append(pl.timeframe == timeframe.strip().lower())
-    if result:
-        conditions.append(pl.result == result.strip().upper())
-    if date:
-        clean_date = date.strip()
-        conditions.append(pl.cross_time.like(f"{clean_date}%") | pl.exit_time.like(f"{clean_date}%"))
-    if start_date:
-        conditions.append(pl.cross_time >= start_date.strip())
-    if end_date:
-        conditions.append(pl.cross_time <= f"{end_date.strip()} 23:59:59")
-
+    sig = SignalModel
     try:
         async with _session_maker() as session:
-            records_query = select(pl).where(*conditions).order_by(desc(pl.id)).limit(limit).offset(offset)
-            items = [r.to_dict() for r in (await session.execute(records_query)).scalars().all()]
-
-            agg = (
-                await session.execute(
-                    select(
-                        func.count(pl.id).label("total"),
-                        func.count().filter(pl.result == "PROFIT").label("profit"),
-                        func.count().filter(pl.result == "LOSS").label("loss"),
-                        func.count().filter(pl.result == "EXPIRED").label("expired"),
-                        func.coalesce(func.sum(pl.pnl_percent), 0.0).label("pnl"),
-                        func.coalesce(func.sum(pl.r_multiple), 0.0).label("total_r"),
-                        func.avg(pl.r_multiple).label("avg_r"),
-                    ).where(*conditions)
-                )
-            ).one()
-
-            total = agg.total or 0
-            summary = {
-                "total_trades": total,
-                "profit_count": agg.profit or 0,
-                "loss_count": agg.loss or 0,
-                "expired_count": agg.expired or 0,
-                "winrate": round((agg.profit or 0) / total * 100, 1) if total else 0.0,
-                "total_pnl_percent": round(float(agg.pnl or 0.0), 2),
-                "total_r": round(float(agg.total_r or 0.0), 2),
-                "avg_r": round(float(agg.avg_r or 0.0), 3),
-            }
-            return items, total, summary
-    except Exception as e:
-        logger.exception("Failed to query profitloss history: %s", e)
-        return [], 0, _empty_profitloss_summary()
-
-
-async def get_macd_signals_summary() -> dict:
-    if _session_maker is None:
-        return {
-            "total_signals": 0,
-            "long_signals": 0,
-            "short_signals": 0,
-            "symbols_count": 0,
-            "tp1_hit_count": 0,
-            "sl_hit_count": 0,
-            "pending_count": 0,
-            "expired_count": 0,
-            "winrate": 0.0,
-            "avg_rr": 1.5,
-            "watchlist_count": len(DEFAULT_WATCHLIST),
-            "latest_signal_time": None,
-            "total_net_pnl": 0.0,
-            "closed_trades": 0,
-            "total_r": 0.0,
-            "avg_r": 0.0,
-            "max_drawdown_r": 0.0,
-        }
-
-    try:
-        async with _session_maker() as session:
-            stmt = select(
-                func.count(MacdSignalModel.id).label("total"),
-                func.count().filter(MacdSignalModel.side == "LONG").label("long_cnt"),
-                func.count().filter(MacdSignalModel.side == "SHORT").label("short_cnt"),
-                func.count(func.distinct(MacdSignalModel.symbol)).label("symbols_cnt"),
-                func.count().filter(MacdSignalModel.win_status == "TP1_HIT").label("tp1_hits"),
-                func.count().filter(MacdSignalModel.win_status == "SL_HIT").label("sl_hits"),
-                func.count().filter(MacdSignalModel.win_status == "PENDING").label("pending"),
-                func.count().filter(MacdSignalModel.win_status == "EXPIRED").label("expired"),
+            query = (
+                select(sig)
+                .where(*conditions)
+                .order_by(desc(sig.signal_candle_ms), desc(sig.id))
+                .limit(limit)
+                .offset(offset)
             )
-            row = (await session.execute(stmt)).one()
-            total = row.total or 0
-            long_cnt = row.long_cnt or 0
-            short_cnt = row.short_cnt or 0
-            symbols_cnt = row.symbols_cnt or 0
-            tp1_hits = row.tp1_hits or 0
-            sl_hits = row.sl_hits or 0
-            pending = row.pending or 0
-            expired = row.expired or 0
-
-            resolved = tp1_hits + sl_hits + expired
-            winrate = round((tp1_hits / resolved) * 100, 1) if resolved > 0 else 0.0
-
-            # Only results tied to a recorded signal, so these totals match the signal list
-            linked = ProfitLossHistoryModel.signal_id.in_(select(MacdSignalModel.id))
-            pl_stmt = select(
-                func.coalesce(func.sum(ProfitLossHistoryModel.pnl_percent), 0.0).label("total_pnl"),
-                func.count(ProfitLossHistoryModel.id).label("closed_trades"),
-            ).where(linked)
-            pl_row = (await session.execute(pl_stmt)).one()
-            total_net_pnl = round(float(pl_row.total_pnl or 0.0), 2)
-            closed_trades = pl_row.closed_trades or resolved
-
-            r_values = [
-                float(v)
-                for v in (
-                    await session.execute(
-                        select(ProfitLossHistoryModel.r_multiple)
-                        .where(ProfitLossHistoryModel.r_multiple.is_not(None), linked)
-                        .order_by(ProfitLossHistoryModel.exit_time, ProfitLossHistoryModel.id)
-                    )
-                ).scalars().all()
-            ]
-            total_r = sum(r_values)
-
-            wl_count = (
-                await session.execute(
-                    select(func.count(WatchlistModel.id)).where(WatchlistModel.is_active.is_(True))
-                )
-            ).scalar_one() or 0
-
-            latest = (
-                await session.execute(
-                    select(MacdSignalModel.cross_time).order_by(desc(MacdSignalModel.id)).limit(1)
-                )
-            ).scalar_one_or_none()
-
-            return {
-                "total_signals": total,
-                "long_signals": long_cnt,
-                "short_signals": short_cnt,
-                "symbols_count": symbols_cnt,
-                "tp1_hit_count": tp1_hits,
-                "sl_hit_count": sl_hits,
-                "pending_count": pending,
-                "expired_count": expired,
-                "winrate": winrate,
-                "avg_rr": RISK_REWARD_RATIO,
-                "watchlist_count": wl_count,
-                "latest_signal_time": latest,
-                "total_net_pnl": total_net_pnl,
-                "closed_trades": closed_trades,
-                "total_r": round(total_r, 2),
-                "avg_r": round(total_r / len(r_values), 3) if r_values else 0.0,
-                "max_drawdown_r": round(_max_drawdown(r_values), 2),
-            }
+            records = (await session.execute(query)).scalars().all()
+            journal = await _journal_status_by_signal(session, [r.id for r in records])
+            items = [{**r.to_dict(), "journal_status": journal.get(r.id)} for r in records]
+            return items, summary["total_signals"], summary
     except Exception as e:
-        logger.exception("Failed to calculate signals summary: %s", e)
-        return {
-            "total_signals": 0,
-            "long_signals": 0,
-            "short_signals": 0,
-            "symbols_count": 0,
-            "tp1_hit_count": 0,
-            "sl_hit_count": 0,
-            "pending_count": 0,
-            "expired_count": 0,
-            "winrate": 0.0,
-            "avg_rr": 1.5,
-            "watchlist_count": 0,
-            "latest_signal_time": None,
-            "total_net_pnl": 0.0,
-            "closed_trades": 0,
-            "total_r": 0.0,
-            "avg_r": 0.0,
-            "max_drawdown_r": 0.0,
-        }
+        logger.exception("Failed to query signals: %s", e)
+        return [], 0, summary
+
+
+async def get_signal(signal_id: int) -> dict | None:
+    if _session_maker is None:
+        return None
+
+    try:
+        async with _session_maker() as session:
+            sig = (
+                await session.execute(select(SignalModel).where(SignalModel.id == signal_id))
+            ).scalar_one_or_none()
+            if sig is None:
+                return None
+            entry = (
+                await session.execute(select(JournalModel).where(JournalModel.signal_id == signal_id))
+            ).scalar_one_or_none()
+            return {**sig.to_dict(), "journal": journal_view(sig, entry)}
+    except Exception as e:
+        logger.error("Failed to get signal %d: %s", signal_id, e)
+        return None
+
+
+def fetch_trade_klines(client, symbol: str, timeframe: str, start_ms: int, count: int, interval_ms: int) -> list:
+    """Up to `count` raw klines opening from `start_ms`, paged since one request returns at most
+    KLINES_PAGE_LIMIT. Stops early at the first short page, which means the latest candle."""
+    candles: list = []
+    while len(candles) < count:
+        limit = min(count - len(candles), KLINES_PAGE_LIMIT)
+        page = client.klines(symbol=symbol, interval=timeframe, startTime=start_ms, limit=limit)
+        if isinstance(page, dict) and "data" in page:
+            page = page["data"]
+        if not page:
+            break
+        candles.extend(page)
+        if len(page) < limit:
+            break
+        start_ms = int(page[-1][0]) + interval_ms
+    return candles
+
+
+def trade_values(rec, trade) -> dict:
+    """Columns to store for a replayed trade; P/L only once it has an exit."""
+    pnl = r_multiple = None
+    if trade.exit_price is not None:
+        # Planned risk from the stored levels, so later changes to SL_PERCENT keep old R intact
+        risk_percent = abs(rec.entry_price - rec.stop_loss) / rec.entry_price * 100
+        pnl, r_multiple = trade_return(
+            rec.side, trade.fill_price, trade.exit_price, risk_percent, ROUND_TRIP_FEE_PERCENT
+        )
+    return {
+        "status": trade.status,
+        "fill_price": trade.fill_price,
+        "fill_ms": trade.fill_ms,
+        "exit_price": trade.exit_price,
+        "closed_ms": trade.closed_ms,
+        "pnl_percent": pnl,
+        "r_multiple": r_multiple,
+    }
+
+
+def _empty_evaluation() -> dict:
+    return {
+        "evaluated": 0,
+        "filled": 0,
+        "tp": 0,
+        "sl": 0,
+        "expired": 0,
+        "not_filled": 0,
+        "failed": 0,
+        "transitions": [],
+    }
+
+
+async def _evaluate_active_unlocked(client) -> dict:
+    summary = _empty_evaluation()
+    counters = {"TP_HIT": "tp", "SL_HIT": "sl", "EXPIRED": "expired", "NOT_FILLED": "not_filled"}
+    now_ms = int(datetime.now(UTC).timestamp() * 1000)
+
+    async with _session_maker() as session:
+        records = (
+            await session.execute(select(SignalModel).where(SignalModel.status.in_(ACTIVE_STATUSES)))
+        ).scalars().all()
+
+    for rec in records:
+        summary["evaluated"] += 1
+        interval_ms = INTERVAL_MS.get(rec.timeframe)
+        if interval_ms is None:
+            logger.error("Signal %d has unsupported timeframe %r; not evaluated", rec.id, rec.timeframe)
+            summary["failed"] += 1
+            continue
+        try:
+            fill_window, max_hold = window_candles(interval_ms)
+            # The trade starts on the candle after the signal candle
+            candles = await asyncio.to_thread(
+                fetch_trade_klines,
+                client,
+                rec.symbol,
+                rec.timeframe,
+                rec.signal_candle_ms + interval_ms,
+                fill_window + max_hold,
+                interval_ms,
+            )
+            trade = resolve(
+                rec.side,
+                rec.entry_price,
+                rec.take_profit,
+                rec.stop_loss,
+                candles,
+                fill_window,
+                max_hold,
+                interval_ms,
+                now_ms,
+            )
+            if trade.status not in NEXT_STATUSES[rec.status]:
+                continue
+            values = trade_values(rec, trade)
+            async with _session_maker() as session:
+                won = (
+                    await session.execute(build_transition_update(rec.id, rec.status, values))
+                ).scalar_one_or_none()
+                await session.commit()
+        except Exception as ex:
+            logger.warning("Evaluation error for signal %d %s: %s", rec.id, rec.symbol, ex)
+            summary["failed"] += 1
+            continue
+
+        if won is None:
+            continue  # another run already recorded this move
+        previous = rec.status
+        for key, value in values.items():
+            setattr(rec, key, value)  # rec is detached, so this only feeds the alert
+        if previous == "PENDING" and trade.fill_price is not None:
+            summary["filled"] += 1
+        if trade.status in counters:
+            summary[counters[trade.status]] += 1
+        summary["transitions"].append({**rec.to_dict(), "previous_status": previous})
+
+    return summary
+
+
+async def evaluate_active(client) -> dict:
+    """Replay every pending and open trade and store the moves it made since the last run.
+
+    Returns counts plus `transitions`: the rows this run moved, as stored, each with its
+    `previous_status`. Raises when the database is unavailable.
+    """
+    if _session_maker is None:
+        raise RuntimeError("Database not initialized")
+
+    async with _evaluation_lock:
+        return await _evaluate_active_unlocked(client)
 
 
 # Trade Journal Operations
@@ -1106,8 +792,9 @@ def journal_view(sig, entry) -> dict | None:
     view = entry.to_dict()
     pnl, r_multiple = None, None
     if entry.status == "TAKEN" and entry.entry_fill and entry.exit_fill:
+        risk_percent = abs(sig.entry_price - sig.stop_loss) / sig.entry_price * 100
         pnl, r_multiple = trade_return(
-            sig.side, entry.entry_fill, sig.stop_loss, entry.exit_fill, ROUND_TRIP_FEE_PERCENT
+            sig.side, entry.entry_fill, entry.exit_fill, risk_percent, ROUND_TRIP_FEE_PERCENT
         )
     view["pnl_percent"] = round(pnl, 2) if pnl is not None else None
     view["r_multiple"] = round(r_multiple, 2) if r_multiple is not None else None
@@ -1118,9 +805,7 @@ async def _journal_status_by_signal(session: AsyncSession, signal_ids: list[int]
     if not signal_ids:
         return {}
     rows = await session.execute(
-        select(TradeJournalModel.signal_id, TradeJournalModel.status).where(
-            TradeJournalModel.signal_id.in_(signal_ids)
-        )
+        select(JournalModel.signal_id, JournalModel.status).where(JournalModel.signal_id.in_(signal_ids))
     )
     return {signal_id: status for signal_id, status in rows.all()}
 
@@ -1142,18 +827,18 @@ async def upsert_journal_entry(
     try:
         async with _session_maker() as session:
             sig = (
-                await session.execute(select(MacdSignalModel).where(MacdSignalModel.id == signal_id))
+                await session.execute(select(SignalModel).where(SignalModel.id == signal_id))
             ).scalar_one_or_none()
             if sig is None:
                 return None
             await session.execute(
-                pg_insert(TradeJournalModel)
+                pg_insert(JournalModel)
                 .values(signal_id=signal_id, **values)
                 .on_conflict_do_update(index_elements=["signal_id"], set_={**values, "updated_at": func.now()})
             )
             await session.commit()
             entry = (
-                await session.execute(select(TradeJournalModel).where(TradeJournalModel.signal_id == signal_id))
+                await session.execute(select(JournalModel).where(JournalModel.signal_id == signal_id))
             ).scalar_one()
             return {**sig.to_dict(), "journal": journal_view(sig, entry)}
     except Exception as e:
@@ -1166,7 +851,7 @@ async def delete_journal_entry(signal_id: int) -> bool:
         return False
     async with _session_maker() as session:
         entry = (
-            await session.execute(select(TradeJournalModel).where(TradeJournalModel.signal_id == signal_id))
+            await session.execute(select(JournalModel).where(JournalModel.signal_id == signal_id))
         ).scalar_one_or_none()
         if entry is None:
             return False
@@ -1187,6 +872,23 @@ def _empty_journal_summary() -> dict:
     }
 
 
+def journal_summary(rows) -> dict:
+    """Taken vs skipped, your own R against the signal's R, over (signal, entry) pairs."""
+    summary = _empty_journal_summary()
+    for s, e in rows:
+        taken = e.status == "TAKEN"
+        summary["taken" if taken else "skipped"] += 1
+        summary["signal_r_taken" if taken else "signal_r_skipped"] += s.r_multiple or 0.0
+        view = journal_view(s, e)
+        if taken and view["r_multiple"] is not None:
+            summary["closed_taken"] += 1
+            summary["your_total_r"] += view["r_multiple"]
+            summary["your_total_pnl_percent"] += view["pnl_percent"]
+    for key in ("your_total_r", "your_total_pnl_percent", "signal_r_taken", "signal_r_skipped"):
+        summary[key] = round(summary[key], 2)
+    return summary
+
+
 async def get_journal(
     status: str | None = None,
     symbol: str | None = None,
@@ -1197,7 +899,7 @@ async def get_journal(
     if _session_maker is None:
         return [], 0, _empty_journal_summary()
 
-    j, sig_m, pl = TradeJournalModel, MacdSignalModel, ProfitLossHistoryModel
+    j, sig_m = JournalModel, SignalModel
     conditions = []
     if status:
         conditions.append(j.status == status.strip().upper())
@@ -1217,30 +919,7 @@ async def get_journal(
 
             # Summary across every entry, unfiltered, so the comparison is stable while browsing
             all_rows = (await session.execute(select(sig_m, j).join(j, j.signal_id == sig_m.id))).all()
-            signal_r = dict(
-                (
-                    await session.execute(
-                        select(pl.signal_id, pl.r_multiple).where(
-                            pl.signal_id.in_([s.id for s, _ in all_rows]), pl.r_multiple.is_not(None)
-                        )
-                    )
-                ).all()
-            ) if all_rows else {}
-
-            summary = _empty_journal_summary()
-            for s, e in all_rows:
-                taken = e.status == "TAKEN"
-                summary["taken" if taken else "skipped"] += 1
-                key = "signal_r_taken" if taken else "signal_r_skipped"
-                summary[key] += signal_r.get(s.id, 0.0)
-                view = journal_view(s, e)
-                if taken and view["r_multiple"] is not None:
-                    summary["closed_taken"] += 1
-                    summary["your_total_r"] += view["r_multiple"]
-                    summary["your_total_pnl_percent"] += view["pnl_percent"]
-            for key in ("your_total_r", "your_total_pnl_percent", "signal_r_taken", "signal_r_skipped"):
-                summary[key] = round(summary[key], 2)
-            return items, total, summary
+            return items, total, journal_summary(all_rows)
     except Exception as e:
         logger.exception("Failed to query trade journal: %s", e)
         return [], 0, _empty_journal_summary()

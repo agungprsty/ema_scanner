@@ -95,18 +95,26 @@ async def test_list_journal_passes_filters(journal_store):
     assert (await _request("GET", "/api/journal?status=OPEN", auth=False)).status_code == 422
 
 
-def _sig(side="LONG", stop_loss=95.0):
-    return SimpleNamespace(side=side, stop_loss=stop_loss)
+def _sig(side="LONG", entry_price=100.0, stop_loss=99.0, r_multiple=None):
+    return SimpleNamespace(side=side, entry_price=entry_price, stop_loss=stop_loss, r_multiple=r_multiple)
 
 
 def _entry(status="TAKEN", entry_fill=None, exit_fill=None):
-    return db.TradeJournalModel(status=status, entry_fill=entry_fill, exit_fill=exit_fill, notes="")
+    return db.JournalModel(status=status, entry_fill=entry_fill, exit_fill=exit_fill, notes="")
+
+
+def test_journal_table_is_new_and_tied_to_signals():
+    assert db.JournalModel.__tablename__ == "signal_journal"
+    assert {fk.target_fullname for fk in db.JournalModel.__table__.c.signal_id.foreign_keys} == {"signals.id"}
 
 
 def test_journal_view_computes_result_from_fills():
-    view = db.journal_view(_sig(), _entry(entry_fill=100.0, exit_fill=107.5))
-    assert view["pnl_percent"] == pytest.approx(7.5 - db.ROUND_TRIP_FEE_PERCENT, abs=0.01)
-    assert view["r_multiple"] == pytest.approx((7.5 - db.ROUND_TRIP_FEE_PERCENT) / 5.0, abs=0.01)
+    view = db.journal_view(_sig(), _entry(entry_fill=100.0, exit_fill=102.0))
+    assert view["pnl_percent"] == pytest.approx(2.0 - db.ROUND_TRIP_FEE_PERCENT, abs=0.01)
+    # R against the planned 1% risk of the signal, not the user's own fill
+    assert view["r_multiple"] == pytest.approx(2.0 - db.ROUND_TRIP_FEE_PERCENT, abs=0.01)
+    short = db.journal_view(_sig("SHORT", 3000.0, 3030.0), _entry(entry_fill=3010.0, exit_fill=2940.0))
+    assert short["r_multiple"] == pytest.approx(70 / 3010 * 100 - db.ROUND_TRIP_FEE_PERCENT, abs=0.01)
 
 
 def test_journal_view_without_exit_has_no_result():
@@ -114,3 +122,18 @@ def test_journal_view_without_exit_has_no_result():
     assert view["pnl_percent"] is None and view["r_multiple"] is None
     assert db.journal_view(_sig(), None) is None
     assert db.journal_view(_sig(), _entry(status="SKIPPED"))["r_multiple"] is None
+
+
+def test_journal_summary_compares_with_the_signal_r():
+    summary = db.journal_summary(
+        [
+            (_sig(r_multiple=1.9), _entry(entry_fill=100.0, exit_fill=102.0)),
+            (_sig(r_multiple=None), _entry(entry_fill=100.0)),  # still open
+            (_sig(r_multiple=-1.1), _entry(status="SKIPPED")),
+        ]
+    )
+    assert summary["taken"] == 2 and summary["skipped"] == 1
+    assert summary["closed_taken"] == 1
+    assert summary["signal_r_taken"] == 1.9
+    assert summary["signal_r_skipped"] == -1.1
+    assert summary["your_total_r"] == pytest.approx(2.0 - db.ROUND_TRIP_FEE_PERCENT, abs=0.01)

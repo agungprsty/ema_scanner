@@ -1,62 +1,81 @@
 from dataclasses import dataclass
 
-CANDLE_INTERVAL_MS = {"2h": 2 * 60 * 60 * 1000}
-
 
 @dataclass
-class TradeOutcome:
-    result: str  # PROFIT, LOSS or EXPIRED
-    win_status: str  # TP1_HIT, SL_HIT or EXPIRED
-    exit_price: float
-    exit_time_ms: int
+class Trade:
+    status: str  # PENDING, OPEN, TP_HIT, SL_HIT, EXPIRED or NOT_FILLED
+    fill_price: float | None = None
+    fill_ms: int | None = None
+    exit_price: float | None = None
+    closed_ms: int | None = None
 
 
-def resolve_outcome(
+def resolve(
     side: str,
-    stop_loss: float,
-    tp1: float,
+    entry: float,
+    tp: float,
+    sl: float,
     candles: list,
-    expiry_candles: int,
-    now_ms: int,
+    fill_window: int,
+    max_hold: int,
     interval_ms: int,
-) -> TradeOutcome | None:
-    """Decide how a signal ended from the klines that follow its cross candle, oldest first.
+    now_ms: int,
+) -> Trade:
+    """Replay a limit-entry trade from the klines that follow its signal candle, oldest first.
 
-    A candle that touches both levels counts as a stop, since candle data cannot tell which came
-    first. When neither level is hit within `expiry_candles`, the trade closes at the last of
-    those candles' close, once that candle has closed.
+    Only candles closed by `now_ms` count, so the same klines always give the same Trade. The
+    limit fills on the first of `fill_window` candles that touches `entry`, at the open when
+    price gapped through it. From the fill candle on, for up to `max_hold` candles: an open
+    already past the stop or target exits there; a candle touching both counts as the stop,
+    since candle data cannot tell which came first. On the fill candle the target only counts
+    when the open was already at or past the entry, otherwise it may have been hit before the
+    fill.
     """
-    for candle in candles[:expiry_candles]:
-        open_ms = int(candle[0])
-        high = float(candle[2])
-        low = float(candle[3])
-        if side == "LONG":
-            hit_tp = tp1 > 0 and high >= tp1
-            hit_sl = stop_loss > 0 and low <= stop_loss
-        else:
-            hit_tp = tp1 > 0 and low <= tp1
-            hit_sl = stop_loss > 0 and high >= stop_loss
-        if hit_sl:
-            return TradeOutcome("LOSS", "SL_HIT", stop_loss, open_ms)
-        if hit_tp:
-            return TradeOutcome("PROFIT", "TP1_HIT", tp1, open_ms)
+    long = side == "LONG"
+    closed = [c for c in candles if int(c[0]) + interval_ms <= now_ms]
 
-    if expiry_candles > 0 and len(candles) >= expiry_candles:
-        last = candles[expiry_candles - 1]
-        close_ms = int(last[0]) + interval_ms
-        if close_ms <= now_ms:
-            return TradeOutcome("EXPIRED", "EXPIRED", float(last[4]), close_ms)
-    return None
+    for f, candle in enumerate(closed[:fill_window]):
+        open_ = float(candle[1])
+        if (float(candle[3]) <= entry) if long else (float(candle[2]) >= entry):
+            fill = min(open_, entry) if long else max(open_, entry)
+            fill_ms = int(candle[0])
+            break
+    else:
+        if len(closed) >= fill_window:
+            return Trade("NOT_FILLED", closed_ms=int(closed[fill_window - 1][0]) + interval_ms)
+        return Trade("PENDING")
+
+    window = closed[f : f + max_hold]
+    for j, candle in enumerate(window):
+        open_ms = int(candle[0])
+        open_, high, low = float(candle[1]), float(candle[2]), float(candle[3])
+        tp_ok = j > 0 or (open_ <= entry if long else open_ >= entry)
+        hit_sl = low <= sl if long else high >= sl
+        hit_tp = tp_ok and (high >= tp if long else low <= tp)
+        past_tp = tp_ok and (open_ >= tp if long else open_ <= tp)
+        # An open past the target exits there even when the candle later drops through the stop
+        if hit_sl and not past_tp:
+            return Trade("SL_HIT", fill, fill_ms, min(open_, sl) if long else max(open_, sl), open_ms)
+        if hit_tp:
+            return Trade("TP_HIT", fill, fill_ms, max(open_, tp) if long else min(open_, tp), open_ms)
+
+    if len(window) >= max_hold:
+        last = window[-1]
+        return Trade("EXPIRED", fill, fill_ms, float(last[4]), int(last[0]) + interval_ms)
+    return Trade("OPEN", fill, fill_ms)
 
 
 def trade_return(
-    side: str, entry: float, stop_loss: float, exit_price: float, fee_percent: float
+    side: str, fill: float, exit_price: float, risk_percent: float, fee_percent: float
 ) -> tuple[float, float | None]:
-    """Return (PnL percent after fees, R multiple) for a trade risked down to `stop_loss`."""
-    if entry <= 0:
+    """Return (PnL percent after fees, R multiple) against the planned `risk_percent`.
+
+    R is scaled by the risk planned at the signal, not by the distance from the fill to the
+    stop, so a fill that gapped close to the stop does not blow R up.
+    """
+    if fill <= 0:
         return 0.0, None
     direction = 1 if side == "LONG" else -1
-    pnl_percent = direction * (exit_price - entry) / entry * 100 - fee_percent
-    risk_percent = abs(entry - stop_loss) / entry * 100
+    pnl_percent = direction * (exit_price - fill) / fill * 100 - fee_percent
     r_multiple = pnl_percent / risk_percent if risk_percent > 0 else None
     return pnl_percent, r_multiple

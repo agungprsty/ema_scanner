@@ -2,70 +2,121 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 from src.config.settings import (
     CRON_ENABLED,
     CRON_LOOKBACK_CANDLES,
     CRON_SAFETY_DELAY_SECONDS,
-    MACD_CANDLES,
-    MACD_FAST,
-    MACD_MAX_SYMBOLS,
-    MACD_SIGNAL,
-    MACD_SLOW,
-    MACD_TIMEFRAME,
+    MAX_SYMBOLS,
+    SCAN_CANDLES,
     SCAN_CONCURRENCY,
-    TELEGRAM_BOT_TOKEN,
-    TELEGRAM_CHAT_ID,
+    TIMEFRAME,
+    TIMEFRAME_MS,
 )
 from src.data_feed.ohlcv import fetch_klines
-from src.services.alerts import format_signal_alert, notify_closed_trades
+from src.services.alerts import notify_run
 from src.services.db import (
-    evaluate_pending_signals,
+    claim_unalerted_signals,
+    evaluate_active,
     get_watchlist,
-    save_macd_signal,
+    insert_signals,
+    is_db_connected,
+    release_signal_alerts,
 )
-from src.services.redis_client import (
-    acquire_lock,
-    claim_cross,
-    release_cross,
-    release_lock,
-)
-from src.services.telegram import send_alert
-from src.strategy.macd import compute_macd, detect_macd_cross
+from src.services.redis_client import acquire_lock, release_lock
+from src.strategy.rsi import detect_signals
 
 logger = logging.getLogger(__name__)
 
 
 WIB_TZ = timezone(timedelta(hours=7))
-ODD_HOURS = [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23]
+MANUAL_LOCK_SECONDS = 300
 
 
-def calculate_seconds_until_next_cron(safety_delay: int = 15) -> tuple[float, datetime]:
-    now_wib = datetime.now(WIB_TZ)
-    candidates = []
-    for day_offset in (0, 1):
-        base_date = (now_wib + timedelta(days=day_offset)).date()
-        for h in ODD_HOURS:
-            dt = datetime(
-                base_date.year,
-                base_date.month,
-                base_date.day,
-                h,
-                0,
-                safety_delay,
-                tzinfo=WIB_TZ,
-            )
-            if dt > now_wib:
-                candidates.append(dt)
-
-    candidates.sort()
-    next_dt = candidates[0]
-    diff = (next_dt - now_wib).total_seconds()
-    return max(diff, 1.0), next_dt
+def now_ms() -> int:
+    return int(time.time() * 1000)
 
 
-class MacdCronScheduler:
+def _iso_wib(ms: int) -> str:
+    return datetime.fromtimestamp(ms / 1000, WIB_TZ).isoformat()
+
+
+def next_run_ms(after_ms: int, interval_ms: int, delay_ms: int) -> int:
+    """First candle boundary + delay strictly after `after_ms`; a start inside [B, B+delay) still gets B."""
+    return ((after_ms - delay_ms) // interval_ms + 1) * interval_ms + delay_ms
+
+
+async def _alert(transitions: list[dict], run_ms: int) -> None:
+    """Alert every stored signal no run has alerted yet, within the scan lookback; an
+    undelivered alert is released so the next run tries again."""
+    rows = await claim_unalerted_signals(run_ms - (CRON_LOOKBACK_CANDLES + 1) * TIMEFRAME_MS)
+    if not await notify_run(rows, transitions, run_ms):
+        await release_signal_alerts([r["id"] for r in rows])
+
+
+async def run_job(client) -> dict:
+    """Scan the watchlist's closed candles for RSI crosses, store them, replay active trades, alert.
+
+    Raises when the database is not ready, so the run is marked failed instead of finding nothing.
+    """
+    if not await is_db_connected():
+        raise RuntimeError("Database not ready")
+
+    start_time = time.perf_counter()
+    run_ms = now_ms()
+    symbols = [item["symbol"] for item in await get_watchlist(active_only=True)][:MAX_SYMBOLS]
+    if not symbols:
+        logger.warning("[CRON] Watchlist is empty: no symbols to scan")
+
+    sem = asyncio.Semaphore(SCAN_CONCURRENCY)
+
+    async def _scan(sym: str):
+        async with sem:
+            df = await asyncio.to_thread(fetch_klines, client, sym, TIMEFRAME, SCAN_CANDLES)
+        if df is None:
+            return None
+        # Closed candles only, by time: the limit entry is the candle's low/high, unknown while it forms
+        return detect_signals(df[df["close_time"] < run_ms], sym, CRON_LOOKBACK_CANDLES)
+
+    results = await asyncio.gather(*(_scan(s) for s in symbols))
+    failed_symbols = [s for s, r in zip(symbols, results, strict=True) if r is None]
+    hits = [sig for r in results if r for sig in r]
+
+    new_rows = await insert_signals(hits)
+    try:
+        evaluated = await evaluate_active(client)
+    except Exception:
+        # Stored signals are never found as new again, so alert them before failing the run
+        await _alert([], run_ms)
+        raise
+    await _alert(evaluated["transitions"], run_ms)
+
+    logger.info(
+        "[CRON] %s run finished: %d hits, %d new, %d trades evaluated (%d failed), %d symbols failed",
+        TIMEFRAME,
+        len(hits),
+        len(new_rows),
+        evaluated["evaluated"],
+        evaluated["failed"],
+        len(failed_symbols),
+    )
+    return {
+        "new_signals": len(new_rows),
+        "evaluated": evaluated["evaluated"],
+        "filled": evaluated["filled"],
+        "tp": evaluated["tp"],
+        "sl": evaluated["sl"],
+        "expired": evaluated["expired"],
+        "not_filled": evaluated["not_filled"],
+        "evaluate_failed": evaluated["failed"],
+        "symbols_scanned": len(symbols),
+        "failed_symbols": failed_symbols,
+        "execution_time": f"{round(time.perf_counter() - start_time, 2)}s",
+    }
+
+
+class Scheduler:
     def __init__(self):
         self._task: asyncio.Task | None = None
         self._is_active: bool = False
@@ -73,12 +124,14 @@ class MacdCronScheduler:
         self._last_run: str | None = None
         self._next_run: str | None = None
         self._total_runs: int = 0
-        self._last_signals_count: int = 0
-        self._last_evaluated_count: int = 0
+        self._last_status: str | None = None
+        self._last_result: dict | None = None
         self._last_error: str | None = None
         self._lock = asyncio.Lock()
 
     def start(self, client_getter: Callable) -> None:
+        # Set before the CRON_ENABLED check so "Run now" still works with the schedule off
+        self._client_getter = client_getter
         if not CRON_ENABLED:
             logger.info("CRON scheduler is disabled via CRON_ENABLED=false")
             return
@@ -86,177 +139,105 @@ class MacdCronScheduler:
         if self._task is not None and not self._task.done():
             return
 
-        self._client_getter = client_getter
         self._is_active = True
         self._task = asyncio.create_task(self._cron_loop())
-        logger.info("2H MACD Cron Scheduler started: strictly at Odd Hours (01, 03, 05, ... WIB)")
+        logger.info("Scheduler started: every %s candle close + %ds", TIMEFRAME, CRON_SAFETY_DELAY_SECONDS)
 
     def stop(self) -> None:
         self._is_active = False
         if self._task and not self._task.done():
             self._task.cancel()
-            logger.info("2H MACD Cron Scheduler stopped")
+            logger.info("Scheduler stopped")
 
     def get_status(self) -> dict:
         return {
             "enabled": CRON_ENABLED,
             "is_active": self._is_active,
-            "schedule": "Every 2 Hours at Odd Hours (01, 03, 05, ... WIB)",
-            "interval_hours": 2,
+            "schedule": f"every {TIMEFRAME} candle close + {CRON_SAFETY_DELAY_SECONDS}s",
             "timezone": "WIB (UTC+7)",
-            "timeframe": MACD_TIMEFRAME,
+            "timeframe": TIMEFRAME,
+            "interval_ms": TIMEFRAME_MS,
             "last_run": self._last_run,
             "next_run": self._next_run,
             "total_runs": self._total_runs,
-            "last_signals_count": self._last_signals_count,
-            "last_evaluated_count": self._last_evaluated_count,
+            "last_status": self._last_status,
+            "last_result": self._last_result,
             "last_error": self._last_error,
         }
 
     async def trigger_now(self) -> dict:
-        return await self._execute_job(is_manual=True)
+        return await self._execute_job(f"job:{TIMEFRAME}:manual", MANUAL_LOCK_SECONDS, is_manual=True)
 
     async def _cron_loop(self) -> None:
+        delay_ms = CRON_SAFETY_DELAY_SECONDS * 1000
+        last = 0
         while self._is_active:
             try:
-                seconds_to_wait, next_dt = calculate_seconds_until_next_cron(
-                    safety_delay=CRON_SAFETY_DELAY_SECONDS,
-                )
-                self._next_run = next_dt.isoformat()
-                logger.info(
-                    "Next 2H Cron run scheduled in %.1f minutes (%s WIB)",
-                    seconds_to_wait / 60,
-                    next_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                )
-                await asyncio.sleep(seconds_to_wait)
-                await self._execute_job(is_manual=False)
+                now = now_ms()
+                target = next_run_ms(max(now, last), TIMEFRAME_MS, delay_ms)
+                skipped = (target - last) // TIMEFRAME_MS - 1 if last else 0
+                if skipped > 0:
+                    logger.warning(
+                        "[CRON] %d boundaries skipped after a long run; crosses older than %d candles are lost",
+                        skipped,
+                        CRON_LOOKBACK_CANDLES,
+                    )
+                self._next_run = _iso_wib(target)
+                logger.info("Next %s run at %s WIB", TIMEFRAME, self._next_run)
+                await asyncio.sleep((target - now) / 1000)
+                # Next target is computed from the boundary just run, so an early wake never runs it twice
+                last = target
+                boundary = target - delay_ms
+                await self._execute_job(f"job:{TIMEFRAME}:{boundary}", TIMEFRAME_MS // 1000, is_manual=False)
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                self._last_error = str(e)
                 logger.exception("Error in cron scheduler loop: %s", e)
                 await asyncio.sleep(60)
 
-    async def _execute_job(self, is_manual: bool = False) -> dict:
-        lock_name = "cron:2h_execution"
-        if is_manual and self._lock.locked():
-            logger.info("[CRON] Manual trigger rejected: a job is already running")
-            return {"status": "busy", "message": "A cron job is already running, try again later"}
+    async def _execute_job(self, lock_name: str, lock_seconds: int, is_manual: bool) -> dict:
+        # Skip, never queue: a manual run gets a 409, a scheduled one waits for its next boundary
+        if self._lock.locked():
+            logger.info("[CRON] %s run skipped: a job is already running", "Manual" if is_manual else "Scheduled")
+            if is_manual:
+                return {"status": "busy", "message": "A job is already running, try again later"}
+            return {"status": "skipped", "message": "A job is already running"}
 
-        await self._lock.acquire()
-        token = None
-        try:
-            token = await acquire_lock(lock_name, timeout_seconds=180)
+        async with self._lock:
+            token = await acquire_lock(lock_name, timeout_seconds=lock_seconds)
             if token is None:
                 if is_manual:
-                    logger.info("[CRON] Manual trigger rejected: lock held by another job")
-                    return {"status": "busy", "message": "A cron job is already running or just ran, try again later"}
-                logger.info("[CRON] Job skipped: already acquired/executed by another worker")
+                    logger.info("[CRON] Manual run rejected: another worker is running it")
+                    return {"status": "busy", "message": "A job is already running, try again later"}
+                logger.info("[CRON] Scheduled run skipped: %s already taken by another worker", lock_name)
                 return {"status": "skipped", "message": "Already executed by another worker"}
 
+            try:
+                return await self._run(is_manual)
+            finally:
+                # A scheduled lock is unique per boundary and expires after one candle, so it is kept
+                if is_manual:
+                    await release_lock(lock_name, token)
+
+    async def _run(self, is_manual: bool) -> dict:
+        self._last_run = _iso_wib(now_ms())
+        self._total_runs += 1
+        logger.info(">>> [CRON] Starting %s job (Manual: %s) <<<", TIMEFRAME, is_manual)
+        try:
             client = self._client_getter() if self._client_getter else None
             if client is None:
-                logger.warning("Cron job execution skipped: Binance client not initialized")
-                return {"status": "error", "message": "Client not initialized"}
+                raise RuntimeError("Binance client not initialized")
+            result = await run_job(client)
+        except Exception as e:
+            self._last_status = "failed"
+            self._last_error = str(e)
+            logger.exception("[CRON] Job failed: %s", e)
+            return {"status": "error", "message": str(e)}
 
-            start_time = time.perf_counter()
-            exec_iso = datetime.now(UTC).isoformat()
-            self._last_run = exec_iso
-            self._total_runs += 1
-
-            logger.info(">>> [CRON] Starting 2H Scheduled Job (Manual: %s) <<<", is_manual)
-
-            # Step 1: Evaluate existing pending signals in database
-            eval_res = await evaluate_pending_signals(client)
-            await notify_closed_trades(eval_res.pop("closed", None))
-            self._last_evaluated_count = eval_res.get("evaluated_count", 0)
-            logger.info(
-                "[CRON] Evaluated pending trades: %d (Wins/Profit: %d, Loss: %d)",
-                self._last_evaluated_count,
-                eval_res.get("profit_count", 0),
-                eval_res.get("loss_count", 0),
-            )
-
-            # Step 2: Scan for newly confirmed 2H MACD signals
-            watchlist_items = await get_watchlist(active_only=True)
-            symbols = [item["symbol"] for item in watchlist_items][:MACD_MAX_SYMBOLS]
-            new_signals_found = 0
-            telegram_parts = []
-
-            if symbols:
-                sem = asyncio.Semaphore(SCAN_CONCURRENCY)
-
-                async def _detect_symbol(sym: str):
-                    async with sem:
-                        df = await asyncio.to_thread(fetch_klines, client, sym, MACD_TIMEFRAME, MACD_CANDLES)
-                        if df is None:
-                            return None
-                        df = compute_macd(df, fast=MACD_FAST, slow=MACD_SLOW, signal=MACD_SIGNAL)
-                        if df is None:
-                            return None
-                        # Closed candles only; re-checking a few catches crosses missed while down
-                        return detect_macd_cross(
-                            df, sym, lookback_candles=CRON_LOOKBACK_CANDLES, include_current=False
-                        )
-
-                tasks = [_detect_symbol(s) for s in symbols]
-                results = await asyncio.gather(*tasks)
-                detected = [r for r in results if r is not None]
-                alert_enabled = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
-
-                for sig in detected:
-                    claimed = await claim_cross(
-                        sig.side, sig.symbol, sig.cross_candle_ms, timeframe=MACD_TIMEFRAME
-                    )
-                    if claimed:
-                        saved = await save_macd_signal(sig, timeframe=MACD_TIMEFRAME)
-                        if saved and "id" in saved:
-                            if saved.get("inserted") is False:
-                                continue
-                        elif alert_enabled:
-                            logger.warning(
-                                "[CRON] Failed to save MACD signal %s %s @ %s; alerting without persistence",
-                                sig.side,
-                                sig.symbol,
-                                sig.cross_candle_ms,
-                            )
-                        else:
-                            await release_cross(
-                                sig.side, sig.symbol, sig.cross_candle_ms, timeframe=MACD_TIMEFRAME
-                            )
-                            logger.warning(
-                                "[CRON] Failed to save MACD signal %s %s @ %s; dedup claim released",
-                                sig.side,
-                                sig.symbol,
-                                sig.cross_candle_ms,
-                            )
-                            continue
-
-                        new_signals_found += 1
-                        telegram_parts.append(format_signal_alert(sig))
-
-            self._last_signals_count = new_signals_found
-            logger.info("[CRON] 2H Confirmed Scan finished: %d new signals detected", new_signals_found)
-
-            if telegram_parts:
-                header = "<b>Crossline: scheduled 2H scan</b>\n\n"
-                alert_body = header + "\n\n".join(telegram_parts)
-                asyncio.create_task(send_alert(alert_body))
-
-            elapsed = round(time.perf_counter() - start_time, 2)
-            return {
-                "status": "success",
-                "execution_time": f"{elapsed}s",
-                "evaluated": eval_res,
-                "new_signals_count": new_signals_found,
-                "symbols_scanned": len(symbols),
-            }
-        finally:
-            try:
-                if is_manual and token is not None:
-                    await release_lock(lock_name, token)
-            finally:
-                self._lock.release()
+        self._last_status = "success"
+        self._last_error = None
+        self._last_result = result
+        return {"status": "success", **result}
 
 
-cron_scheduler = MacdCronScheduler()
+cron_scheduler = Scheduler()

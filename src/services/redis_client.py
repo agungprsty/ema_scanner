@@ -9,7 +9,6 @@ from src.config.settings import REDIS_URL
 logger = logging.getLogger(__name__)
 
 _redis: aioredis.Redis | None = None
-CROSS_TTL = 3600 * 24
 SCAN_CACHE_TTL = 30
 LOCAL_LOCK_TOKEN = "local"
 _RELEASE_LOCK_SCRIPT = (
@@ -23,7 +22,7 @@ async def init_redis() -> bool:
         return True
 
     if not REDIS_URL:
-        logger.warning("REDIS_URL not configured — Redis cache and deduplication disabled")
+        logger.warning("REDIS_URL not configured — Redis cache and locks disabled")
         return False
 
     try:
@@ -60,50 +59,6 @@ async def is_redis_connected() -> bool:
         return await _redis.ping()
     except Exception:
         return False
-
-
-def _dedup_key(side: str, symbol: str, candle_ms: int, timeframe: str = "2h") -> str:
-    return f"macd:{timeframe}:{side.lower()}:{symbol.upper()}:{candle_ms}"
-
-
-async def is_cross_detected(
-    side: str, symbol: str, candle_ms: int, timeframe: str = "2h"
-) -> bool:
-    if _redis is None:
-        return False
-    try:
-        return (await _redis.exists(_dedup_key(side, symbol, candle_ms, timeframe))) > 0
-    except Exception as e:
-        logger.warning("Redis dedup check error: %s", e)
-        return False
-
-
-async def claim_cross(
-    side: str,
-    symbol: str,
-    candle_ms: int,
-    timeframe: str = "2h",
-    ttl: int = CROSS_TTL,
-) -> bool:
-    if _redis is None:
-        return True
-    try:
-        res = await _redis.set(_dedup_key(side, symbol, candle_ms, timeframe), "1", nx=True, ex=ttl)
-        return bool(res)
-    except Exception as e:
-        logger.warning("Redis claim cross error: %s", e)
-        return True
-
-
-async def release_cross(
-    side: str, symbol: str, candle_ms: int, timeframe: str = "2h"
-) -> None:
-    if _redis is None:
-        return
-    try:
-        await _redis.delete(_dedup_key(side, symbol, candle_ms, timeframe))
-    except Exception as e:
-        logger.warning("Redis release cross error: %s", e)
 
 
 async def get_cached_json(key: str) -> dict | None:
