@@ -62,6 +62,9 @@ def env(monkeypatch):
             return None
         return _candles(start_ms, end_ms, main.INTERVAL_MS[timeframe])
 
+    async def fake_get_session_user(token_hash):
+        return {"id": 1, "username": "admin", "role": "administrator", "email": "admin@example.com"}
+
     monkeypatch.setattr(main, "get_signal", fake_get_signal)
     monkeypatch.setattr(main, "get_cached_json", fake_get_cached_json)
     monkeypatch.setattr(main, "set_cached_json", fake_set_cached_json)
@@ -70,11 +73,13 @@ def env(monkeypatch):
     monkeypatch.setattr(main, "_klines_budget", {"window": 0, "count": 0})
     monkeypatch.setattr(main, "_klines_inflight", {})
     monkeypatch.setattr(main.time, "time", lambda: NOW_MS / 1000)
+    monkeypatch.setattr("src.api.security.get_session_user", fake_get_session_user)
     return state
 
 
-async def _get(path):
-    async with AsyncClient(transport=ASGITransport(app=main.app), base_url="http://test") as client:
+async def _get(path, auth=True):
+    cookies = {"st_session": "chart_test_session"} if auth else {}
+    async with AsyncClient(transport=ASGITransport(app=main.app), base_url="http://test", cookies=cookies) as client:
         return await client.get(path)
 
 

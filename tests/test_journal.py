@@ -110,7 +110,10 @@ async def test_delete_entry(journal_store):
 
 @pytest.mark.asyncio
 async def test_list_journal_passes_filters(journal_store):
-    resp = await _request("GET", "/api/journal?status=TAKEN&symbol=BTCUSDT&page=3&per_page=10", auth=False)
+    unauth = await _request("GET", "/api/journal", auth=False)
+    assert unauth.status_code == 401
+
+    resp = await _request("GET", "/api/journal?status=TAKEN&symbol=BTCUSDT&page=3&per_page=10", auth=True)
     assert resp.status_code == 200
     body = resp.json()
     assert body["data"] == [{"id": 9, "journal": {"status": "TAKEN"}}]
@@ -121,14 +124,17 @@ async def test_list_journal_passes_filters(journal_store):
         "per_page": 10,
     }
     assert journal_store["query"] == ("TAKEN", "BTCUSDT", 10, 20)
-    assert (await _request("GET", "/api/journal?status=OPEN", auth=False)).status_code == 422
-    assert (await _request("GET", "/api/journal?page=0", auth=False)).status_code == 422
-    assert (await _request("GET", "/api/journal?per_page=201", auth=False)).status_code == 422
+    assert (await _request("GET", "/api/journal?status=OPEN", auth=True)).status_code == 422
+    assert (await _request("GET", "/api/journal?page=0", auth=True)).status_code == 422
+    assert (await _request("GET", "/api/journal?per_page=201", auth=True)).status_code == 422
 
 
 @pytest.mark.asyncio
 async def test_journal_summary_endpoint(journal_store):
-    resp = await _request("GET", "/api/journal/summary", auth=False)
+    unauth = await _request("GET", "/api/journal/summary", auth=False)
+    assert unauth.status_code == 401
+
+    resp = await _request("GET", "/api/journal/summary", auth=True)
     assert resp.status_code == 200
     assert resp.json()["data"] == db._empty_journal_summary()
 

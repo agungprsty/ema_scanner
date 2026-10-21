@@ -38,6 +38,7 @@ def setup_http(app: FastAPI) -> None:
             per_minute=settings.RATE_LIMIT_PER_MINUTE,
             write_per_minute=settings.RATE_LIMIT_WRITE_PER_MINUTE,
             trigger_per_minute=settings.RATE_LIMIT_TRIGGER_PER_MINUTE,
+            auth_per_minute=settings.RATE_LIMIT_AUTH_PER_MINUTE,
         )
     app.add_middleware(ServerErrorCatcher)
     app.add_middleware(

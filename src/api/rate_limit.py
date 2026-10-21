@@ -12,6 +12,7 @@ WINDOW_MS = 60_000
 _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _EXEMPT_PATHS = frozenset({"/api/health"})
 TRIGGER_PATH = "/api/cron/trigger"
+AUTH_PATHS = frozenset({"/api/auth/login", "/api/auth/register"})
 
 
 class MemoryWindow:
@@ -40,11 +41,23 @@ class MemoryWindow:
 
 
 class RateLimitMiddleware:
-    """Per client IP limits on /api/*: one bucket for the cron trigger, one for writes, one for everything else."""
+    """Per client IP limits on /api/*: one bucket for auth, one for cron trigger, one for writes, one for everything else."""
 
-    def __init__(self, app: ASGIApp, per_minute: int, write_per_minute: int, trigger_per_minute: int):
+    def __init__(
+        self,
+        app: ASGIApp,
+        per_minute: int,
+        write_per_minute: int,
+        trigger_per_minute: int,
+        auth_per_minute: int = 5,
+    ):
         self.app = app
-        self.limits = {"default": per_minute, "write": write_per_minute, "trigger": trigger_per_minute}
+        self.limits = {
+            "default": per_minute,
+            "write": write_per_minute,
+            "trigger": trigger_per_minute,
+            "auth": auth_per_minute,
+        }
         self.memory = MemoryWindow()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -53,7 +66,9 @@ class RateLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
-        if path == TRIGGER_PATH:
+        if path in AUTH_PATHS:
+            bucket = "auth"
+        elif path == TRIGGER_PATH:
             bucket = "trigger"
         elif scope["method"] in _WRITE_METHODS:
             bucket = "write"

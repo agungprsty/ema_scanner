@@ -1,14 +1,18 @@
 import asyncio
+import hashlib
 import logging
+import re
+import secrets
 import time
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 import pandas as pd
-from fastapi import Depends, FastAPI, Query
+from fastapi import Depends, FastAPI, Query, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.api import setup_http
 from src.api.exceptions import (
@@ -18,11 +22,13 @@ from src.api.exceptions import (
     Conflict,
     NotFound,
     ServiceUnavailable,
+    Unauthorized,
     UnprocessableEntity,
 )
 from src.api.log import configure_logging
+from src.api.passwords import DUMMY_HASH, hash_password, verify_password
 from src.api.responses import Envelope, PageEnvelope, paginated, success
-from src.api.security import require_admin
+from src.api.security import Principal, check_same_origin, get_principal, require_admin
 from src.config.settings import (
     DRY_RUN,
     FILL_WINDOW_CANDLES,
@@ -33,6 +39,8 @@ from src.config.settings import (
     RSI_OVERBOUGHT,
     RSI_OVERSOLD,
     RSI_PERIOD,
+    SESSION_COOKIE_SECURE,
+    SESSION_TTL_HOURS,
     SL_PERCENT,
     TIMEFRAME,
     TIMEFRAME_MS,
@@ -44,12 +52,17 @@ from src.services.cron_scheduler import cron_scheduler
 from src.services.db import (
     ACTIVE_STATUSES,
     add_watchlist_symbol,
+    cleanup_expired_sessions,
     close_db,
+    create_session,
+    create_user,
     delete_journal_entry,
+    delete_session,
     delete_watchlist_symbol,
     get_journal,
     get_journal_summary,
     get_signal,
+    get_user_by_email,
     get_watchlist,
     init_db,
     is_db_connected,
@@ -92,7 +105,7 @@ async def lifespan(app: FastAPI):
     await close_db()
 
 
-APP_VERSION = "3.0.0"
+APP_VERSION = "3.1.0"
 
 app = FastAPI(
     title="Simpletrade",
@@ -104,6 +117,150 @@ app = FastAPI(
 setup_http(app)
 
 app.mount("/static", StaticFiles(directory="src/static"), name="static")
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key="st_session",
+        value=token,
+        max_age=SESSION_TTL_HOURS * 3600,
+        httponly=True,
+        secure=SESSION_COOKIE_SECURE,
+        samesite="lax",
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key="st_session",
+        path="/",
+        httponly=True,
+        secure=SESSION_COOKIE_SECURE,
+        samesite="lax",
+    )
+
+
+EMAIL_REGEX = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+USERNAME_REGEX = r"^[A-Za-z0-9_]{3,32}$"
+
+
+class RegisterRequest(BaseModel):
+    email: str = Field(..., max_length=254)
+    username: str = Field(..., pattern=USERNAME_REGEX)
+    password: str = Field(..., min_length=10, max_length=128)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        clean = v.strip().lower()
+        if not re.fullmatch(EMAIL_REGEX, clean):
+            raise ValueError("Invalid email address")
+        return clean
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, v: str) -> str:
+        return v.strip().lower()
+
+    @model_validator(mode="after")
+    def validate_password_not_similar(self) -> "RegisterRequest":
+        pw_lower = self.password.lower()
+        if pw_lower == self.email.lower():
+            raise ValueError("Password cannot match email")
+        if pw_lower == self.username.lower():
+            raise ValueError("Password cannot match username")
+        return self
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(..., max_length=254)
+    password: str = Field(..., min_length=1, max_length=128)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        clean = v.strip().lower()
+        if not re.fullmatch(EMAIL_REGEX, clean):
+            raise ValueError("Invalid email address")
+        return clean
+
+
+# Authentication Endpoints
+@app.post(
+    "/api/auth/register",
+    status_code=201,
+    dependencies=[Depends(check_same_origin)],
+    response_model=Envelope[dict],
+)
+async def register_endpoint(body: RegisterRequest):
+    password_hash = await hash_password(body.password)
+    user = await create_user(
+        email=body.email,
+        username=body.username,
+        password_hash=password_hash,
+        role="user",
+    )
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    expires_at = datetime.now(UTC) + timedelta(hours=SESSION_TTL_HOURS)
+    await create_session(token_hash, user["id"], expires_at)
+    res = success(user, "User registered successfully", code=201)
+    _set_session_cookie(res, token)
+    return res
+
+
+@app.post(
+    "/api/auth/login",
+    dependencies=[Depends(check_same_origin)],
+    response_model=Envelope[dict],
+)
+async def login_endpoint(body: LoginRequest):
+    user = await get_user_by_email(body.email)
+    stored_hash = user["password_hash"] if user else DUMMY_HASH
+    is_valid = await verify_password(body.password, stored_hash)
+    if not user or not is_valid:
+        raise Unauthorized("Invalid email or password")
+
+    await cleanup_expired_sessions()
+
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    expires_at = datetime.now(UTC) + timedelta(hours=SESSION_TTL_HOURS)
+    await create_session(token_hash, user["id"], expires_at)
+
+    user_data = {
+        "id": user["id"],
+        "email": user["email"],
+        "username": user["username"],
+        "role": user["role"],
+        "created_at": user["created_at"],
+    }
+    res = success(user_data, "Logged in successfully")
+    _set_session_cookie(res, token)
+    return res
+
+
+@app.post(
+    "/api/auth/logout",
+    dependencies=[Depends(check_same_origin)],
+    response_model=Envelope[None],
+)
+async def logout_endpoint(request: Request):
+    token = request.cookies.get("st_session")
+    if token:
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        await delete_session(token_hash)
+    res = success(None, "Logged out successfully")
+    _clear_session_cookie(res)
+    return res
+
+
+@app.get("/api/auth/me", response_model=Envelope[dict])
+async def get_current_user_profile(
+    principal: Annotated[Principal, Depends(get_principal)],
+):
+    return success(principal.to_dict())
 
 
 class WatchlistAddRequest(BaseModel):
@@ -201,7 +358,7 @@ async def health():
 
 
 # Watchlist Endpoints
-@app.get("/api/watchlist", response_model=Envelope[list[dict]])
+@app.get("/api/watchlist", dependencies=[Depends(get_principal)], response_model=Envelope[list[dict]])
 async def list_watchlist(active_only: bool = False):
     return success(await get_watchlist(active_only=active_only))
 
@@ -268,10 +425,15 @@ async def _single_flight(key: tuple, factory):
 
 # Single Signal Detail
 @app.get("/api/signals/{signal_id}", response_model=Envelope[dict])
-async def get_single_signal(signal_id: int):
+async def get_single_signal(
+    signal_id: int,
+    principal: Annotated[Principal, Depends(get_principal)],
+):
     sig = await get_signal(signal_id)
     if not sig:
         raise NotFound("Signal not found")
+    if principal.role != "administrator":
+        sig.pop("journal", None)
     return success(sig)
 
 
@@ -281,7 +443,7 @@ PerPage = Annotated[int, Query(ge=1, le=200, description="Items per page")]
 
 
 # Trade Journal Endpoints
-@app.get("/api/journal", response_model=PageEnvelope[dict])
+@app.get("/api/journal", dependencies=[Depends(require_admin)], response_model=PageEnvelope[dict])
 async def list_journal(
     status: Annotated[Literal["TAKEN", "SKIPPED"] | None, Query(description="TAKEN or SKIPPED")] = None,
     symbol: Annotated[str | None, Query(max_length=30, description="Filter by symbol")] = None,
@@ -292,7 +454,7 @@ async def list_journal(
     return paginated(items, total, page, per_page)
 
 
-@app.get("/api/journal/summary", response_model=Envelope[dict])
+@app.get("/api/journal/summary", dependencies=[Depends(require_admin)], response_model=Envelope[dict])
 async def journal_summary_endpoint():
     """Summary across every journal entry, unfiltered, so the comparison is stable while browsing."""
     return success(await get_journal_summary())
@@ -392,7 +554,7 @@ async def _load_signal_chart(sig: dict, start_ms: int, end_ms: int, cache_key: s
     return payload
 
 
-@app.get("/api/signals/{signal_id}/chart", response_model=Envelope[dict])
+@app.get("/api/signals/{signal_id}/chart", dependencies=[Depends(get_principal)], response_model=Envelope[dict])
 async def get_signal_chart(signal_id: int):
     sig = await get_signal(signal_id)
     if not sig:
@@ -411,7 +573,7 @@ async def get_signal_chart(signal_id: int):
 
 
 # Cron Scheduler Management Endpoints
-@app.get("/api/cron/status", response_model=Envelope[dict])
+@app.get("/api/cron/status", dependencies=[Depends(get_principal)], response_model=Envelope[dict])
 async def get_cron_scheduler_status():
     return success(cron_scheduler.get_status())
 
@@ -457,11 +619,19 @@ SignalFilters = Annotated[dict, Depends(signal_filters)]
 
 
 @app.get("/api/signals", response_model=PageEnvelope[dict])
-async def list_signals_endpoint(filters: SignalFilters, page: Page = 1, per_page: PerPage = 50):
+async def list_signals_endpoint(
+    filters: SignalFilters,
+    principal: Annotated[Principal, Depends(get_principal)],
+    page: Page = 1,
+    per_page: PerPage = 50,
+):
     records, total, _ = await list_signals(**filters, limit=per_page, offset=(page - 1) * per_page)
+    if principal.role != "administrator":
+        for r in records:
+            r.pop("journal_status", None)
     return paginated(records, total, page, per_page)
 
 
-@app.get("/api/summary", response_model=Envelope[SummaryResponse])
+@app.get("/api/summary", dependencies=[Depends(get_principal)], response_model=Envelope[SummaryResponse])
 async def signals_summary(filters: SignalFilters):
     return success(SummaryResponse(**await signal_stats(signal_conditions(**filters))))

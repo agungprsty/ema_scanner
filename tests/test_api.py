@@ -103,7 +103,7 @@ async def test_health_endpoint():
         assert data["redis"] is True
         assert "cron" in data
         assert data["timeframe"] == settings.TIMEFRAME
-        assert data["version"] == "3.0.0"
+        assert data["version"] == "3.1.0"
 
 
 @pytest.mark.asyncio
@@ -128,7 +128,7 @@ async def test_info_endpoint():
         assert resp.status_code == 200
         data = resp.json()["data"]
         assert data["app"] == "Simpletrade"
-        assert data["version"] == "3.0.0"
+        assert data["version"] == "3.1.0"
         assert data["timeframe"] == settings.TIMEFRAME
         assert data["interval_ms"] == settings.TIMEFRAME_MS
         assert data["strategy"] == {
@@ -179,7 +179,7 @@ async def test_watchlist_lifecycle():
 @pytest.mark.asyncio
 async def test_signals_summary_endpoint(mock_db_services):
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=AUTH_COOKIES) as client:
         assert (await client.get("/api/summary")).json()["data"]["total_signals"] == 3
         assert mock_db_services["stats"][-1] == []  # no filters: every signal
 
@@ -201,7 +201,7 @@ async def test_signals_summary_endpoint(mock_db_services):
 @pytest.mark.asyncio
 async def test_signals_list_and_filters(mock_db_services):
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=AUTH_COOKIES) as client:
         resp = await client.get("/api/signals?status=PENDING,OPEN&side=LONG&date=2025-10-11&page=2&per_page=10")
         assert resp.status_code == 200
         body = resp.json()
@@ -221,7 +221,7 @@ async def test_signals_list_and_filters(mock_db_services):
 @pytest.mark.parametrize("path", ["/api/signals", "/api/summary"])
 async def test_signals_bad_date_returns_422(path, mock_db_services):
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=AUTH_COOKIES) as client:
         resp = await client.get(f"{path}?date=11-10-2025")
         assert resp.status_code == 422
         assert resp.json()["message"] == "Dates must be YYYY-MM-DD"
@@ -234,7 +234,7 @@ async def test_signals_bad_date_returns_422(path, mock_db_services):
 )
 async def test_signals_rejects_bad_paging(query):
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=AUTH_COOKIES) as client:
         resp = await client.get(f"/api/signals?{query}")
         assert resp.status_code == 422
         assert resp.json()["errors"][0]["field"] in ("page", "per_page")
@@ -247,7 +247,7 @@ async def test_single_signal(monkeypatch):
 
     monkeypatch.setattr("src.main.get_signal", fake_get_signal)
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=AUTH_COOKIES) as client:
         resp = await client.get("/api/signals/1")
         assert resp.status_code == 200
         assert resp.json()["data"]["signal_candle_ms"] == SIGNAL["signal_candle_ms"]
@@ -259,7 +259,7 @@ async def test_single_signal(monkeypatch):
 @pytest.mark.asyncio
 async def test_cron_endpoints():
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=AUTH_COOKIES) as client:
         status_resp = await client.get("/api/cron/status")
         assert status_resp.status_code == 200
         status_data = status_resp.json()["data"]
