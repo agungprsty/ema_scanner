@@ -37,6 +37,7 @@ def _candles(start_ms, end_ms, interval_ms):
             "low": 98.0,
             "close": 100.0 + math.sin(i / 3) * 2,
             "volume": 1.0,
+            "buy_volume": 0.75 if i % 2 else 0.25,
         }
         for i in range(count)
     ]
@@ -97,7 +98,18 @@ async def test_closed_signal_charts_its_own_trade_window_with_warmup(env):
     assert data["candles"][-1]["time"] == end_ms // 1000
     assert [p["time"] for p in data["rsi"]] == [c["time"] for c in data["candles"]]
     assert all(0 <= p["value"] <= 100 for p in data["rsi"])
-    assert env["set_calls"] == [("chart:7:final", main.SIGNAL_CANDLES_FINAL_TTL)]
+    # EMA 50 settles inside the warm-up, so it covers every charted candle
+    assert [p["time"] for p in data["ema"]] == [c["time"] for c in data["candles"]]
+    closes = [c["close"] for c in _candles(start_ms - WARMUP * H1, end_ms, H1)]
+    ema = closes[0]
+    for close in closes[1:]:
+        ema += (close - ema) * 2 / (main.SIGNAL_CHART_EMA + 1)
+    assert data["ema"][-1]["value"] == pytest.approx(ema)
+    # Volume delta is taker buys minus taker sells: 2 * buy - volume
+    assert [p["time"] for p in data["volume_delta"]] == [c["time"] for c in data["candles"]]
+    assert {p["value"] for p in data["volume_delta"]} == {0.5, -0.5}
+    assert data["volume_delta"][0]["value"] == 2 * data["candles"][0]["buy_volume"] - data["candles"][0]["volume"]
+    assert env["set_calls"] == [("chart:v2:7:final", main.SIGNAL_CANDLES_FINAL_TTL)]
     assert resp.headers["cache-control"] == f"public, max-age={main.SIGNAL_CANDLES_FINAL_TTL}"
 
 
@@ -119,10 +131,13 @@ async def test_rsi_without_enough_history_drops_nan_instead_of_zero(env, monkeyp
     assert len(data["candles"]) == 42
     assert len(data["rsi"]) == 42 - main.RSI_PERIOD
     assert data["rsi"][0]["time"] == data["candles"][main.RSI_PERIOD]["time"]
+    # 42 candles never reach the 50 needed for the EMA, so it is left out instead of guessed
+    assert data["ema"] == []
+    assert len(data["volume_delta"]) == 42
 
 
 async def test_final_window_is_served_from_cache(env):
-    env["cache"]["chart:7:final"] = {"symbol": "BTCUSDT", "timeframe": "1h", "candles": [], "rsi": []}
+    env["cache"]["chart:v2:7:final"] = {"symbol": "BTCUSDT", "timeframe": "1h", "candles": [], "rsi": []}
     resp = await _get("/api/signals/7/chart")
     assert resp.status_code == 200
     assert env["fetch_calls"] == []
@@ -136,7 +151,7 @@ async def test_active_signal_runs_to_now_without_browser_cache(env, status):
     assert resp.json()["data"]["final"] is False
     start_ms = SIGNAL_MS - 30 * H1
     assert env["fetch_calls"] == [("BTCUSDT", "1h", start_ms - WARMUP * H1, NOW_MS)]
-    assert env["set_calls"] == [("chart:7:live", main.KLINES_CACHE_TTL)]
+    assert env["set_calls"] == [("chart:v2:7:live", main.KLINES_CACHE_TTL)]
     assert resp.headers["cache-control"] == "no-store"
 
 
@@ -173,7 +188,7 @@ async def test_upstream_failure_returns_502_and_is_not_cached_by_browsers(env):
     resp = await _get("/api/signals/7/chart")
     assert resp.status_code == 502
     assert resp.headers["cache-control"] == "no-store"
-    assert env["set_calls"] == [("chart:7:final:miss", main.KLINES_MISS_TTL)]
+    assert env["set_calls"] == [("chart:v2:7:final:miss", main.KLINES_MISS_TTL)]
 
 
 async def test_upstream_budget_exhausted_returns_503(env, monkeypatch):
@@ -193,3 +208,15 @@ def test_klines_budget_resets_next_window(monkeypatch):
     assert main._consume_klines_budget() is False
     now[0] += main.KLINES_BUDGET_WINDOW
     assert main._consume_klines_budget() is True
+
+
+def test_candles_carry_taker_buy_volume():
+    from src.data_feed.ohlcv import fetch_candles_range
+
+    class Client:
+        def klines(self, **kwargs):
+            # Binance kline: open time, o, h, l, c, volume, close time, quote vol, trades, taker buy base, ...
+            return [[SIGNAL_MS, "1", "2", "0.5", "1.5", "10", SIGNAL_MS + H1 - 1, "15", 7, "6.5", "9.7", "0"]]
+
+    [candle] = fetch_candles_range(Client(), "BTCUSDT", "1h", SIGNAL_MS, SIGNAL_MS)
+    assert candle["volume"] == 10.0 and candle["buy_volume"] == 6.5

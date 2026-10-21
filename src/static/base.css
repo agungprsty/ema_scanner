@@ -342,6 +342,7 @@ input[aria-invalid="true"] {
 }
 
 /* Role Visibility Helper */
+body:not([data-role]) .admin-only,
 body[data-role="user"] .admin-only {
   display: none !important;
 }

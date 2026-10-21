@@ -85,7 +85,7 @@ INTERVAL_MS = {
     "12h": 12 * 3_600_000,
     "1d": 24 * 3_600_000,
 }
-TIMEFRAME = os.getenv("TIMEFRAME", "1h").strip()
+TIMEFRAME = os.getenv("TIMEFRAME", "30m").strip()
 if TIMEFRAME not in INTERVAL_MS:
     raise ValueError(f"TIMEFRAME={TIMEFRAME!r} is not supported, use one of: {', '.join(INTERVAL_MS)}")
 TIMEFRAME_MS = INTERVAL_MS[TIMEFRAME]

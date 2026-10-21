@@ -1,6 +1,6 @@
 # Crossline
 
-Crossline (project `simple-trade`) scans Binance USDⓈ-M futures for RSI(14) crosses into oversold (28) or overbought (72) on one configurable timeframe (default 1h). Each signal becomes a limit order at the signal candle's low or high, with a fixed take profit and stop loss. The app follows every order through fill and exit, and keeps a running win rate, fill rate and result in R.
+Crossline (project `simple-trade`) scans Binance USDⓈ-M futures for RSI(14) crosses into oversold (28) or overbought (72) on one configurable timeframe (default 30m, so the job runs every 30 minutes). Each signal becomes a limit order at the signal candle's low or high, with a fixed take profit and stop loss. The app follows every order through fill and exit, and keeps a running win rate, fill rate and result in R.
 
 It runs as a FastAPI service backed by PostgreSQL and Redis, with a small dashboard for active and closed signals, the trade journal and the watchlist.
 
@@ -30,7 +30,7 @@ Only closed candles count, for both detection and tracking. A candle that is sti
 
 P/L is `(exit − fill) / fill × 100` (sign flipped for SHORT) minus `ROUND_TRIP_FEE_PERCENT`. R is P/L divided by the planned risk (`SL_PERCENT`), so a target hit is about +1.9R and a stop about −1.1R after fees.
 
-The fill and hold windows are set in **hours**, then rounded up to whole candles of `TIMEFRAME`, so they mean the same time on every timeframe: 1h gives 12 and 24 candles, 15m gives 48 and 96, 2h gives 6 and 12, 1d gives 1 and 1. Each run replays the lifecycle from the stored levels and the closed candles, so the result is the same however often it runs.
+The fill and hold windows are set in **hours**, then rounded up to whole candles of `TIMEFRAME`, so they mean the same time on every timeframe: 30m gives 24 and 48 candles, 1h gives 12 and 24, 15m gives 48 and 96, 2h gives 6 and 12, 1d gives 1 and 1. Each run replays the lifecycle from the stored levels and the closed candles, so the result is the same however often it runs.
 
 Each signal is stored once per symbol, side, timeframe and signal candle. Status changes are written only forward, and each change is alerted only once.
 
@@ -49,8 +49,8 @@ Run times in WIB (UTC+7). Candle boundaries follow UTC, so 4h and longer timefra
 |---|---|
 | 1m / 3m / 5m | every 1 / 3 / 5 minutes |
 | 15m | :00 :15 :30 :45 |
-| 30m | :00 :30 |
-| 1h (default) | every hour at :00 |
+| 30m (default) | :00 :30 (01:00, 01:30, 02:00, ...) |
+| 1h | every hour at :00 |
 | 2h | odd hours |
 | 4h | 03 07 11 15 19 23 |
 | 6h | 01 07 13 19 |
@@ -66,7 +66,7 @@ All settings come from `.env` (see `.env.example`).
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `TIMEFRAME` | `1h` | One of 1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d. Anything else stops the app at startup. |
+| `TIMEFRAME` | `30m` | One of 1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d. Anything else stops the app at startup. |
 | `RSI_PERIOD` | `14` | RSI length |
 | `RSI_OVERSOLD` | `28` | LONG trigger level |
 | `RSI_OVERBOUGHT` | `72` | SHORT trigger level |
@@ -124,8 +124,9 @@ src/
   services/cron_scheduler.py   Per-candle scheduled job
   services/alerts.py           Telegram message text
   services/telegram.py         Telegram transport
-  pages/                       HTML pages: landing.html, login.html, register.html, dashboard.html
-  static/                      Frontend assets: base.css, tailwind.css (built from input.css), auth.js, app.js
+  pages/                       HTML pages: landing.html, login.html, register.html, dashboard.html, signal.html
+  static/                      Frontend assets: base.css, app.css, tailwind.css (built from input.css),
+                               common.js (shared helpers), app.js (dashboard), signal.js (signal page), auth.js
   api/                         HTTP foundation: envelopes, exceptions, logging, auth, security headers, rate limits
   main.py                      API routes and page handlers
 scripts/create_admin.py        Create an account, reset its password or change its role
@@ -160,7 +161,7 @@ Then open <http://localhost:7860> for the landing page.
 
 ### Responses
 
-Every JSON response uses one envelope. `code` repeats the HTTP status, `status` is `success` for 2xx and `error` otherwise, and `meta.path` has no query string. The pages `/`, `/login`, `/register`, `/dashboard`, `/static/*`, `/docs`, `/redoc` and `/openapi.json` are not wrapped, but their errors are.
+Every JSON response uses one envelope. `code` repeats the HTTP status, `status` is `success` for 2xx and `error` otherwise, and `meta.path` has no query string. The pages `/`, `/login`, `/register`, `/dashboard`, `/signals/{id}`, `/static/*`, `/docs`, `/redoc` and `/openapi.json` are not wrapped, but their errors are.
 
 Success:
 
@@ -211,7 +212,7 @@ Unknown paths return 404 and wrong methods 405 in the same shape. Unexpected fai
   - `user`: Read-only access to signals, charts, watchlist, summary stats, and cron status. Journal entries and write actions are restricted.
   - `administrator`: Full access including watchlist management, trade journaling, and manual cron triggers.
 - **Endpoints**: `POST /api/auth/register` (`{email, username, password}`, always role `user`, 201), `POST /api/auth/login` (`{email, password}`), `POST /api/auth/logout` and `GET /api/auth/me`. Register and login set the cookie and return the user, never the token. Email is the only login identifier; passwords are 10-128 characters and may not equal the email or username.
-- **Pages**: `/dashboard` needs a session and redirects to `/login` (303) without one. `/login` and `/register` redirect to `/dashboard` when already signed in. `/api/health`, `/api/info`, register and login stay public, and logout answers 200 even without a session; every other `/api/*` route answers 401 without credentials.
+- **Pages**: `/dashboard` and the signal page `/signals/{id}` need a session and redirect to `/login` (303) without one. `/login` and `/register` redirect to `/dashboard` when already signed in. `/api/health`, `/api/info`, register and login stay public, and logout answers 200 even without a session; every other `/api/*` route answers 401 without credentials.
 - **CSRF**: cookie-authenticated `POST`/`PUT`/`PATCH`/`DELETE`, plus login, register and logout, are rejected with 403 when the `Origin` header names another host. Requests without `Origin` (curl, CI) pass.
 - **Administrators**: public registration never grants `administrator`. Create the first one, reset a password or change a role with the CLI below. It prompts for the password twice, and updating an existing email revokes all of that user's sessions:
   ```bash
@@ -238,7 +239,7 @@ Logs go to stdout, one JSON object per line with `timestamp`, `level`, `logger`,
 
 - `GET /api/signals` lists stored signals, newest first, paginated. Filters: `status` (comma-separated, e.g. `PENDING,OPEN`), `side` (`LONG`, `SHORT`), `symbol`, `timeframe`, `date`, `start_date`, `end_date` (WIB days, `YYYY-MM-DD`, end inclusive), plus `page` and `per_page`.
 - `GET /api/signals/{signal_id}` returns one signal with its journal entry. Each signal has its levels, status, fill and exit prices and times, P/L, R, `fill_deadline` and `hold_deadline`.
-- `GET /api/signals/{signal_id}/chart` returns the candles and RSI series around one trade: from 30 candles before the signal to now while it is active, or to 6 candles after the exit once it has closed. Closed charts are cached for 7 days. Returns 503 with `Retry-After` while the Binance request budget is used up.
+- `GET /api/signals/{signal_id}/chart` returns the candles around one trade with three series on the same times: `rsi`, `ema` (EMA 50 of the close) and `volume_delta` (taker buy minus taker sell volume per candle, in the base asset). The window runs from 30 candles before the signal to now while it is active, or to 6 candles after the exit once it has closed. Closed charts are cached for 7 days. Returns 503 with `Retry-After` while the Binance request budget is used up.
 - `GET /api/summary` takes the same filters as `/api/signals` (without paging) and returns signal counts per status, fill rate, win rate (target hits over closed trades; unfilled orders are left out), net P/L, total and average R, and max drawdown in R.
 
 ### Watchlist

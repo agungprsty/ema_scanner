@@ -76,6 +76,7 @@ def fetch_candles_range(
             "low": float(k[3]),
             "close": float(k[4]),
             "volume": float(k[5]),
+            "buy_volume": float(k[9]),  # taker buy base volume, for volume delta
         }
         for k in resp
     ]

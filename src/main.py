@@ -366,6 +366,12 @@ async def dashboard_page(request: Request):
     return await _page(request, "src/pages/dashboard.html", require_session=True)
 
 
+# The page loads the signal itself, so an unknown id shows its message there
+@app.api_route("/signals/{signal_id:int}", methods=["GET", "HEAD"], include_in_schema=False)
+async def signal_page(request: Request, signal_id: int):
+    return await _page(request, "src/pages/signal.html", require_session=True)
+
+
 @app.get("/api/info", response_model=Envelope[dict])
 async def get_info():
     return success({
@@ -530,7 +536,8 @@ async def remove_journal_entry(signal_id: int):
 # Candles framing one signal's trade, with RSI, for its chart
 SIGNAL_CANDLES_BEFORE = 30
 SIGNAL_CANDLES_AFTER = 6
-SIGNAL_RSI_WARMUP = 300  # extra bars fetched before the window so the first charted RSI has settled
+SIGNAL_RSI_WARMUP = 300  # extra bars fetched before the window so the first charted RSI and EMA have settled
+SIGNAL_CHART_EMA = 50
 # A closed trade's window never changes once all its candles have closed
 SIGNAL_CANDLES_FINAL_TTL = 7 * 24 * 3600
 
@@ -554,17 +561,28 @@ def _signal_candle_window(sig: dict, now_ms: int) -> tuple[int, int, bool]:
 
 
 def _chart_payload(sig: dict, candles: list[dict], start_ms: int) -> dict:
-    """Candles from `start_ms` on, with RSI over the whole fetch so warm-up bars are dropped, not zeroed."""
-    rsi = compute_rsi(pd.Series([c["close"] for c in candles], dtype=float))
+    """Candles from `start_ms` on, with RSI and EMA over the whole fetch so warm-up bars are dropped, not zeroed."""
+    close = pd.Series([c["close"] for c in candles], dtype=float)
+    rsi = compute_rsi(close)
+    ema = close.ewm(span=SIGNAL_CHART_EMA, min_periods=SIGNAL_CHART_EMA, adjust=False).mean()
     start_s = start_ms // 1000
+    shown = [i for i, c in enumerate(candles) if c["time"] >= start_s]
+
+    def series(values, digits):
+        return [
+            {"time": candles[i]["time"], "value": round(float(values[i]), digits)} for i in shown if pd.notna(values[i])
+        ]
+
     return {
         "symbol": sig["symbol"],
         "timeframe": sig["timeframe"],
-        "candles": [c for c in candles if c["time"] >= start_s],
-        "rsi": [
-            {"time": c["time"], "value": round(float(v), 2)}
-            for c, v in zip(candles, rsi, strict=True)
-            if c["time"] >= start_s and pd.notna(v)
+        "candles": [candles[i] for i in shown],
+        "rsi": series(rsi, 2),
+        "ema": series(ema, 8),
+        # Taker buy minus taker sell volume per candle, in the base asset
+        "volume_delta": [
+            {"time": candles[i]["time"], "value": round(2 * candles[i]["buy_volume"] - candles[i]["volume"], 8)}
+            for i in shown
         ],
     }
 
@@ -605,7 +623,8 @@ async def get_signal_chart(signal_id: int):
 
     start_ms, end_ms, final = _signal_candle_window(sig, int(time.time() * 1000))
     ttl = SIGNAL_CANDLES_FINAL_TTL if final else KLINES_CACHE_TTL
-    cache_key = f"chart:{signal_id}:{'final' if final else 'live'}"
+    # v2 added ema and volume_delta; the version keeps week-old final payloads without them from being served
+    cache_key = f"chart:v2:{signal_id}:{'final' if final else 'live'}"
     payload = await _single_flight(
         ("signal-chart", signal_id, final),
         lambda: _load_signal_chart(sig, start_ms, end_ms, cache_key, ttl),

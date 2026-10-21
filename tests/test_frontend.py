@@ -9,10 +9,19 @@ from src.main import app
 
 pytestmark = pytest.mark.unit
 
-APP_JS = Path(__file__).resolve().parent.parent / "src" / "static" / "app.js"
+STATIC_DIR = Path(__file__).resolve().parent.parent / "src" / "static"
+APP_JS = STATIC_DIR / "app.js"
+COMMON_JS = STATIC_DIR / "common.js"
+SIGNAL_JS = STATIC_DIR / "signal.js"
 PAGES_DIR = Path(__file__).resolve().parent.parent / "src" / "pages"
 DASHBOARD_HTML = PAGES_DIR / "dashboard.html"
+SIGNAL_HTML = PAGES_DIR / "signal.html"
 INDEX_HTML = DASHBOARD_HTML
+
+
+def all_js() -> str:
+    """Every script the signed-in pages load; helpers live in common.js, the detail page in signal.js."""
+    return "\n".join(f.read_text() for f in (COMMON_JS, APP_JS, SIGNAL_JS))
 
 
 @pytest.fixture
@@ -72,7 +81,7 @@ async def test_watchlist_add_accepts_valid_symbol(added_symbols, symbol):
 
 
 def test_app_js_defines_escape_helper():
-    source = APP_JS.read_text()
+    source = all_js()
     assert "function escapeHtml(" in source
     for needle in (
         "${item.symbol}",
@@ -96,7 +105,7 @@ def test_app_js_runs_the_job_only_on_click():
 
 
 def test_frontend_has_no_macd_era_remnants():
-    source = APP_JS.read_text()
+    source = all_js()
     html = INDEX_HTML.read_text()
     for needle in ("macd", "/api/klines", "/api/evaluate", "/api/scan", "include_current", "forming"):
         assert needle not in source.lower()
@@ -130,10 +139,10 @@ def test_tabs_split_active_and_closed_signals():
 
 def test_status_filter_and_labels_cover_every_status():
     html = INDEX_HTML.read_text()
-    source = APP_JS.read_text()
+    source = COMMON_JS.read_text()
     for status in ("PENDING", "OPEN", "TP_HIT", "SL_HIT", "EXPIRED", "NOT_FILLED"):
         assert f'<option value="{status}">' in html
-        assert f"    {status}: {{ cls: " in source
+        assert f"  {status}: {{ cls: " in source
     assert "PENDING: { cls: '', label: 'Awaiting fill' }" in source
 
 
@@ -142,11 +151,11 @@ def test_dashboard_shows_fill_rate_and_brand():
     assert 'id="stat-fillrate"' in html
     assert "data.fill_rate" in APP_JS.read_text()
     assert '<span class="brand-name">simple-trade</span>' in html
-    assert '<script src="/static/app.js?v=5"></script>' in html
+    assert '<script src="/static/common.js?v=1"></script>\n  <script src="/static/app.js?v=6"></script>' in html
 
 
 def test_journal_preview_uses_planned_risk():
-    source = APP_JS.read_text()
+    source = all_js()
     assert "function tradeReturn(sig, entry, exit) {" in source
     assert "Math.abs(sig.entry_price - sig.stop_loss) / sig.entry_price * 100" in source
     assert "tradeReturn(currentSignal, entry, exit)" in source
@@ -154,15 +163,53 @@ def test_journal_preview_uses_planned_risk():
 
 
 def test_chart_draws_rsi_pane_and_skips_levels_when_not_filled():
-    source = APP_JS.read_text()
-    assert "/chart`" in source
-    assert "priceScaleId: 'rsi'" in source
+    source = SIGNAL_JS.read_text()
+    assert "/chart?v=2`" in source
+    assert "autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } })," in source
     assert "[config.oversold, config.overbought]" in source
     assert "time: p.time + UTC7_OFFSET_SEC" in source
     assert "intervalMs(sig.timeframe)" in source
     assert "if (sig.status !== 'NOT_FILLED') {" in source
     for marker in ("'Signal'", "'Fill'", "'Exit'"):
         assert f"text: {marker}" in source
+
+
+def test_chart_draws_ema_and_volume_delta_below_rsi():
+    source = SIGNAL_JS.read_text()
+    assert "lightweight-charts@5.0.8/" in source
+    assert "emaSeries.setData(shift(payload.ema));" in source
+    assert "shift(payload.volume_delta)" in source
+    # Real panes, top to bottom: price with EMA (0), RSI (1), then volume delta (2)
+    assert "chart.addSeries(LightweightCharts.LineSeries, {" in source
+    assert "}, 1);\n      const deltaSeries = chart.addSeries(LightweightCharts.HistogramSeries, {" in source
+    assert "}, 2);\n      const [pricePane, rsiPane, deltaPane] = chart.panes();" in source
+    # Entry/TP/SL widen the price scale so the lines never fall outside the price pane
+    assert "Math.min(range.priceRange.minValue, ...levels)" in source
+    html = SIGNAL_HTML.read_text()
+    assert "EMA 50" in html and "Volume delta" in html
+
+
+def test_signal_detail_is_a_page_not_a_dialog():
+    dashboard = DASHBOARD_HTML.read_text()
+    source = APP_JS.read_text()
+    assert "<dialog" not in dashboard and "signal-modal" not in source
+    assert "`/signals/${encodeURIComponent(item.id)}`" in source
+    html = SIGNAL_HTML.read_text()
+    assert 'id="journal-form"' in html and 'class="journal admin-only"' in html
+    assert html.index("/static/common.js") < html.index("/static/signal.js")
+
+
+def test_hidden_attribute_beats_component_display_rules():
+    # app.css loads before the dashboard's inline .pager / .filters rules
+    assert "[hidden] { display: none !important; }" in (STATIC_DIR / "app.css").read_text()
+    assert "body:not([data-role]) .admin-only," in (STATIC_DIR / "base.css").read_text()
+
+
+def test_dashboard_view_survives_a_visit_to_a_signal():
+    source = APP_JS.read_text()
+    assert "history.replaceState(null, '', query ? `?${query}` : window.location.pathname);" in source
+    assert "selectTab(restoreViewFromUrl());" in source
+    assert "from.pathname === '/dashboard'" in SIGNAL_JS.read_text()
 
 
 def test_app_js_pages_lists_twenty_rows_at_a_time():
@@ -182,13 +229,14 @@ def test_dashboard_has_no_separate_closed_trades_tab():
 
 
 def test_chart_library_loads_on_demand():
-    html = INDEX_HTML.read_text()
-    assert "lightweight-charts" not in html.split("<body>")[0].replace('href="https://unpkg.com"', "")
-    assert "function loadChartLibrary(" in APP_JS.read_text()
+    for page in (DASHBOARD_HTML, SIGNAL_HTML):
+        assert "lightweight-charts" not in page.read_text()
+    assert "function loadChartLibrary(" in SIGNAL_JS.read_text()
+    assert "LightweightCharts" not in APP_JS.read_text()
 
 
 def test_app_js_reads_api_envelopes():
-    source = APP_JS.read_text()
+    source = all_js()
     assert "X-API-KEY" not in source
     assert "prompt(" not in source
     # The old API key is only ever removed, never read or sent
@@ -210,11 +258,9 @@ def test_pages_satisfy_csp():
         PAGES_DIR / "login.html",
         PAGES_DIR / "register.html",
         PAGES_DIR / "dashboard.html",
+        SIGNAL_HTML,
     ]
-    scripts = [
-        APP_JS,
-        APP_JS.parent / "auth.js",
-    ]
+    scripts = [APP_JS, COMMON_JS, SIGNAL_JS, STATIC_DIR / "auth.js"]
     for page in pages:
         html = page.read_text()
         assert not re.search(r"\son[a-z]+\s*=", html), f"{page.name} contains inline event handler"

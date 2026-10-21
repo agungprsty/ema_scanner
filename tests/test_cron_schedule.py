@@ -29,6 +29,16 @@ def test_next_run_is_the_next_candle_close_plus_delay(tf, now, expected):
     assert next_run_ms(_wib_ms(*now), INTERVAL_MS[tf], DELAY) == _wib_ms(*expected)
 
 
+def test_default_30m_timeframe_runs_on_the_hour_and_half_hour_wib():
+    # The default schedule: 01:00, 01:30, 02:00, ... WIB, each plus the safety delay
+    half_hour = INTERVAL_MS["30m"]
+    runs, last = [], _wib_ms(2026, 10, 21, 0, 50)
+    for _ in range(4):
+        last = next_run_ms(last, half_hour, DELAY)
+        runs.append(datetime.fromtimestamp(last / 1000, WIB_TZ).strftime("%H:%M:%S"))
+    assert runs == ["01:00:15", "01:30:15", "02:00:15", "02:30:15"]
+
+
 def test_start_inside_the_delay_still_runs_that_boundary():
     boundary = _wib_ms(2026, 10, 21, 11, 0)
     hour = INTERVAL_MS["1h"]

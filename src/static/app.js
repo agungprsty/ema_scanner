@@ -1,5 +1,4 @@
 document.addEventListener('DOMContentLoaded', () => {
-  const TZ = 'Asia/Jakarta';
   // One-time cleanup of legacy API key storage
   try {
     localStorage.removeItem('crossline_api_key');
@@ -8,15 +7,10 @@ document.addEventListener('DOMContentLoaded', () => {
     /* storage unavailable */
   }
   const PAGE_SIZE = 20;
-  const TF_UNIT_MS = { m: 60 * 1000, h: 60 * 60 * 1000, d: 24 * 60 * 60 * 1000 };
   const TAB_STATUSES = {
     active: ['PENDING', 'OPEN'],
     history: ['TP_HIT', 'SL_HIT', 'EXPIRED', 'NOT_FILLED'],
   };
-  const CHART_LIB_URL = 'https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js';
-
-  // Defaults until /api/info answers
-  const config = { timeframe: '', rsi_period: 14, oversold: 28, overbought: 72, fee_percent: 0.1 };
 
   let activeTab = 'active';
   let lastRunMs = null;
@@ -24,12 +18,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let shownSignals = [];
   let shownJournal = [];
   let watchlist = [];
-  let chart = null;
-  let chartRequest = 0;
-  let currentSignal = null;
   const pageIndex = { active: 0, history: 0, journal: 0 };
-
-  const $ = (id) => document.getElementById(id);
 
   // Signals
   const tbody = $('signals-tbody');
@@ -40,7 +29,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const caption = $('caption');
   const actionNotice = $('action-notice');
   const watchlistNotice = $('watchlist-notice');
-  const toast = $('toast');
 
   // Tabs & views
   const tabs = Array.from(document.querySelectorAll('.tab'));
@@ -72,40 +60,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const watchlistList = $('watchlist-list');
   const wlCount = $('wl-count');
 
-  // Detail dialog
-  const modal = $('signal-modal');
-  const modalClose = $('modal-close');
-  const chartViewport = $('chart-viewport');
-  const journalForm = $('journal-form');
-  const journalEntry = $('journal-entry');
-  const journalExit = $('journal-exit');
-  const journalNotes = $('journal-notes');
-  const journalResult = $('journal-result');
-  const journalSave = $('journal-save');
-
   function showNotice(message) {
     actionNotice.textContent = message || '';
     actionNotice.hidden = !message;
   }
-
-  let toastTimer = null;
-  function showToast(message) {
-    toast.textContent = message;
-    toast.hidden = false;
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { toast.hidden = true; }, 2500);
-  }
-
-  // Formatting
-  const dateTimeFmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: TZ,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  });
 
   const clockFmt = new Intl.DateTimeFormat('en-GB', {
     timeZone: TZ,
@@ -114,103 +72,6 @@ document.addEventListener('DOMContentLoaded', () => {
     second: '2-digit',
     hourCycle: 'h23',
   });
-
-  const hourFmt = new Intl.DateTimeFormat('en-GB', {
-    timeZone: TZ,
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  });
-
-  function parseTime(value) {
-    if (value == null || value === '') return null;
-    const dt = new Date(value);
-    return isNaN(dt.getTime()) ? null : dt;
-  }
-
-  // Binance interval ("15m", "1h", "1d") in ms
-  function intervalMs(tf) {
-    const m = /^(\d+)([mhd])$/.exec(tf || '');
-    return m ? Number(m[1]) * TF_UNIT_MS[m[2]] : null;
-  }
-
-  function formatWIB(value) {
-    const dt = value instanceof Date ? value : parseTime(value);
-    if (!dt) return value ? String(value) : '–';
-    const p = Object.fromEntries(dateTimeFmt.formatToParts(dt).map(x => [x.type, x.value]));
-    return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
-  }
-
-  function formatTimeOnlyWIB(value) {
-    const dt = parseTime(value);
-    return dt ? hourFmt.format(dt) : '--:--';
-  }
-
-  function formatPrice(val) {
-    if (val == null || val === '' || isNaN(val)) return '–';
-    const num = Number(val);
-    if (num >= 1000) return num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    if (num >= 1) return num.toFixed(4);
-    return num.toFixed(6);
-  }
-
-  function formatPct(val) {
-    const num = Number(val) || 0;
-    return `${num > 0 ? '+' : num < 0 ? '−' : ''}${Math.abs(num).toFixed(2)}%`;
-  }
-
-  function formatR(val, digits = 2) {
-    if (val == null || isNaN(val)) return '–';
-    const num = Number(val);
-    return `${num > 0 ? '+' : num < 0 ? '−' : ''}${Math.abs(num).toFixed(digits)}R`;
-  }
-
-  function formatRsi(val) {
-    return val == null || isNaN(val) ? '–' : Number(val).toFixed(1);
-  }
-
-  function signClass(val) {
-    if (val == null || isNaN(val)) return '';
-    return val > 0 ? 'is-long' : val < 0 ? 'is-short' : '';
-  }
-
-  function plural(n, word) {
-    return `${n} ${word}${n === 1 ? '' : 's'}`;
-  }
-
-  function escapeHtml(value) {
-    if (value == null) return '';
-    return String(value).replace(/[&<>"']/g, ch => ({
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&#39;',
-    }[ch]));
-  }
-
-  function sideHtml(side) {
-    const isLong = side === 'LONG';
-    return `<span class="${isLong ? 'is-long' : 'is-short'}">${isLong ? 'Long' : 'Short'}</span>`;
-  }
-
-  const OUTCOMES = {
-    PENDING: { cls: '', label: 'Awaiting fill' },
-    OPEN: { cls: 'open', label: 'Open' },
-    TP_HIT: { cls: 'win', label: 'Target hit' },
-    SL_HIT: { cls: 'loss', label: 'Stopped out' },
-    EXPIRED: { cls: 'expired', label: 'Expired' },
-    NOT_FILLED: { cls: 'void', label: 'Not filled' },
-  };
-
-  function outcomeOf(status) {
-    return OUTCOMES[status] || { cls: '', label: status || '–' };
-  }
-
-  function outcomeHtml(status) {
-    const o = outcomeOf(status);
-    return `<span class="outcome ${o.cls}">${o.label}</span>`;
-  }
 
   // R and PnL of a closed signal; a dash while it is open
   function resultHtml(s) {
@@ -223,51 +84,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (status === 'TAKEN') return '<span class="tag">taken</span>';
     if (status === 'SKIPPED') return '<span class="tag">skipped</span>';
     return '';
-  }
-
-  // Same formula as the server: PnL after fees, and R against the signal's own planned risk, not the fill's distance to the stop
-  function tradeReturn(sig, entry, exit) {
-    if (!(entry > 0) || !(exit > 0)) return null;
-    const dir = sig.side === 'LONG' ? 1 : -1;
-    const pnl = dir * (exit - entry) / entry * 100 - config.fee_percent;
-    const risk = Math.abs(sig.entry_price - sig.stop_loss) / sig.entry_price * 100;
-    return { pnl, r: risk > 0 ? pnl / risk : null };
-  }
-
-  // API helpers
-  // Error envelope: { message, errors: [{ field, message }] }; a proxy may answer with HTML instead
-  async function responseError(res) {
-    if (res.status === 401) {
-      window.location.assign('/login');
-      return 'Session expired, redirecting to login...';
-    }
-    if (res.status === 403) {
-      return 'Administrator only';
-    }
-    if (res.status === 429) {
-      const wait = Number(res.headers.get('Retry-After'));
-      return wait > 0 ? `too many requests, try again in ${wait}s` : 'too many requests, try again shortly';
-    }
-    let body = null;
-    try {
-      body = await res.json();
-    } catch {
-      body = null;
-    }
-    if (body && typeof body.message === 'string' && body.message) {
-      const details = (Array.isArray(body.errors) ? body.errors : [])
-        .filter(e => e && e.message)
-        .map(e => (e.field ? `${e.field}: ${e.message}` : e.message));
-      return details.length ? `${body.message} (${details.join('; ')})` : body.message;
-    }
-    return `request failed (HTTP ${res.status})`;
-  }
-
-  // Returns the whole envelope; the payload is in .data, paging in .meta
-  async function getJson(url) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(await responseError(res));
-    return res.json();
   }
 
   function debounce(fn, ms) {
@@ -375,9 +191,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function loadConfig() {
     try {
-      const info = (await getJson('/api/info')).data;
-      Object.assign(config, info.strategy || {});
-      if (info.timeframe) config.timeframe = info.timeframe;
+      await loadStrategyConfig();
       $('brand-meta').textContent = `RSI ${config.oversold}/${config.overbought} scanner · ${config.timeframe} · Binance USDⓈ-M futures`;
     } catch {
       // keep defaults
@@ -483,16 +297,22 @@ document.addEventListener('DOMContentLoaded', () => {
     `).join('');
   }
 
+  // Rows open the signal's own page; Ctrl/Cmd-click or a middle click opens it in a new tab
   function bindRowOpen(containers, pick) {
     const handler = (e) => {
       if (e.type === 'keydown' && e.key !== 'Enter') return;
+      if (e.type === 'auxclick' && e.button !== 1) return;
       const el = e.target.closest('[data-index]');
       if (!el) return;
       const item = pick(Number(el.dataset.index));
-      if (item) openSignal(item);
+      if (!item) return;
+      const url = `/signals/${encodeURIComponent(item.id)}`;
+      if (e.ctrlKey || e.metaKey || e.type === 'auxclick') window.open(url, '_blank', 'noopener');
+      else window.location.assign(url);
     };
     containers.forEach(el => {
       el.addEventListener('click', handler);
+      el.addEventListener('auxclick', handler);
       el.addEventListener('keydown', handler);
     });
   }
@@ -787,7 +607,37 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Tabs
+  // The view lives in the URL, so coming back from a signal page restores the tab, page and filters
+  const URL_FILTERS = { symbol: filterSymbol, date: filterDate, side: filterSide, status: filterStatus, journal: filterJournal };
+
+  function saveViewToUrl() {
+    const params = new URLSearchParams();
+    if (activeTab !== 'active') params.set('tab', activeTab);
+    if (pageIndex[activeTab]) params.set('page', String(pageIndex[activeTab] + 1));
+    Object.entries(URL_FILTERS).forEach(([key, el]) => {
+      if (el.value.trim()) params.set(key, el.value.trim());
+    });
+    const query = params.toString();
+    history.replaceState(null, '', query ? `?${query}` : window.location.pathname);
+  }
+
+  function restoreViewFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    Object.entries(URL_FILTERS).forEach(([key, el]) => {
+      const value = params.get(key);
+      if (value == null) return;
+      el.value = value;
+      if (el.value !== value) el.value = ''; // a select or date input rejects unknown values
+    });
+    const wanted = params.get('tab');
+    const tab = tabs.some(t => t.dataset.tab === wanted) ? wanted : 'active';
+    const page = Number(params.get('page'));
+    if (tab in pageIndex && Number.isInteger(page) && page > 1) pageIndex[tab] = page - 1;
+    return tab;
+  }
+
   function reloadActiveList() {
+    saveViewToUrl();
     if (activeTab in TAB_STATUSES) return loadSignals();
     if (activeTab === 'journal') return loadJournal();
     return loadWatchlist();
@@ -795,6 +645,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function selectTab(tab) {
     activeTab = tab;
+    saveViewToUrl();
     tabs.forEach(t => t.setAttribute('aria-selected', String(t.dataset.tab === tab)));
 
     views.signals.hidden = !(tab in TAB_STATUSES);
@@ -834,420 +685,9 @@ document.addEventListener('DOMContentLoaded', () => {
   filterSymbol.addEventListener('input', debounce(onFilterChanged, 250));
   [filterDate, filterSide, filterStatus, filterJournal].forEach(el => el.addEventListener('change', onFilterChanged));
 
-  // Signal detail
-  function pctFrom(entry, level) {
-    if (!entry || !level) return '';
-    return `<small>${formatPct(((level - entry) / entry) * 100)}</small>`;
-  }
-
-  function detailSubtitle(sig) {
-    return `Signal candle ${formatWIB(sig.signal_time)} WIB on the ${sig.timeframe} chart`;
-  }
-
-  function fillHtml(sig) {
-    if (sig.fill_price != null) {
-      return `${formatPrice(sig.fill_price)}<span class="hint">Filled ${escapeHtml(formatWIB(sig.fill_time))} WIB</span>`;
-    }
-    if (sig.status === 'NOT_FILLED') {
-      return `<span class="muted">Not filled</span><span class="hint">Window ended ${escapeHtml(formatWIB(sig.exit_time))} WIB</span>`;
-    }
-    return `<span class="muted">Waiting</span><span class="hint">Fill by ${escapeHtml(formatWIB(sig.fill_deadline))} WIB, else cancelled</span>`;
-  }
-
-  function exitHtml(sig) {
-    if (sig.exit_price != null) {
-      return `${formatPrice(sig.exit_price)}<span class="hint">${escapeHtml(formatWIB(sig.exit_time))} WIB, `
-        + `${formatR(sig.r_multiple)} (${formatPct(sig.pnl_percent)} after fees)</span>`;
-    }
-    if (sig.status === 'OPEN' && sig.hold_deadline) {
-      return `<span class="muted">Open</span><span class="hint">Closes by ${escapeHtml(formatWIB(sig.hold_deadline))} WIB at the latest</span>`;
-    }
-    return '–';
-  }
-
-  function fillDetail(sig) {
-    const entry = sig.entry_price;
-    const isLong = sig.side === 'LONG';
-    $('modal-title').innerHTML = `${escapeHtml(sig.symbol)} ${sideHtml(sig.side)}`;
-    $('modal-time').textContent = detailSubtitle(sig);
-
-    $('detail-entry').innerHTML = formatPrice(entry)
-      + `<span class="hint">Signal candle ${isLong ? 'low' : 'high'}</span>`;
-    $('detail-sl').innerHTML = formatPrice(sig.stop_loss) + pctFrom(entry, sig.stop_loss);
-    $('detail-tp').innerHTML = formatPrice(sig.take_profit) + pctFrom(entry, sig.take_profit);
-    $('detail-outcome').innerHTML = outcomeHtml(sig.status);
-
-    $('detail-rsi-label').textContent = `RSI(${config.rsi_period})`;
-    $('detail-rsi').innerHTML = formatRsi(sig.rsi) + `<span class="hint">Crossed ${isLong
-      ? `below ${config.oversold}` : `above ${config.overbought}`} from ${formatRsi(sig.prev_rsi)}</span>`;
-    const risk = Math.abs(entry - sig.stop_loss);
-    $('detail-rr').textContent = risk > 0 ? `1:${Number((Math.abs(sig.take_profit - entry) / risk).toFixed(2))}` : '–';
-    $('detail-fill').innerHTML = fillHtml(sig);
-    $('detail-exit').innerHTML = exitHtml(sig);
-  }
-
-  async function openSignal(sig) {
-    loadChartLibrary().catch(() => {});
-    currentSignal = sig;
-    destroyChart();
-    showChartMessage('<span class="spinner on"></span> Loading candles…');
-    fillDetail(sig);
-    renderJournalForm(sig);
-    if (!modal.open) modal.showModal();
-    try {
-      const fresh = (await getJson(`/api/signals/${encodeURIComponent(sig.id)}`)).data;
-      if (currentSignal !== sig) return;
-      currentSignal = { ...sig, ...fresh };
-      fillDetail(currentSignal);
-      renderJournalForm(currentSignal);
-      renderChart(currentSignal);
-    } catch (e) {
-      if (currentSignal !== sig) return;
-      showChartMessage(escapeHtml(`Could not load this signal: ${e.message}`), true);
-    }
-  }
-
-  // Journal form
-  function selectedJournalStatus() {
-    const checked = journalForm.querySelector('input[name="journal-status"]:checked');
-    return checked ? checked.value : '';
-  }
-
-  function parseFill(input) {
-    const raw = input.value.trim().replace(',', '.');
-    if (!raw) return null;
-    const num = Number(raw);
-    return Number.isFinite(num) && num > 0 ? num : NaN;
-  }
-
-  function updateJournalPreview() {
-    const status = selectedJournalStatus();
-    journalForm.querySelectorAll('[data-taken]').forEach(el => { el.hidden = status !== 'TAKEN'; });
-    if (status !== 'TAKEN' || !currentSignal) {
-      journalResult.textContent = '';
-      return;
-    }
-    const entry = parseFill(journalEntry);
-    const exit = parseFill(journalExit);
-    if (Number.isNaN(entry) || Number.isNaN(exit)) {
-      journalResult.innerHTML = '<span class="is-short">Prices must be positive numbers</span>';
-      return;
-    }
-    const res = entry && exit ? tradeReturn(currentSignal, entry, exit) : null;
-    if (res) {
-      journalResult.innerHTML = `Your result: <span class="${signClass(res.pnl)}">${formatR(res.r)}</span> (${formatPct(res.pnl)} after fees)`;
-    } else {
-      journalResult.textContent = entry ? 'Add the exit fill once the trade is closed.' : '';
-    }
-  }
-
-  function renderJournalForm(sig) {
-    const j = sig.journal || null;
-    const status = j ? j.status : '';
-    journalForm.querySelectorAll('input[name="journal-status"]').forEach(r => { r.checked = r.value === status; });
-    journalEntry.value = j && j.entry_fill != null ? j.entry_fill : '';
-    journalExit.value = j && j.exit_fill != null ? j.exit_fill : '';
-    journalNotes.value = j ? j.notes || '' : '';
-    journalEntry.placeholder = `Signal ${sig.fill_price != null ? 'fill' : 'limit'} ${formatPrice(sig.fill_price ?? sig.entry_price)}`;
-    updateJournalPreview();
-  }
-
-  journalForm.addEventListener('input', updateJournalPreview);
-  journalForm.addEventListener('change', updateJournalPreview);
-
-  async function saveJournal(sig, status, entry, exit) {
-    const url = `/api/signals/${encodeURIComponent(sig.id)}/journal`;
-    if (!status) return fetch(url, { method: 'DELETE' });
-    return fetch(url, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        status,
-        entry_fill: status === 'TAKEN' ? entry : null,
-        exit_fill: status === 'TAKEN' ? exit : null,
-        notes: journalNotes.value.trim(),
-      }),
-    });
-  }
-
-  journalForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const sig = currentSignal;
-    if (!sig) return;
-    const status = selectedJournalStatus();
-    const entry = parseFill(journalEntry);
-    const exit = parseFill(journalExit);
-    if (status === 'TAKEN' && (Number.isNaN(entry) || Number.isNaN(exit))) return;
-    if (status === 'TAKEN' && exit && !entry) {
-      journalResult.innerHTML = '<span class="is-short">Add the entry fill first</span>';
-      return;
-    }
-    if (!status && !sig.journal) {
-      showToast('Nothing to save');
-      return;
-    }
-
-    journalSave.disabled = true;
-    try {
-      const res = await saveJournal(sig, status, entry, exit);
-      if (!res.ok) throw new Error(await responseError(res));
-      const saved = status ? (await res.json()).data : null;
-      sig.journal = saved ? saved.journal : null;
-      sig.journal_status = sig.journal ? sig.journal.status : null;
-      shownSignals.forEach(s => {
-        if (s.id === sig.id) s.journal_status = sig.journal_status;
-      });
-      renderJournalForm(sig);
-      showToast(status ? 'Saved to your journal' : 'Removed from your journal');
-      if (activeTab !== 'watchlist') reloadActiveList();
-    } catch (err) {
-      journalResult.innerHTML = `<span class="is-short">${escapeHtml(`Could not save: ${err.message}`)}</span>`;
-    } finally {
-      journalSave.disabled = false;
-    }
-  });
-
-  // Chart
-  let chartLibPromise = null;
-
-  // The chart library is only needed in the signal dialog, so it is fetched the first time it is wanted
-  function loadChartLibrary() {
-    if (window.LightweightCharts) return Promise.resolve(window.LightweightCharts);
-    if (!chartLibPromise) {
-      chartLibPromise = new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        script.src = CHART_LIB_URL;
-        script.async = true;
-        script.onload = () => (window.LightweightCharts
-          ? resolve(window.LightweightCharts)
-          : reject(new Error('chart library did not initialise')));
-        script.onerror = () => {
-          script.remove();
-          reject(new Error('chart library failed to load'));
-        };
-        document.head.appendChild(script);
-      }).catch((err) => {
-        chartLibPromise = null; // allow a retry on the next dialog
-        throw err;
-      });
-    }
-    return chartLibPromise;
-  }
-
-  // Start the download as soon as the pointer or focus reaches a row that opens a chart
-  [tbody, signalCards, journalTbody, journalCards].forEach(el => {
-    ['pointerover', 'focusin'].forEach(type => el.addEventListener(type, () => {
-      loadChartLibrary().catch(() => {});
-    }, { once: true }));
-  });
-
-  function destroyChart() {
-    chartRequest += 1;
-    if (chart) {
-      chart.remove();
-      chart = null;
-    }
-  }
-
-  function showChartMessage(message, isError = false) {
-    chartViewport.innerHTML = `<div class="chart-msg${isError ? ' err' : ''}">${message}</div>`;
-  }
-
-  async function renderChart(sig) {
-    destroyChart();
-    const request = chartRequest;
-    showChartMessage('<span class="spinner on"></span> Loading candles…');
-
-    try {
-      const res = await fetch(`/api/signals/${encodeURIComponent(sig.id)}/chart`);
-      if (request !== chartRequest) return;
-      if (!res.ok) {
-        showChartMessage(escapeHtml(`Chart unavailable: ${await responseError(res)}`), true);
-        return;
-      }
-      const payload = (await res.json()).data || {};
-      if (request !== chartRequest) return;
-      if (!Array.isArray(payload.candles) || payload.candles.length === 0) {
-        showChartMessage('No candle data for this symbol.');
-        return;
-      }
-      try {
-        await loadChartLibrary();
-      } catch {
-        if (request === chartRequest) showChartMessage('The chart library could not be loaded. Check your connection and reopen the signal.', true);
-        return;
-      }
-      if (request !== chartRequest) return;
-      chartViewport.innerHTML = '';
-
-      const css = getComputedStyle(document.documentElement);
-      const color = (name) => css.getPropertyValue(name).trim();
-      const longColor = color('--long');
-      const shortColor = color('--short');
-      const entryColor = color('--entry');
-
-      chart = LightweightCharts.createChart(chartViewport, {
-        autoSize: true,
-        layout: {
-          background: { color: color('--surface') },
-          textColor: color('--text-3'),
-          fontFamily: color('--font-mono'),
-          fontSize: 11,
-        },
-        grid: {
-          vertLines: { color: color('--line') },
-          horzLines: { color: color('--line') },
-        },
-        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-        rightPriceScale: { borderColor: color('--line') },
-        timeScale: {
-          borderColor: color('--line'),
-          timeVisible: true,
-          secondsVisible: false,
-        },
-        localization: { dateFormat: 'yyyy-MM-dd' },
-      });
-
-      const candleSeries = chart.addCandlestickSeries({
-        upColor: longColor,
-        downColor: shortColor,
-        borderVisible: false,
-        wickUpColor: longColor,
-        wickDownColor: shortColor,
-      });
-
-      // Price on the top 70%, RSI in its own pane below
-      candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.05, bottom: 0.3 } });
-      const rsiSeries = chart.addLineSeries({
-        priceScaleId: 'rsi',
-        color: color('--text-2'),
-        lineWidth: 1,
-        priceLineVisible: false,
-        lastValueVisible: false,
-        autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
-      });
-      chart.priceScale('rsi').applyOptions({ scaleMargins: { top: 0.75, bottom: 0 } });
-
-      // Lightweight Charts renders timestamps as UTC; shift them so the axis reads in WIB
-      const UTC7_OFFSET_SEC = 7 * 3600;
-      const candles = payload.candles.map(c => ({ ...c, time: c.time + UTC7_OFFSET_SEC }));
-      candleSeries.setData(candles);
-      rsiSeries.setData((payload.rsi || []).map(p => ({ time: p.time + UTC7_OFFSET_SEC, value: p.value })));
-      [config.oversold, config.overbought].forEach(price => rsiSeries.createPriceLine({
-        price,
-        color: color('--text-3'),
-        lineWidth: 1,
-        lineStyle: LightweightCharts.LineStyle.Dotted,
-        axisLabelVisible: true,
-        title: '',
-      }));
-
-      // Candle containing a moment; an expiry is stamped at the close, so it belongs to the candle before
-      const intervalSec = intervalMs(sig.timeframe) / 1000;
-      const candleAt = (ms, closeStamp = false) => {
-        if (ms == null || !intervalSec) return null;
-        const ts = Math.floor(ms / 1000) + UTC7_OFFSET_SEC - (closeStamp ? 1 : 0);
-        return candles.find(c => c.time <= ts && ts < c.time + intervalSec) || null;
-      };
-
-      const markers = [];
-      const isLong = sig.side === 'LONG';
-      const addMarker = (ms, closeStamp, marker) => {
-        const c = candleAt(ms, closeStamp);
-        if (c) markers.push({ time: c.time, ...marker });
-      };
-      addMarker(sig.signal_candle_ms, false, {
-        position: isLong ? 'belowBar' : 'aboveBar',
-        color: isLong ? longColor : shortColor,
-        shape: isLong ? 'arrowUp' : 'arrowDown',
-        text: 'Signal',
-      });
-      if (sig.fill_ms != null) {
-        addMarker(sig.fill_ms, false, {
-          position: isLong ? 'belowBar' : 'aboveBar',
-          color: entryColor,
-          shape: 'circle',
-          text: 'Fill',
-        });
-      }
-      if (sig.exit_price != null) {
-        addMarker(sig.closed_ms, sig.status === 'EXPIRED', {
-          position: sig.exit_price >= sig.fill_price ? 'aboveBar' : 'belowBar',
-          color: (sig.r_multiple ?? sig.pnl_percent) >= 0 ? longColor : shortColor,
-          shape: 'circle',
-          text: 'Exit',
-        });
-      }
-      if (markers.length) candleSeries.setMarkers(markers.sort((a, b) => a.time - b.time));
-
-      // A limit that never filled had no position, so it gets no levels; a resting limit is dashed
-      if (sig.status !== 'NOT_FILLED') {
-        const lineStyle = sig.status === 'PENDING' ? LightweightCharts.LineStyle.Dashed : LightweightCharts.LineStyle.Solid;
-        [
-          [sig.entry_price, entryColor, 'Entry'],
-          [sig.take_profit, longColor, 'TP'],
-          [sig.stop_loss, shortColor, 'SL'],
-        ].forEach(([price, lineColor, label]) => {
-          if (!price) return;
-          candleSeries.createPriceLine({
-            price,
-            color: lineColor,
-            lineWidth: 1,
-            lineStyle,
-            axisLabelVisible: true,
-            title: label,
-          });
-        });
-      }
-
-      chart.timeScale().fitContent();
-    } catch (e) {
-      if (request !== chartRequest) return;
-      console.error('Failed to render chart:', e);
-      showChartMessage('Could not load candles from Binance.', true);
-    }
-  }
-
-  modalClose.addEventListener('click', () => modal.close());
-  modal.addEventListener('click', (e) => { if (e.target === modal) modal.close(); });
-  modal.addEventListener('close', () => {
-    destroyChart();
-    currentSignal = null;
-  });
-
-  // Authentication & Session
-  async function initAuth() {
-    try {
-      const envelope = await getJson('/api/auth/me');
-      const user = envelope.data;
-      if (user) {
-        document.body.dataset.role = user.role;
-        const userNameEl = document.getElementById('user-name');
-        const userRoleEl = document.getElementById('user-role');
-        if (userNameEl) userNameEl.textContent = user.username;
-        if (userRoleEl) {
-          userRoleEl.textContent = user.role === 'administrator' ? 'Admin' : 'User';
-          if (user.role === 'administrator') userRoleEl.classList.add('admin');
-        }
-      }
-    } catch {
-      // getJson redirects to /login on 401
-    }
-  }
-
-  const btnLogout = document.getElementById('btn-logout');
-  if (btnLogout) {
-    btnLogout.addEventListener('click', async () => {
-      try {
-        await fetch('/api/auth/logout', { method: 'POST' });
-      } finally {
-        window.location.assign('/');
-      }
-    });
-  }
-
   // Initialization
   initAuth();
+  bindLogout();
   btnScan.addEventListener('click', runNow);
   // The "new" tag needs the last run time, which may arrive after the first list
   checkHealth().then(() => { if (shownSignals.length) renderSignals(shownSignals); });
@@ -1255,5 +695,5 @@ document.addEventListener('DOMContentLoaded', () => {
   loadConfig();
   loadSummary();
   loadWatchlist();
-  selectTab('active');
+  selectTab(restoreViewFromUrl());
 });

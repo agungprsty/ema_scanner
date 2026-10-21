@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0f1012">
+  <title>Signal · simple-trade</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/base.css">
+  <link rel="stylesheet" href="/static/app.css">
+
+  <!-- The chart library loads at runtime (see signal.js); warming the connection keeps the chart quick -->
+  <link rel="preconnect" href="https://unpkg.com">
+
+  <style>
+    .back-link { font-size: 13px; color: var(--text-2); }
+    .back-link:hover { color: var(--text); }
+
+    .signal-head { margin-bottom: 16px; }
+    .signal-title { font-size: 20px; font-weight: 600; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+    .signal-sub { font-size: 13px; color: var(--text-3); margin-top: 2px; }
+
+    .chart-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 16px;
+      font-size: 12px;
+      color: var(--text-2);
+      margin-bottom: 8px;
+    }
+    .chart-legend > span { display: inline-flex; align-items: center; gap: 6px; }
+    .swatch { display: inline-block; width: 12px; height: 2px; }
+    .swatch.ema { background: var(--warn); }
+    .swatch.rsi { background: var(--text-2); }
+    .credit { margin-left: auto; color: var(--text-3); }
+    .credit:hover { color: var(--text); }
+    .swatch.delta { height: 8px; width: 8px; background: linear-gradient(90deg, var(--long) 50%, var(--short) 50%); }
+
+    .chart {
+      height: 440px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      margin-bottom: 16px;
+      overflow: hidden;
+    }
+
+    @media (min-width: 768px) {
+      .chart { height: 560px; }
+    }
+
+    .chart-msg {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 0 16px;
+      text-align: center;
+      font-size: 13px;
+      color: var(--text-3);
+    }
+    .chart-msg.err { color: var(--short); }
+
+    .levels {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px 24px;
+    }
+
+    @media (min-width: 640px) {
+      .levels { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    }
+
+    .levels dt { font-size: 12px; color: var(--text-3); }
+    .levels dd { font-size: 15px; margin-top: 2px; overflow-wrap: anywhere; }
+    .levels dd small { font-size: 12px; color: var(--text-3); margin-left: 6px; }
+    .levels .hint { display: block; font-size: 12px; color: var(--text-3); margin-top: 2px; font-family: var(--font-sans); }
+    .levels hr { grid-column: 1 / -1; border: none; border-top: 1px solid var(--line); }
+
+    /* Journal form */
+    .journal {
+      margin-top: 20px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
+    }
+    .journal h3 { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+    .journal-help { font-size: 12px; color: var(--text-3); margin-bottom: 12px; }
+
+    .seg {
+      display: inline-flex;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      overflow: hidden;
+      margin-bottom: 12px;
+    }
+    .seg label { position: relative; }
+    .seg input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+    .seg span {
+      display: inline-flex;
+      align-items: center;
+      height: var(--control-h);
+      padding: 0 14px;
+      font-size: 13px;
+      color: var(--text-2);
+      cursor: pointer;
+      border-left: 1px solid var(--line-strong);
+    }
+    .seg label:first-child span { border-left: none; }
+    .seg input:checked + span { background: var(--surface-2); color: var(--text); font-weight: 500; }
+    .seg input:focus-visible + span { outline: 2px solid var(--entry); outline-offset: -2px; }
+
+    .journal-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      max-width: 560px;
+    }
+    .journal-grid .wide { grid-column: 1 / -1; }
+
+    .journal-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 12px;
+      max-width: 560px;
+    }
+    .journal-result { font-size: 13px; color: var(--text-2); }
+
+    @media (max-width: 599px) {
+      .seg { display: flex; }
+      .seg label { flex: 1; }
+      .seg span { width: 100%; justify-content: center; }
+      .journal-foot .btn { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="topbar">
+      <div class="brand">
+        <a class="brand-name" href="/dashboard">simple-trade</a>
+        <a class="back-link" id="back-link" href="/dashboard">&larr; All signals</a>
+      </div>
+      <div class="user-info">
+        <span class="num user-name" id="user-name"></span>
+        <span class="user-role-badge" id="user-role"></span>
+        <button class="btn btn-quiet" id="btn-logout" type="button">Log out</button>
+      </div>
+    </header>
+
+    <main>
+      <div class="signal-head">
+        <h1 class="signal-title" id="signal-title">Signal</h1>
+        <p class="signal-sub" id="signal-time"></p>
+      </div>
+      <div class="chart-legend" id="chart-legend">
+        <span><i class="swatch ema"></i>EMA 50</span>
+        <span><i class="swatch rsi"></i><span id="legend-rsi">RSI (14)</span></span>
+        <span><i class="swatch delta"></i>Volume delta (taker buy − sell)</span>
+        <a class="credit" href="https://www.tradingview.com/" target="_blank" rel="noopener">Charts by TradingView</a>
+      </div>
+      <div class="chart" id="chart-viewport"></div>
+      <dl class="levels">
+        <div><dt>Entry (limit)</dt><dd class="num" id="detail-entry">–</dd></div>
+        <div><dt>Stop loss</dt><dd class="num is-short" id="detail-sl">–</dd></div>
+        <div><dt>Target</dt><dd class="num is-long" id="detail-tp">–</dd></div>
+        <div><dt>Status</dt><dd id="detail-outcome">–</dd></div>
+        <hr>
+        <div><dt id="detail-rsi-label">RSI</dt><dd class="num" id="detail-rsi">–</dd></div>
+        <div><dt>Risk / reward</dt><dd class="num" id="detail-rr">–</dd></div>
+        <div><dt>Fill</dt><dd class="num" id="detail-fill">–</dd></div>
+        <div><dt>Exit</dt><dd class="num" id="detail-exit">–</dd></div>
+      </dl>
+
+      <form class="journal admin-only" id="journal-form" novalidate>
+        <h3>Your trade</h3>
+        <p class="journal-help">Record whether you took this signal and at what prices, to compare your results with the signal's.</p>
+        <div id="journal-fields">
+          <div class="seg" role="radiogroup" aria-label="Decision">
+            <label><input type="radio" name="journal-status" value=""><span>Not recorded</span></label>
+            <label><input type="radio" name="journal-status" value="TAKEN"><span>Taken</span></label>
+            <label><input type="radio" name="journal-status" value="SKIPPED"><span>Skipped</span></label>
+          </div>
+          <div class="journal-grid">
+            <label class="field" data-taken>
+              <span class="field-label">Entry fill</span>
+              <input type="text" id="journal-entry" inputmode="decimal" autocomplete="off">
+            </label>
+            <label class="field" data-taken>
+              <span class="field-label">Exit fill (leave empty while open)</span>
+              <input type="text" id="journal-exit" inputmode="decimal" autocomplete="off">
+            </label>
+            <label class="field wide">
+              <span class="field-label">Notes</span>
+              <textarea id="journal-notes" rows="2" maxlength="500"></textarea>
+            </label>
+          </div>
+          <div class="journal-foot">
+            <span class="journal-result" id="journal-result" aria-live="polite"></span>
+            <button class="btn btn-primary" id="journal-save" type="submit">Save</button>
+          </div>
+        </div>
+      </form>
+    </main>
+  </div>
+
+  <output class="toast" id="toast" hidden></output>
+
+  <script src="/static/common.js?v=1"></script>
+  <script src="/static/signal.js?v=1"></script>
+</body>
+</html>

@@ -434,6 +434,16 @@ async def test_page_routing_and_navigation(auth_db):
             assert res.status_code == 303
             assert res.headers["location"] == "/dashboard"
 
+        # Signal detail page: same guard as the dashboard
+        unauth_signal = await client.get("/signals/7", follow_redirects=False)
+        assert unauth_signal.status_code == 303
+        assert unauth_signal.headers["location"] == "/login"
+        auth_signal = await client.get("/signals/7", cookies={"st_session": token}, follow_redirects=False)
+        assert auth_signal.status_code == 200
+        assert "no-store" in auth_signal.headers.get("cache-control", "")
+        assert 'id="chart-viewport"' in auth_signal.text
+        assert (await client.get("/signals/not-a-number", cookies={"st_session": token})).status_code == 404
+
         # Unauthenticated / -> 200 Landing Page
         landing = await client.get("/", follow_redirects=False)
         assert landing.status_code == 200
