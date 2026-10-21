@@ -1,144 +1,131 @@
-import logging
+import hashlib
+from unittest.mock import MagicMock
 
 import pytest
-from fastapi.security import HTTPAuthorizationCredentials
 from httpx import ASGITransport, AsyncClient
+from starlette.requests import Request
 
 from src import main
 from src.api import security
-from src.api.exceptions import ServiceUnavailable, Unauthorized
-from src.api.security import api_key_configured, verify_api_key
+from src.api.exceptions import Forbidden, Unauthorized
+from src.api.security import Principal, check_same_origin, get_principal, require_admin
 
 pytestmark = pytest.mark.unit
 
-TEST_API_KEY = "unit_test_secret_key"
+TEST_SESSION_TOKEN = "test_valid_session_token_12345"
+TEST_TOKEN_HASH = hashlib.sha256(TEST_SESSION_TOKEN.encode("utf-8")).hexdigest()
+
+ADMIN_USER = {
+    "id": 1,
+    "email": "admin@example.com",
+    "username": "admin",
+    "role": "administrator",
+    "created_at": "2026-10-21T00:00:00Z",
+}
+
+NORMAL_USER = {
+    "id": 2,
+    "email": "user@example.com",
+    "username": "trader",
+    "role": "user",
+    "created_at": "2026-10-21T00:00:00Z",
+}
+
+
+def _mock_request(
+    method: str = "GET",
+    headers: dict | None = None,
+    cookies: dict | None = None,
+    host: str = "testserver",
+) -> Request:
+    req = MagicMock(spec=Request)
+    req.method = method
+    req.headers = headers or {}
+    req.cookies = cookies or {}
+    req.url = MagicMock()
+    req.url.hostname = host
+    return req
 
 
 @pytest.fixture(autouse=True)
-def api_secret_key(monkeypatch):
-    monkeypatch.setattr(security, "API_SECRET_KEY", TEST_API_KEY)
-    return TEST_API_KEY
+def mock_db_sessions(monkeypatch):
+    sessions = {TEST_TOKEN_HASH: ADMIN_USER}
 
+    async def fake_get_session_user(token_hash: str):
+        return sessions.get(token_hash)
 
-def bearer(token: str) -> HTTPAuthorizationCredentials:
-    return HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
-
-
-@pytest.mark.asyncio
-async def test_verify_api_key_accepts_bearer_token():
-    assert await verify_api_key(bearer(TEST_API_KEY)) is True
+    monkeypatch.setattr(security, "get_session_user", fake_get_session_user)
+    return sessions
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("credentials", [None, bearer(""), bearer("wrong_key"), bearer("ünïcode")])
-async def test_verify_api_key_rejects_invalid_token(credentials):
-    with pytest.raises(Unauthorized):
-        await verify_api_key(credentials)
+async def test_get_principal_with_valid_session_cookie():
+    req = _mock_request(cookies={"st_session": TEST_SESSION_TOKEN})
+    principal = await get_principal(req)
+
+    assert principal.id == 1
+    assert principal.username == "admin"
+    assert principal.role == "administrator"
+    assert principal.via == "session"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("credentials", [None, bearer(""), bearer("anything")])
-async def test_verify_api_key_fails_closed_when_unset(monkeypatch, credentials):
-    monkeypatch.setattr(security, "API_SECRET_KEY", "")
-    with pytest.raises(ServiceUnavailable) as exc:
-        await verify_api_key(credentials)
-    assert exc.value.message == "API key not configured on server"
+async def test_get_principal_fails_when_no_cookie():
+    req = _mock_request(cookies={})
+    with pytest.raises(Unauthorized) as exc:
+        await get_principal(req)
+    assert exc.value.message == "Authentication required"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "configured_key",
-    ["your_secret_api_key_here", "YOUR_SECRET_API_KEY_HERE", "changeme", "secret", "a", "x" * 15],
-)
-async def test_verify_api_key_fails_closed_for_placeholder_or_short_key(monkeypatch, configured_key):
-    monkeypatch.setattr(security, "API_SECRET_KEY", configured_key)
-    with pytest.raises(ServiceUnavailable):
-        await verify_api_key(bearer(configured_key))
+async def test_get_principal_fails_when_session_expired_or_invalid():
+    req = _mock_request(cookies={"st_session": "invalid_or_expired_token"})
+    with pytest.raises(Unauthorized) as exc:
+        await get_principal(req)
+    assert exc.value.message == "Authentication required"
 
 
 @pytest.mark.asyncio
-async def test_verify_api_key_accepts_minimum_length_key(monkeypatch):
-    key = "k" * 16
-    monkeypatch.setattr(security, "API_SECRET_KEY", key)
-    assert await verify_api_key(bearer(key)) is True
+async def test_check_same_origin_validation():
+    req_ok = _mock_request(headers={"origin": "http://testserver:7860"}, host="testserver")
+    check_same_origin(req_ok)  # should not raise
+
+    req_no_origin = _mock_request(headers={}, host="testserver")
+    check_same_origin(req_no_origin)  # non-browser requests allowed
+
+    req_bad = _mock_request(headers={"origin": "https://malicious-site.com"}, host="testserver")
+    with pytest.raises(Forbidden) as exc:
+        check_same_origin(req_bad)
+    assert exc.value.message == "Request rejected"
 
 
-@pytest.mark.parametrize(
-    ("configured_key", "expected"),
-    [
-        ("", False),
-        ("your_secret_api_key_here", False),
-        ("changeme", False),
-        ("short", False),
-        ("x" * 15, False),
-        ("x" * 16, True),
-        (TEST_API_KEY, True),
-    ],
-)
-def test_api_key_configured(monkeypatch, configured_key, expected):
-    monkeypatch.setattr(security, "API_SECRET_KEY", configured_key)
-    assert api_key_configured() is expected
+@pytest.mark.asyncio
+async def test_require_admin_permits_administrator():
+    admin = Principal(id=1, username="admin", role="administrator")
+    assert await require_admin(admin) == admin
 
 
-async def _trigger(headers: dict):
+@pytest.mark.asyncio
+async def test_require_admin_forbids_normal_user():
+    user = Principal(id=2, username="trader", role="user")
+    with pytest.raises(Forbidden) as exc:
+        await require_admin(user)
+    assert exc.value.message == "Administrator only"
+
+
+@pytest.mark.asyncio
+async def test_protected_route_via_client_requires_cookie():
     transport = ASGITransport(app=main.app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        return await client.post("/api/cron/trigger", headers=headers)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        # Without cookie
+        resp = await client.post("/api/cron/trigger")
+        assert resp.status_code == 401
+        assert resp.json()["message"] == "Authentication required"
 
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "headers",
-    [
-        {},
-        {"Authorization": "Bearer wrong_key"},
-        {"Authorization": TEST_API_KEY},
-        {"Authorization": "Basic dXNlcjpwYXNz"},
-        {"X-API-KEY": TEST_API_KEY},  # the old header is no longer accepted
-    ],
-)
-async def test_protected_route_returns_401_envelope(headers):
-    resp = await _trigger(headers)
-    assert resp.status_code == 401
-    assert resp.headers["www-authenticate"] == "Bearer"
-    body = resp.json()
-    assert body["status"] == "error" and body["code"] == 401
-    assert body["message"] == "Invalid or missing API key"
-    assert body["data"] is None and body["errors"] == []
-
-
-@pytest.mark.asyncio
-async def test_protected_route_returns_503_when_unconfigured(monkeypatch):
-    monkeypatch.setattr(security, "API_SECRET_KEY", "")
-    resp = await _trigger({"Authorization": "Bearer anything"})
-    assert resp.status_code == 503
-    assert resp.json()["message"] == "API key not configured on server"
-
-
-async def _run_lifespan(monkeypatch, caplog):
-    async def noop(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr(main, "init_db", noop)
-    monkeypatch.setattr(main, "init_redis", noop)
-    monkeypatch.setattr(main, "close_redis", noop)
-    monkeypatch.setattr(main, "close_db", noop)
-    monkeypatch.setattr(main.cron_scheduler, "start", lambda *args, **kwargs: None)
-    monkeypatch.setattr(main.cron_scheduler, "stop", lambda *args, **kwargs: None)
-
-    with caplog.at_level(logging.WARNING, logger="src.main"):
-        async with main.lifespan(main.app):
-            pass
-    return [r for r in caplog.records if r.levelno == logging.WARNING and "API_SECRET_KEY" in r.getMessage()]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("configured_key", ["", "your_secret_api_key_here", "a"])
-async def test_lifespan_warns_when_api_key_unset(monkeypatch, caplog, configured_key):
-    monkeypatch.setattr(security, "API_SECRET_KEY", configured_key)
-    assert await _run_lifespan(monkeypatch, caplog)
-
-
-@pytest.mark.asyncio
-async def test_lifespan_does_not_warn_when_api_key_configured(monkeypatch, caplog):
-    assert not await _run_lifespan(monkeypatch, caplog)
+        # With admin cookie
+        resp_auth = await client.post(
+            "/api/cron/trigger",
+            cookies={"st_session": TEST_SESSION_TOKEN},
+            headers={"origin": "http://testserver"},
+        )
+        assert resp_auth.status_code != 401

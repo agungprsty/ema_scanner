@@ -237,16 +237,17 @@ async def test_failed_run_is_logged_and_shown_in_status(no_redis, monkeypatch, c
 
 async def test_trigger_endpoint_returns_409_when_busy(fake_redis, runs, monkeypatch):
     from src import main
+    from src.api.security import Principal
 
     fake_redis.store[MANUAL_KEY] = "other-worker"
     monkeypatch.setattr(main, "cron_scheduler", _scheduler())
-    main.app.dependency_overrides[main.verify_api_key] = lambda: True
+    main.app.dependency_overrides[main.require_admin] = lambda: Principal(id=None, username="admin", role="administrator", via="api_key")
     try:
         transport = ASGITransport(app=main.app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             resp = await ac.post("/api/cron/trigger")
     finally:
-        main.app.dependency_overrides.pop(main.verify_api_key, None)
+        main.app.dependency_overrides.pop(main.require_admin, None)
 
     assert resp.status_code == 409
     assert "try again later" in resp.json()["message"]

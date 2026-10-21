@@ -4,11 +4,11 @@ from pathlib import Path
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from src.api.security import Principal, require_admin
 from src.main import app
 
 pytestmark = pytest.mark.unit
 
-API_KEY = "frontend_test_key"
 APP_JS = Path(__file__).resolve().parent.parent / "src" / "static" / "app.js"
 INDEX_HTML = APP_JS.parent / "index.html"
 
@@ -22,14 +22,15 @@ def added_symbols(monkeypatch):
         return {"id": len(calls), "symbol": symbol.strip().upper(), "is_active": True, "notes": notes}
 
     monkeypatch.setattr("src.main.add_watchlist_symbol", mock_add_watchlist_symbol)
-    monkeypatch.setattr("src.api.security.API_SECRET_KEY", API_KEY)
-    return calls
+    app.dependency_overrides[require_admin] = lambda: Principal(id=1, username="admin", role="administrator")
+    yield calls
+    app.dependency_overrides.pop(require_admin, None)
 
 
 async def _post_watchlist(payload: dict):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        return await client.post("/api/watchlist", json=payload, headers={"Authorization": f"Bearer {API_KEY}"})
+        return await client.post("/api/watchlist", json=payload)
 
 
 @pytest.mark.asyncio

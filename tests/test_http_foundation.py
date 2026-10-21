@@ -1,3 +1,4 @@
+import hashlib
 import importlib
 import json
 import logging
@@ -21,7 +22,6 @@ from src.services import redis_client
 
 pytestmark = pytest.mark.unit
 
-TEST_API_KEY = "foundation_test_key_123"
 ORIGIN = "https://app.example.com"
 
 
@@ -79,7 +79,7 @@ def build_app() -> FastAPI:
     async def cached():
         return success([], headers={"Cache-Control": "public, max-age=60"})
 
-    @app.post("/api/protected", dependencies=[Depends(security.verify_api_key)])
+    @app.post("/api/protected", dependencies=[Depends(security.require_admin)])
     async def protected():
         return success(True)
 
@@ -94,7 +94,13 @@ def build_app() -> FastAPI:
 def foundation_settings(monkeypatch):
     monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", False)
     monkeypatch.setattr(settings, "CORS_ORIGINS", [ORIGIN])
-    monkeypatch.setattr(security, "API_SECRET_KEY", TEST_API_KEY)
+
+    async def fake_get_session_user(token_hash):
+        if token_hash == hashlib.sha256(b"admin_cookie").hexdigest():
+            return {"id": 1, "username": "admin", "role": "administrator", "email": "admin@example.com"}
+        return None
+
+    monkeypatch.setattr(security, "get_session_user", fake_get_session_user)
 
 
 def client_for(app: FastAPI, base_url: str = "http://test") -> AsyncClient:
@@ -229,27 +235,20 @@ async def test_unhandled_error_is_500_envelope_with_headers(client, caplog):
     assert logged and logged[0].exc_info
 
 
-async def test_api_key_dependency(client):
+async def test_protected_dependency(client):
     res = await client.post("/api/protected")
-    assert_error(res, 401, "Invalid or missing API key")
+    assert_error(res, 401, "Authentication required")
     assert res.headers["WWW-Authenticate"] == "Bearer"
-    assert (await client.post("/api/protected", headers={"Authorization": "Bearer wrong"})).status_code == 401
-    assert (await client.post("/api/protected", headers={"Authorization": f"Bearer {TEST_API_KEY}"})).status_code == 200
+
+    auth_res = await client.post("/api/protected", cookies={"st_session": "admin_cookie"})
+    assert auth_res.status_code == 200
+
+    invalid_res = await client.post("/api/protected", cookies={"st_session": "wrong_cookie"})
+    assert_error(invalid_res, 401, "Authentication required")
 
 
-async def test_api_key_dependency_fails_closed_when_unset(client, monkeypatch):
-    monkeypatch.setattr(security, "API_SECRET_KEY", "")
-    res = await client.post("/api/protected", headers={"Authorization": "Bearer anything"})
-    assert_error(res, 503, "API key not configured on server")
-
-
-def test_openapi_shows_bearer_and_error_envelope():
+def test_openapi_shows_error_envelope():
     spec = build_app().openapi()
-    assert spec["components"]["securitySchemes"]["HTTPBearer"] == {
-        "type": "http",
-        "scheme": "bearer",
-        "description": "API_SECRET_KEY",
-    }
     responses = spec["paths"]["/api/items"]["post"]["responses"]
     assert responses["4XX"]["content"]["application/json"]["schema"] == {"$ref": "#/components/schemas/ErrorEnvelope"}
     assert "422" not in responses

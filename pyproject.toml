@@ -24,6 +24,7 @@ ignore = [
 ]
 
 [tool.pytest.ini_options]
+pythonpath = ["."]
 asyncio_mode = "auto"
 markers = [
     "unit: Pure unit tests (isolated logic without external services)",

@@ -14,6 +14,7 @@ from sqlalchemy import (
     Integer,
     String,
     UniqueConstraint,
+    delete,
     desc,
     func,
     select,
@@ -21,6 +22,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -29,6 +31,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from src.api.exceptions import Conflict
 from src.config.settings import (
     DATABASE_URL,
     FILL_WINDOW_HOURS,
@@ -216,6 +219,43 @@ class JournalModel(Base):
             "notes": self.notes,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+
+class UserModel(Base):
+    __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint("role IN ('administrator', 'user')", name="ck_users_role"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(String(254), unique=True, nullable=False)
+    username: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False, default="user", server_default="user")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "email": self.email,
+            "username": self.username,
+            "role": self.role,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class SessionModel(Base):
+    __tablename__ = "user_sessions"
+    __table_args__ = (
+        Index("ix_user_sessions_user_id", "user_id"),
+    )
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 def build_signals_insert(signals: list[Signal], timeframe: str = TIMEFRAME):
@@ -932,3 +972,122 @@ async def get_journal_summary() -> dict:
     except Exception as e:
         logger.exception("Failed to summarise trade journal: %s", e)
         return _empty_journal_summary()
+
+
+# User & Session Operations
+async def create_user(email: str, username: str, password_hash: str, role: str = "user") -> dict:
+    if _session_maker is None:
+        raise RuntimeError("Database unavailable")
+    clean_email = email.strip().lower()
+    clean_username = username.strip().lower()
+    user = UserModel(
+        email=clean_email,
+        username=clean_username,
+        password_hash=password_hash,
+        role=role,
+    )
+    try:
+        async with _session_maker() as session:
+            session.add(user)
+            await session.commit()
+            await session.refresh(user)
+            return user.to_dict()
+    except IntegrityError as e:
+        raise Conflict("Email or username is already registered") from e
+
+
+async def get_user_by_email(email: str) -> dict | None:
+    if _session_maker is None:
+        raise RuntimeError("Database unavailable")
+    clean_email = email.strip().lower()
+    async with _session_maker() as session:
+        stmt = select(UserModel).where(UserModel.email == clean_email)
+        user = (await session.execute(stmt)).scalar_one_or_none()
+        if not user:
+            return None
+        return {
+            "id": user.id,
+            "email": user.email,
+            "username": user.username,
+            "password_hash": user.password_hash,
+            "role": user.role,
+            "created_at": user.created_at.isoformat() if user.created_at else None,
+        }
+
+
+async def update_user(user_id: int, **values) -> dict | None:
+    if _session_maker is None:
+        raise RuntimeError("Database unavailable")
+    async with _session_maker() as session:
+        stmt = select(UserModel).where(UserModel.id == user_id)
+        user = (await session.execute(stmt)).scalar_one_or_none()
+        if not user:
+            return None
+        for k, v in values.items():
+            setattr(user, k, v)
+        await session.commit()
+        await session.refresh(user)
+        return user.to_dict()
+
+
+async def create_session(token_hash: str, user_id: int, expires_at: datetime) -> None:
+    if _session_maker is None:
+        raise RuntimeError("Database unavailable")
+    async with _session_maker() as session:
+        session_row = SessionModel(
+            token_hash=token_hash,
+            user_id=user_id,
+            expires_at=expires_at,
+        )
+        session.add(session_row)
+        await session.commit()
+
+
+async def get_session_user(token_hash: str) -> dict | None:
+    if _session_maker is None:
+        raise RuntimeError("Database unavailable")
+    async with _session_maker() as session:
+        stmt = (
+            select(UserModel)
+            .join(SessionModel, SessionModel.user_id == UserModel.id)
+            .where(
+                SessionModel.token_hash == token_hash,
+                SessionModel.expires_at > func.now(),
+            )
+        )
+        user = (await session.execute(stmt)).scalar_one_or_none()
+        return user.to_dict() if user else None
+
+
+async def cleanup_expired_sessions() -> int:
+    """Delete expired sessions.
+    # shortcut: cleanup only on login, move to the cron job if the table grows
+    """
+    if _session_maker is None:
+        return 0
+    async with _session_maker() as session:
+        stmt = delete(SessionModel).where(SessionModel.expires_at < func.now())
+        res = await session.execute(stmt)
+        await session.commit()
+        return res.rowcount
+
+
+async def delete_session(token_hash: str) -> bool:
+    if _session_maker is None:
+        return False
+    async with _session_maker() as session:
+        stmt = delete(SessionModel).where(SessionModel.token_hash == token_hash)
+        res = await session.execute(stmt)
+        await session.commit()
+        return res.rowcount > 0
+
+
+async def delete_user_sessions(user_id: int) -> int:
+    if _session_maker is None:
+        return 0
+    async with _session_maker() as session:
+        stmt = delete(SessionModel).where(SessionModel.user_id == user_id)
+        res = await session.execute(stmt)
+        await session.commit()
+        return res.rowcount
+

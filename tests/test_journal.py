@@ -1,3 +1,4 @@
+import hashlib
 from types import SimpleNamespace
 
 import pytest
@@ -9,7 +10,7 @@ from src.services import db
 
 pytestmark = pytest.mark.unit
 
-API_KEY = "journal_test_key_123"
+ADMIN_SESSION = "journal_test_session_token"
 
 
 @pytest.fixture
@@ -33,19 +34,24 @@ def journal_store(monkeypatch):
     async def fake_get_journal_summary():
         return db._empty_journal_summary()
 
+    async def fake_get_session_user(token_hash):
+        if token_hash == hashlib.sha256(ADMIN_SESSION.encode("utf-8")).hexdigest():
+            return {"id": 1, "username": "admin", "role": "administrator", "email": "admin@example.com"}
+        return None
+
     monkeypatch.setattr(main, "upsert_journal_entry", fake_upsert)
     monkeypatch.setattr(main, "delete_journal_entry", fake_delete)
     monkeypatch.setattr(main, "get_journal", fake_get_journal)
     monkeypatch.setattr(main, "get_journal_summary", fake_get_journal_summary)
-    monkeypatch.setattr(security, "API_SECRET_KEY", API_KEY)
+    monkeypatch.setattr(security, "get_session_user", fake_get_session_user)
     return store
 
 
 async def _request(method, url, json=None, auth=True):
-    headers = {"Authorization": f"Bearer {API_KEY}"} if auth else {}
+    cookies = {"st_session": ADMIN_SESSION} if auth else {}
     transport = ASGITransport(app=main.app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        return await client.request(method, url, json=json, headers=headers)
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=cookies) as client:
+        return await client.request(method, url, json=json)
 
 
 @pytest.mark.asyncio

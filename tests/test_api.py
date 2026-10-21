@@ -1,3 +1,5 @@
+import hashlib
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -7,8 +9,7 @@ from src.services import db
 
 pytestmark = pytest.mark.unit
 
-TEST_API_KEY = "test_api_secret_key"
-AUTH_HEADERS = {"Authorization": f"Bearer {TEST_API_KEY}"}
+AUTH_COOKIES = {"st_session": "test_api_session_token"}
 
 SIGNAL = {
     "id": 1,
@@ -22,12 +23,6 @@ SIGNAL = {
 
 
 @pytest.fixture(autouse=True)
-def api_secret_key(monkeypatch):
-    monkeypatch.setattr("src.api.security.API_SECRET_KEY", TEST_API_KEY)
-    return TEST_API_KEY
-
-
-@pytest.fixture(autouse=True)
 def mock_db_services(monkeypatch):
     watchlist_store = {
         "BTCUSDT": {"symbol": "BTCUSDT", "is_active": True, "notes": "Default"},
@@ -37,6 +32,13 @@ def mock_db_services(monkeypatch):
 
     async def mock_is_db_connected():
         return True
+
+    async def fake_get_session_user(token_hash):
+        if token_hash == hashlib.sha256(b"test_api_session_token").hexdigest():
+            return {"id": 1, "username": "admin", "role": "administrator", "email": "admin@example.com"}
+        return None
+
+    monkeypatch.setattr("src.api.security.get_session_user", fake_get_session_user)
 
     async def mock_is_redis_connected():
         return True
@@ -146,7 +148,7 @@ async def test_info_endpoint():
 @pytest.mark.asyncio
 async def test_watchlist_lifecycle():
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test", headers=AUTH_HEADERS) as client:
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=AUTH_COOKIES) as client:
         # 1. List
         resp = await client.get("/api/watchlist")
         assert resp.status_code == 200
@@ -275,7 +277,7 @@ async def test_cron_trigger_success_and_error(monkeypatch):
 
     monkeypatch.setattr("src.main.cron_scheduler.trigger_now", fake_trigger)
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test", headers=AUTH_HEADERS) as client:
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=AUTH_COOKIES) as client:
         ok = await client.post("/api/cron/trigger")
         assert ok.status_code == 200
         assert ok.json()["data"]["result"]["new_signals"] == 2
@@ -304,54 +306,33 @@ async def test_cron_trigger_success_and_error(monkeypatch):
 )
 async def test_removed_routes_are_gone(method, path):
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test", headers=AUTH_HEADERS) as client:
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=AUTH_COOKIES) as client:
         resp = await client.request(method, path)
         assert resp.status_code == 404
         assert resp.json()["status"] == "error"
 
 
 @pytest.mark.asyncio
-async def test_api_key_protection():
+async def test_session_cookie_protection():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         fail_resp = await client.post("/api/watchlist", json={"symbol": "KEYTESTUSDT"})
         assert fail_resp.status_code == 401
+        assert fail_resp.json()["message"] == "Authentication required"
 
-        ok_resp = await client.post("/api/watchlist", json={"symbol": "KEYTESTUSDT"}, headers=AUTH_HEADERS)
+        ok_resp = await client.post("/api/watchlist", json={"symbol": "KEYTESTUSDT"}, cookies=AUTH_COOKIES)
         assert ok_resp.status_code == 200
 
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("key", ["", "your_secret_api_key_here"])
-async def test_api_key_unconfigured_returns_503(monkeypatch, key):
-    monkeypatch.setattr("src.api.security.API_SECRET_KEY", key)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/api/watchlist", json={"symbol": "KEYTESTUSDT"}, headers=AUTH_HEADERS)
-        assert resp.status_code == 503
-        assert resp.json()["message"] == "API key not configured on server"
-
-        no_header_resp = await client.post("/api/cron/trigger")
-        assert no_header_resp.status_code == 503
-
-
-@pytest.mark.asyncio
-async def test_api_key_wrong_returns_401():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/api/watchlist", json={"symbol": "KEYTESTUSDT"}, headers={"Authorization": "Bearer wrong_key"}
+        wrong_resp = await client.post(
+            "/api/watchlist", json={"symbol": "KEYTESTUSDT"}, cookies={"st_session": "wrong_cookie"}
         )
-        assert resp.status_code == 401
-        assert resp.headers["www-authenticate"] == "Bearer"
-        assert resp.json()["message"] == "Invalid or missing API key"
+        assert wrong_resp.status_code == 401
+        assert wrong_resp.json()["message"] == "Authentication required"
 
 
-def test_openapi_documents_envelopes_and_bearer():
+def test_openapi_documents_envelopes():
     spec = app.openapi()
     assert spec["info"]["title"] == "Simpletrade"
-    assert spec["components"]["securitySchemes"]["HTTPBearer"]["scheme"] == "bearer"
-    assert spec["paths"]["/api/cron/trigger"]["post"]["security"] == [{"HTTPBearer": []}]
     signals = spec["paths"]["/api/signals"]["get"]
     params = {p["name"] for p in signals["parameters"]}
     assert {"page", "per_page", "status", "date"} <= params and not {"limit", "offset"} & params

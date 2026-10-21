@@ -22,7 +22,7 @@ from src.api.exceptions import (
 )
 from src.api.log import configure_logging
 from src.api.responses import Envelope, PageEnvelope, paginated, success
-from src.api.security import API_KEY_MIN_LENGTH, api_key_configured, verify_api_key
+from src.api.security import require_admin
 from src.config.settings import (
     DRY_RUN,
     FILL_WINDOW_CANDLES,
@@ -83,12 +83,6 @@ def _get_client():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if not api_key_configured():
-        logger.warning(
-            "API_SECRET_KEY is unset, a placeholder, or shorter than %d characters; "
-            "protected endpoints are disabled and will return 503",
-            API_KEY_MIN_LENGTH,
-        )
     await init_db()
     await init_redis()
     cron_scheduler.start(_get_client)
@@ -212,7 +206,7 @@ async def list_watchlist(active_only: bool = False):
     return success(await get_watchlist(active_only=active_only))
 
 
-@app.post("/api/watchlist", dependencies=[Depends(verify_api_key)], response_model=Envelope[dict])
+@app.post("/api/watchlist", dependencies=[Depends(require_admin)], response_model=Envelope[dict])
 async def add_symbol_to_watchlist(body: WatchlistAddRequest):
     item = await add_watchlist_symbol(symbol=body.symbol, notes=body.notes)
     if not item:
@@ -220,7 +214,7 @@ async def add_symbol_to_watchlist(body: WatchlistAddRequest):
     return success(item, "Symbol added to watchlist")
 
 
-@app.delete("/api/watchlist/{symbol}", dependencies=[Depends(verify_api_key)], response_model=Envelope[dict])
+@app.delete("/api/watchlist/{symbol}", dependencies=[Depends(require_admin)], response_model=Envelope[dict])
 async def remove_symbol_from_watchlist(symbol: str):
     ok = await delete_watchlist_symbol(symbol=symbol)
     if not ok:
@@ -228,7 +222,7 @@ async def remove_symbol_from_watchlist(symbol: str):
     return success({"symbol": symbol}, "Symbol removed from watchlist")
 
 
-@app.patch("/api/watchlist/{symbol}/toggle", dependencies=[Depends(verify_api_key)], response_model=Envelope[dict])
+@app.patch("/api/watchlist/{symbol}/toggle", dependencies=[Depends(require_admin)], response_model=Envelope[dict])
 async def toggle_symbol_status(symbol: str, body: WatchlistToggleRequest):
     ok = await toggle_watchlist_symbol(symbol=symbol, is_active=body.is_active)
     if not ok:
@@ -304,7 +298,7 @@ async def journal_summary_endpoint():
     return success(await get_journal_summary())
 
 
-@app.put("/api/signals/{signal_id}/journal", dependencies=[Depends(verify_api_key)], response_model=Envelope[dict])
+@app.put("/api/signals/{signal_id}/journal", dependencies=[Depends(require_admin)], response_model=Envelope[dict])
 async def save_journal_entry(signal_id: int, body: JournalRequest):
     try:
         item = await upsert_journal_entry(
@@ -321,7 +315,7 @@ async def save_journal_entry(signal_id: int, body: JournalRequest):
     return success(item, "Journal entry saved")
 
 
-@app.delete("/api/signals/{signal_id}/journal", dependencies=[Depends(verify_api_key)], response_model=Envelope[None])
+@app.delete("/api/signals/{signal_id}/journal", dependencies=[Depends(require_admin)], response_model=Envelope[None])
 async def remove_journal_entry(signal_id: int):
     if not await delete_journal_entry(signal_id):
         raise NotFound("No journal entry for this signal")
@@ -422,7 +416,7 @@ async def get_cron_scheduler_status():
     return success(cron_scheduler.get_status())
 
 
-@app.post("/api/cron/trigger", dependencies=[Depends(verify_api_key)], response_model=Envelope[dict])
+@app.post("/api/cron/trigger", dependencies=[Depends(require_admin)], response_model=Envelope[dict])
 async def trigger_cron_execution():
     res = await cron_scheduler.trigger_now()
     if res.get("status") in ("skipped", "busy"):
