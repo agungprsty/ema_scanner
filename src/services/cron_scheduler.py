@@ -230,9 +230,10 @@ class Scheduler:
             result = await run_job(client)
         except Exception as e:
             self._last_status = "failed"
-            self._last_error = str(e)
+            # Exception text can hold hosts, SQL or URLs and status is public, so only the class name leaves the log
+            self._last_error = type(e).__name__
             logger.exception("[CRON] Job failed: %s", e)
-            return {"status": "error", "message": str(e)}
+            return {"status": "error", "message": "Scan failed, see server logs"}
 
         self._last_status = "success"
         self._last_error = None

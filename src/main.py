@@ -1,20 +1,29 @@
 import asyncio
 import logging
-import secrets
 import time
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 
 import pandas as pd
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Depends, FastAPI, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
+from src.api import setup_http
+from src.api.exceptions import (
+    AppException,
+    BadGateway,
+    BadRequest,
+    Conflict,
+    NotFound,
+    ServiceUnavailable,
+    UnprocessableEntity,
+)
+from src.api.log import configure_logging
+from src.api.responses import Envelope, PageEnvelope, paginated, success
+from src.api.security import API_KEY_MIN_LENGTH, api_key_configured, verify_api_key
 from src.config.settings import (
-    API_SECRET_KEY,
-    CORS_ORIGINS,
     DRY_RUN,
     FILL_WINDOW_CANDLES,
     INTERVAL_MS,
@@ -39,11 +48,13 @@ from src.services.db import (
     delete_journal_entry,
     delete_watchlist_symbol,
     get_journal,
+    get_journal_summary,
     get_signal,
     get_watchlist,
     init_db,
     is_db_connected,
     list_signals,
+    signal_conditions,
     signal_stats,
     toggle_watchlist_symbol,
     upsert_journal_entry,
@@ -57,11 +68,7 @@ from src.services.redis_client import (
 )
 from src.strategy.rsi import compute_rsi
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
+configure_logging()
 logger = logging.getLogger(__name__)
 
 _client = None
@@ -74,22 +81,13 @@ def _get_client():
     return _client
 
 
-_API_KEY_MIN_LENGTH = 16
-_API_KEY_PLACEHOLDERS = frozenset({"your_secret_api_key_here", "changeme", "change_me", "secret", "password"})
-
-
-def _api_key_configured() -> bool:
-    key = API_SECRET_KEY or ""
-    return len(key) >= _API_KEY_MIN_LENGTH and key.lower() not in _API_KEY_PLACEHOLDERS
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if not _api_key_configured():
+    if not api_key_configured():
         logger.warning(
             "API_SECRET_KEY is unset, a placeholder, or shorter than %d characters; "
             "protected endpoints are disabled and will return 503",
-            _API_KEY_MIN_LENGTH,
+            API_KEY_MIN_LENGTH,
         )
     await init_db()
     await init_redis()
@@ -103,42 +101,13 @@ async def lifespan(app: FastAPI):
 APP_VERSION = "3.0.0"
 
 app = FastAPI(
-    title="Crossline",
+    title="Simpletrade",
     description="Binance Futures RSI 28/72 limit-entry scanner with PostgreSQL, Redis and a per-candle scheduler",
     version=APP_VERSION,
     lifespan=lifespan,
 )
 
-_is_wildcard = CORS_ORIGINS == ["*"]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_credentials=not _is_wildcard,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-async def verify_api_key(
-    x_api_key: Annotated[str | None, Header(alias="X-API-KEY")] = None,
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
-) -> bool:
-    if not _api_key_configured():
-        raise HTTPException(status_code=503, detail="API key not configured on server")
-
-    token = None
-    if x_api_key:
-        token = x_api_key
-    elif authorization and authorization.lower().startswith("bearer "):
-        token = authorization[7:].strip()
-
-    if not token or not secrets.compare_digest(token.encode("utf-8"), API_SECRET_KEY.encode("utf-8")):
-        raise HTTPException(
-            status_code=401,
-            detail="Unauthorized: Invalid or missing API Key",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return True
+setup_http(app)
 
 app.mount("/static", StaticFiles(directory="src/static"), name="static")
 
@@ -163,14 +132,6 @@ class JournalRequest(BaseModel):
         if self.exit_fill is not None and self.entry_fill is None:
             raise ValueError("exit_fill requires entry_fill")
         return self
-
-
-class SignalsHistoryResponse(BaseModel):
-    total: int
-    limit: int
-    offset: int
-    summary: dict = {}
-    signals: list[dict]
 
 
 class SummaryResponse(BaseModel):
@@ -211,11 +172,11 @@ async def root():
     return FileResponse("src/static/index.html")
 
 
-@app.get("/api/info")
+@app.get("/api/info", response_model=Envelope[dict])
 async def get_info():
-    return {
+    return success({
         "status": "running",
-        "app": "Crossline",
+        "app": "Simpletrade",
         "version": APP_VERSION,
         "mode": "DRY_RUN" if DRY_RUN else "PRODUCTION",
         "timeframe": TIMEFRAME,
@@ -232,52 +193,47 @@ async def get_info():
         },
         "max_symbols": MAX_SYMBOLS,
         "cron": cron_scheduler.get_status(),
-    }
+    })
 
 
-@app.get("/api/health", response_model=HealthResponse)
+# Always 200, even when degraded: the deploy gate greps the body for "status":"healthy"
+@app.get("/api/health", response_model=Envelope[HealthResponse])
 async def health():
     db_ok = await is_db_connected()
     redis_ok = await is_redis_connected()
     cron_info = cron_scheduler.get_status()
     status_str = "healthy" if (db_ok and redis_ok) else "degraded"
-    return HealthResponse(
-        status=status_str,
-        database=db_ok,
-        redis=redis_ok,
-        cron=cron_info,
-    )
+    return success(HealthResponse(status=status_str, database=db_ok, redis=redis_ok, cron=cron_info))
 
 
 # Watchlist Endpoints
-@app.get("/api/watchlist")
+@app.get("/api/watchlist", response_model=Envelope[list[dict]])
 async def list_watchlist(active_only: bool = False):
-    items = await get_watchlist(active_only=active_only)
-    return {"watchlist": items, "count": len(items)}
+    return success(await get_watchlist(active_only=active_only))
 
 
-@app.post("/api/watchlist", dependencies=[Depends(verify_api_key)])
+@app.post("/api/watchlist", dependencies=[Depends(verify_api_key)], response_model=Envelope[dict])
 async def add_symbol_to_watchlist(body: WatchlistAddRequest):
     item = await add_watchlist_symbol(symbol=body.symbol, notes=body.notes)
     if not item:
-        raise HTTPException(status_code=400, detail="Failed to add symbol to watchlist")
-    return {"status": "success", "item": item}
+        raise BadRequest("Failed to add symbol to watchlist")
+    return success(item, "Symbol added to watchlist")
 
 
-@app.delete("/api/watchlist/{symbol}", dependencies=[Depends(verify_api_key)])
+@app.delete("/api/watchlist/{symbol}", dependencies=[Depends(verify_api_key)], response_model=Envelope[dict])
 async def remove_symbol_from_watchlist(symbol: str):
     ok = await delete_watchlist_symbol(symbol=symbol)
     if not ok:
-        raise HTTPException(status_code=404, detail="Symbol not found in watchlist")
-    return {"status": "success", "deleted": symbol}
+        raise NotFound("Symbol not found in watchlist")
+    return success({"symbol": symbol}, "Symbol removed from watchlist")
 
 
-@app.patch("/api/watchlist/{symbol}/toggle", dependencies=[Depends(verify_api_key)])
+@app.patch("/api/watchlist/{symbol}/toggle", dependencies=[Depends(verify_api_key)], response_model=Envelope[dict])
 async def toggle_symbol_status(symbol: str, body: WatchlistToggleRequest):
     ok = await toggle_watchlist_symbol(symbol=symbol, is_active=body.is_active)
     if not ok:
-        raise HTTPException(status_code=404, detail="Symbol not found in watchlist")
-    return {"status": "success", "symbol": symbol, "is_active": body.is_active}
+        raise NotFound("Symbol not found in watchlist")
+    return success({"symbol": symbol, "is_active": body.is_active}, "Symbol updated")
 
 
 # Chart candles: upstream budget and single-flight shared by every chart request
@@ -317,27 +273,38 @@ async def _single_flight(key: tuple, factory):
 
 
 # Single Signal Detail
-@app.get("/api/signals/{signal_id}")
+@app.get("/api/signals/{signal_id}", response_model=Envelope[dict])
 async def get_single_signal(signal_id: int):
     sig = await get_signal(signal_id)
     if not sig:
-        raise HTTPException(status_code=404, detail="Signal not found")
-    return sig
+        raise NotFound("Signal not found")
+    return success(sig)
+
+
+# Upper bound keeps (page - 1) * per_page inside Postgres' bigint OFFSET
+Page = Annotated[int, Query(ge=1, le=1_000_000, description="Page number, from 1")]
+PerPage = Annotated[int, Query(ge=1, le=200, description="Items per page")]
 
 
 # Trade Journal Endpoints
-@app.get("/api/journal")
+@app.get("/api/journal", response_model=PageEnvelope[dict])
 async def list_journal(
     status: Annotated[Literal["TAKEN", "SKIPPED"] | None, Query(description="TAKEN or SKIPPED")] = None,
     symbol: Annotated[str | None, Query(max_length=30, description="Filter by symbol")] = None,
-    limit: Annotated[int, Query(ge=1, le=100)] = 50,
-    offset: Annotated[int, Query(ge=0)] = 0,
+    page: Page = 1,
+    per_page: PerPage = 50,
 ):
-    items, total, summary = await get_journal(status=status, symbol=symbol, limit=limit, offset=offset)
-    return {"total": total, "limit": limit, "offset": offset, "summary": summary, "entries": items}
+    items, total = await get_journal(status=status, symbol=symbol, limit=per_page, offset=(page - 1) * per_page)
+    return paginated(items, total, page, per_page)
 
 
-@app.put("/api/signals/{signal_id}/journal", dependencies=[Depends(verify_api_key)])
+@app.get("/api/journal/summary", response_model=Envelope[dict])
+async def journal_summary_endpoint():
+    """Summary across every journal entry, unfiltered, so the comparison is stable while browsing."""
+    return success(await get_journal_summary())
+
+
+@app.put("/api/signals/{signal_id}/journal", dependencies=[Depends(verify_api_key)], response_model=Envelope[dict])
 async def save_journal_entry(signal_id: int, body: JournalRequest):
     try:
         item = await upsert_journal_entry(
@@ -348,17 +315,17 @@ async def save_journal_entry(signal_id: int, body: JournalRequest):
             notes=body.notes.strip(),
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail="Failed to save journal entry") from exc
+        raise AppException("Failed to save journal entry", code=500) from exc
     if item is None:
-        raise HTTPException(status_code=404, detail="Signal not found")
-    return item
+        raise NotFound("Signal not found")
+    return success(item, "Journal entry saved")
 
 
-@app.delete("/api/signals/{signal_id}/journal", dependencies=[Depends(verify_api_key)])
+@app.delete("/api/signals/{signal_id}/journal", dependencies=[Depends(verify_api_key)], response_model=Envelope[None])
 async def remove_journal_entry(signal_id: int):
     if not await delete_journal_entry(signal_id):
-        raise HTTPException(status_code=404, detail="No journal entry for this signal")
-    return {"status": "success"}
+        raise NotFound("No journal entry for this signal")
+    return success(message="Journal entry deleted")
 
 
 # Candles framing one signal's trade, with RSI, for its chart
@@ -377,7 +344,7 @@ def _signal_candle_window(sig: dict, now_ms: int) -> tuple[int, int, bool]:
     """
     interval_ms = INTERVAL_MS.get(sig.get("timeframe"))
     if interval_ms is None:
-        raise HTTPException(status_code=500, detail="Signal has an unsupported timeframe")
+        raise AppException("Signal has an unsupported timeframe", code=500)
     start_ms = int(sig["signal_candle_ms"]) - SIGNAL_CANDLES_BEFORE * interval_ms
     closed_ms = sig.get("closed_ms")
     if sig.get("status") in ACTIVE_STATUSES or closed_ms is None:
@@ -409,9 +376,9 @@ async def _load_signal_chart(sig: dict, start_ms: int, end_ms: int, cache_key: s
     if cached:
         return cached
     if await get_cached_json(miss_key):
-        raise HTTPException(status_code=502, detail="Failed to load candle data from upstream")
+        raise BadGateway("Failed to load candle data from upstream")
     if not _consume_klines_budget():
-        raise HTTPException(status_code=503, detail="Chart data temporarily unavailable, retry later")
+        raise ServiceUnavailable("Chart data temporarily unavailable, retry later", headers={"Retry-After": str(KLINES_BUDGET_WINDOW)})
 
     fetch_from = start_ms - SIGNAL_RSI_WARMUP * INTERVAL_MS[sig["timeframe"]]
     try:
@@ -424,18 +391,18 @@ async def _load_signal_chart(sig: dict, start_ms: int, end_ms: int, cache_key: s
         candles = None
     if not candles:
         await set_cached_json(miss_key, {"miss": True}, ttl=KLINES_MISS_TTL)
-        raise HTTPException(status_code=502, detail="Failed to load candle data from upstream")
+        raise BadGateway("Failed to load candle data from upstream")
 
     payload = _chart_payload(sig, candles, start_ms)
     await set_cached_json(cache_key, payload, ttl=ttl)
     return payload
 
 
-@app.get("/api/signals/{signal_id}/chart")
-async def get_signal_chart(signal_id: int, response: Response):
+@app.get("/api/signals/{signal_id}/chart", response_model=Envelope[dict])
+async def get_signal_chart(signal_id: int):
     sig = await get_signal(signal_id)
     if not sig:
-        raise HTTPException(status_code=404, detail="Signal not found")
+        raise NotFound("Signal not found")
 
     start_ms, end_ms, final = _signal_candle_window(sig, int(time.time() * 1000))
     ttl = SIGNAL_CANDLES_FINAL_TTL if final else KLINES_CACHE_TTL
@@ -444,31 +411,29 @@ async def get_signal_chart(signal_id: int, response: Response):
         ("signal-chart", signal_id, final),
         lambda: _load_signal_chart(sig, start_ms, end_ms, cache_key, ttl),
     )
-    if final:
-        # Only a closed window is immutable; a live one must refetch to show new candles
-        response.headers["Cache-Control"] = f"public, max-age={ttl}"
-    return {**payload, "final": final}
+    # Only a closed window is immutable; a live one must refetch to show new candles
+    headers = {"Cache-Control": f"public, max-age={ttl}"} if final else None
+    return success({**payload, "final": final}, headers=headers)
 
 
 # Cron Scheduler Management Endpoints
-@app.get("/api/cron/status")
+@app.get("/api/cron/status", response_model=Envelope[dict])
 async def get_cron_scheduler_status():
-    return cron_scheduler.get_status()
+    return success(cron_scheduler.get_status())
 
 
-@app.post("/api/cron/trigger", dependencies=[Depends(verify_api_key)])
+@app.post("/api/cron/trigger", dependencies=[Depends(verify_api_key)], response_model=Envelope[dict])
 async def trigger_cron_execution():
     res = await cron_scheduler.trigger_now()
     if res.get("status") in ("skipped", "busy"):
-        raise HTTPException(status_code=409, detail=res.get("message", "Cron job is busy"))
+        raise Conflict(res.get("message", "Cron job is busy"))
     if res.get("status") == "error":
-        raise HTTPException(status_code=503, detail=res.get("message", "Job failed"))
+        raise ServiceUnavailable("Scan failed, see server logs")
     summary = await signal_stats()
-    return {"status": "success", "result": res, "summary": summary}
+    return success({"result": res, "summary": summary}, "Scan finished")
 
 
-@app.get("/api/signals", response_model=SignalsHistoryResponse)
-async def list_signals_endpoint(
+def signal_filters(
     status: Annotated[str | None, Query(max_length=100, description="Comma-separated statuses, e.g. PENDING,OPEN")] = None,
     side: Annotated[str | None, Query(max_length=5, description="Filter by side (LONG/SHORT)")] = None,
     symbol: Annotated[str | None, Query(max_length=30, description="Filter by symbol")] = None,
@@ -476,32 +441,33 @@ async def list_signals_endpoint(
     date: Annotated[str | None, Query(description="WIB day (YYYY-MM-DD)")] = None,
     start_date: Annotated[str | None, Query(description="First WIB day (YYYY-MM-DD)")] = None,
     end_date: Annotated[str | None, Query(description="Last WIB day, inclusive (YYYY-MM-DD)")] = None,
-    limit: Annotated[int, Query(ge=1, le=100, description="Items per page")] = 50,
-    offset: Annotated[int, Query(ge=0, description="Page offset")] = 0,
-):
+) -> dict:
+    """Signal filters shared by the list and its summary, so both describe the same signals."""
+    filters = {
+        "status": status,
+        "side": side,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "date": date,
+        "start_date": start_date,
+        "end_date": end_date,
+    }
     try:
-        records, total, summary = await list_signals(
-            status=status,
-            side=side,
-            symbol=symbol,
-            timeframe=timeframe,
-            date=date,
-            start_date=start_date,
-            end_date=end_date,
-            limit=limit,
-            offset=offset,
-        )
+        signal_conditions(**filters)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail="Dates must be YYYY-MM-DD") from exc
-    return SignalsHistoryResponse(
-        total=total,
-        limit=limit,
-        offset=offset,
-        summary=summary,
-        signals=records,
-    )
+        raise UnprocessableEntity("Dates must be YYYY-MM-DD") from exc
+    return filters
 
 
-@app.get("/api/summary", response_model=SummaryResponse)
-async def signals_summary():
-    return SummaryResponse(**await signal_stats())
+SignalFilters = Annotated[dict, Depends(signal_filters)]
+
+
+@app.get("/api/signals", response_model=PageEnvelope[dict])
+async def list_signals_endpoint(filters: SignalFilters, page: Page = 1, per_page: PerPage = 50):
+    records, total, _ = await list_signals(**filters, limit=per_page, offset=(page - 1) * per_page)
+    return paginated(records, total, page, per_page)
+
+
+@app.get("/api/summary", response_model=Envelope[SummaryResponse])
+async def signals_summary(filters: SignalFilters):
+    return success(SummaryResponse(**await signal_stats(signal_conditions(**filters))))

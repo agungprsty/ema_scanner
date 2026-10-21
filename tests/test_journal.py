@@ -4,6 +4,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from src import main
+from src.api import security
 from src.services import db
 
 pytestmark = pytest.mark.unit
@@ -27,17 +28,21 @@ def journal_store(monkeypatch):
 
     async def fake_get_journal(status=None, symbol=None, limit=50, offset=0):
         store["query"] = (status, symbol, limit, offset)
-        return [], 0, db._empty_journal_summary()
+        return [{"id": 9, "journal": {"status": "TAKEN"}}], 31
+
+    async def fake_get_journal_summary():
+        return db._empty_journal_summary()
 
     monkeypatch.setattr(main, "upsert_journal_entry", fake_upsert)
     monkeypatch.setattr(main, "delete_journal_entry", fake_delete)
     monkeypatch.setattr(main, "get_journal", fake_get_journal)
-    monkeypatch.setattr(main, "API_SECRET_KEY", API_KEY)
+    monkeypatch.setattr(main, "get_journal_summary", fake_get_journal_summary)
+    monkeypatch.setattr(security, "API_SECRET_KEY", API_KEY)
     return store
 
 
 async def _request(method, url, json=None, auth=True):
-    headers = {"X-API-KEY": API_KEY} if auth else {}
+    headers = {"Authorization": f"Bearer {API_KEY}"} if auth else {}
     transport = ASGITransport(app=main.app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         return await client.request(method, url, json=json, headers=headers)
@@ -50,6 +55,7 @@ async def test_save_taken_entry(journal_store):
         {"status": "TAKEN", "entry_fill": 100.5, "exit_fill": 104, "notes": "  late fill  "},
     )
     assert resp.status_code == 200
+    assert resp.json()["data"] == {"id": 7, "journal": {"status": "TAKEN"}}
     assert journal_store["saved"] == [(7, "TAKEN", 100.5, 104.0, "late fill")]
 
 
@@ -68,6 +74,7 @@ async def test_save_taken_entry(journal_store):
 async def test_save_rejects_invalid_payload(journal_store, payload):
     resp = await _request("PUT", "/api/signals/7/journal", payload)
     assert resp.status_code == 422
+    assert resp.json()["message"] == "Validation failed" and resp.json()["errors"]
     assert journal_store["saved"] == []
 
 
@@ -82,17 +89,42 @@ async def test_save_requires_api_key(journal_store):
 
 @pytest.mark.asyncio
 async def test_unknown_signal_returns_404(journal_store):
-    assert (await _request("PUT", "/api/signals/404/journal", {"status": "SKIPPED"})).status_code == 404
-    assert (await _request("DELETE", "/api/signals/404/journal")).status_code == 404
+    resp = await _request("PUT", "/api/signals/404/journal", {"status": "SKIPPED"})
+    assert resp.status_code == 404 and resp.json()["message"] == "Signal not found"
+    resp = await _request("DELETE", "/api/signals/404/journal")
+    assert resp.status_code == 404 and resp.json()["message"] == "No journal entry for this signal"
+
+
+@pytest.mark.asyncio
+async def test_delete_entry(journal_store):
+    resp = await _request("DELETE", "/api/signals/7/journal")
+    assert resp.status_code == 200
+    assert resp.json()["data"] is None and journal_store["deleted"] == [7]
 
 
 @pytest.mark.asyncio
 async def test_list_journal_passes_filters(journal_store):
-    resp = await _request("GET", "/api/journal?status=TAKEN&symbol=BTCUSDT&limit=10", auth=False)
+    resp = await _request("GET", "/api/journal?status=TAKEN&symbol=BTCUSDT&page=3&per_page=10", auth=False)
     assert resp.status_code == 200
-    assert resp.json()["summary"]["taken"] == 0
-    assert journal_store["query"] == ("TAKEN", "BTCUSDT", 10, 0)
+    body = resp.json()
+    assert body["data"] == [{"id": 9, "journal": {"status": "TAKEN"}}]
+    assert {k: body["meta"][k] for k in ("total_data", "total_pages", "current_page", "per_page")} == {
+        "total_data": 31,
+        "total_pages": 4,
+        "current_page": 3,
+        "per_page": 10,
+    }
+    assert journal_store["query"] == ("TAKEN", "BTCUSDT", 10, 20)
     assert (await _request("GET", "/api/journal?status=OPEN", auth=False)).status_code == 422
+    assert (await _request("GET", "/api/journal?page=0", auth=False)).status_code == 422
+    assert (await _request("GET", "/api/journal?per_page=201", auth=False)).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_journal_summary_endpoint(journal_store):
+    resp = await _request("GET", "/api/journal/summary", auth=False)
+    assert resp.status_code == 200
+    assert resp.json()["data"] == db._empty_journal_summary()
 
 
 def _sig(side="LONG", entry_price=100.0, stop_loss=99.0, r_multiple=None):

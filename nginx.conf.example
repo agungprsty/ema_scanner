@@ -36,11 +36,8 @@ server {
     ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
 
-    # Security Headers
-    add_header X-Content-Type-Options nosniff always;
-    add_header X-Frame-Options SAMEORIGIN always;
-    add_header X-XSS-Protection "1; mode=block" always;
-    add_header Referrer-Policy "no-referrer-when-downgrade" always;
+    # Security headers (CSP, HSTS, X-Frame-Options, ...) are set by the app; adding them here would send duplicates.
+    # HSTS needs X-Forwarded-Proto below and FORWARDED_ALLOW_IPS in .env, see README "Behind nginx".
 
     # Gzip Compression
     gzip on;
@@ -52,6 +49,7 @@ server {
     # Proxy to FastAPI App
     location / {
         limit_req zone=scanner_limit burst=20 nodelay;
+        limit_req_status 429;
 
         proxy_pass http://127.0.0.1:7860;
         proxy_http_version 1.1;
@@ -63,8 +61,10 @@ server {
         # Standard Proxy Headers
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # nginx is the edge, so drop any client-sent X-Forwarded-For; the app keys rate limits on this address
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # A client X-Request-ID passes through untouched; the app validates it or generates one
 
         # Timeouts for Long Scans
         proxy_connect_timeout 60s;

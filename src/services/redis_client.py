@@ -14,6 +14,18 @@ LOCAL_LOCK_TOKEN = "local"
 _RELEASE_LOCK_SCRIPT = (
     "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end"
 )
+# Sliding-window log: drop hits older than the window, record this one only if under the limit
+_SLIDING_WINDOW_SCRIPT = """
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1] - ARGV[2])
+local allowed = 0
+if redis.call('ZCARD', KEYS[1]) < tonumber(ARGV[3]) then
+  redis.call('ZADD', KEYS[1], ARGV[1], ARGV[4])
+  redis.call('PEXPIRE', KEYS[1], ARGV[2])
+  allowed = 1
+end
+local oldest = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
+return {allowed, redis.call('ZCARD', KEYS[1]), oldest[2] or ARGV[1]}
+"""
 
 
 async def init_redis() -> bool:
@@ -101,3 +113,17 @@ async def release_lock(lock_name: str, token: str | None) -> None:
         await _redis.eval(_RELEASE_LOCK_SCRIPT, 1, f"lock:{lock_name}", token)
     except Exception as e:
         logger.warning("Failed to release Redis lock %s: %s", lock_name, e)
+
+
+async def sliding_window_hit(key: str, limit: int, window_ms: int, now_ms: int) -> tuple[bool, int, int] | None:
+    """Returns (allowed, hits in window, oldest hit ms), or None when Redis is unavailable."""
+    if _redis is None:
+        return None
+    try:
+        allowed, count, oldest = await _redis.eval(
+            _SLIDING_WINDOW_SCRIPT, 1, key, now_ms, window_ms, limit, f"{now_ms}-{secrets.token_hex(4)}"
+        )
+        return bool(allowed), int(count), int(float(oldest))
+    except Exception as e:
+        logger.warning("Redis rate limit error for key %s: %s", key, e)
+        return None

@@ -1,5 +1,6 @@
 import math
 import os
+import re
 
 from dotenv import load_dotenv
 
@@ -11,6 +12,23 @@ PORT = int(os.getenv("PORT", "7860"))
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() in ("true", "1", "yes")
 API_SECRET_KEY = os.getenv("API_SECRET_KEY", "").strip()
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
+_bad_origins = [o for o in CORS_ORIGINS if o != "*" and not re.fullmatch(r"https?://[A-Za-z0-9.-]+(:\d{1,5})?", o)]
+if _bad_origins:
+    raise ValueError(f"CORS_ORIGINS entries must be * or scheme://host[:port], got: {', '.join(_bad_origins)}")
+
+# Logging
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+LOG_FORMAT = os.getenv("LOG_FORMAT", "json").strip().lower()
+if LOG_FORMAT not in ("json", "text"):
+    raise ValueError(f"LOG_FORMAT={LOG_FORMAT!r} is not supported, use json or text")
+
+# Rate limiting: requests per client IP per sliding minute
+RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "true").lower() in ("true", "1", "yes")
+RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "120"))
+RATE_LIMIT_WRITE_PER_MINUTE = int(os.getenv("RATE_LIMIT_WRITE_PER_MINUTE", "20"))
+RATE_LIMIT_TRIGGER_PER_MINUTE = int(os.getenv("RATE_LIMIT_TRIGGER_PER_MINUTE", "5"))
+if min(RATE_LIMIT_PER_MINUTE, RATE_LIMIT_WRITE_PER_MINUTE, RATE_LIMIT_TRIGGER_PER_MINUTE) < 1:
+    raise ValueError("RATE_LIMIT_*_PER_MINUTE must be at least 1, use RATE_LIMIT_ENABLED=false to turn limits off")
 
 # Database (PostgreSQL)
 POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")

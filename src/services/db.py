@@ -894,10 +894,10 @@ async def get_journal(
     symbol: str | None = None,
     limit: int = 50,
     offset: int = 0,
-) -> tuple[list[dict], int, dict]:
-    """Journal entries joined with their signals, newest signal first, plus a summary of all entries."""
+) -> tuple[list[dict], int]:
+    """Journal entries joined with their signals, newest signal first, and the matching total."""
     if _session_maker is None:
-        return [], 0, _empty_journal_summary()
+        return [], 0
 
     j, sig_m = JournalModel, SignalModel
     conditions = []
@@ -915,11 +915,20 @@ async def get_journal(
                 )
             ).scalar_one() or 0
             rows = (await session.execute(base.order_by(desc(sig_m.id)).limit(limit).offset(offset))).all()
-            items = [{**s.to_dict(), "journal": journal_view(s, e)} for s, e in rows]
-
-            # Summary across every entry, unfiltered, so the comparison is stable while browsing
-            all_rows = (await session.execute(select(sig_m, j).join(j, j.signal_id == sig_m.id))).all()
-            return items, total, journal_summary(all_rows)
+            return [{**s.to_dict(), "journal": journal_view(s, e)} for s, e in rows], total
     except Exception as e:
         logger.exception("Failed to query trade journal: %s", e)
-        return [], 0, _empty_journal_summary()
+        return [], 0
+
+
+async def get_journal_summary() -> dict:
+    """Summary of every journal entry, unfiltered."""
+    if _session_maker is None:
+        return _empty_journal_summary()
+    try:
+        async with _session_maker() as session:
+            rows = (await session.execute(select(SignalModel, JournalModel).join(JournalModel, JournalModel.signal_id == SignalModel.id))).all()
+            return journal_summary(rows)
+    except Exception as e:
+        logger.exception("Failed to summarise trade journal: %s", e)
+        return _empty_journal_summary()

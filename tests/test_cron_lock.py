@@ -227,10 +227,10 @@ async def test_failed_run_is_logged_and_shown_in_status(no_redis, monkeypatch, c
     with caplog.at_level(logging.ERROR, logger=cron_module.__name__):
         res = await sched.trigger_now()
 
-    assert res == {"status": "error", "message": "Database not ready"}
+    assert res == {"status": "error", "message": "Scan failed, see server logs"}
     status = sched.get_status()
     assert status["last_status"] == "failed"
-    assert status["last_error"] == "Database not ready"
+    assert status["last_error"] == "RuntimeError"
     assert "Database not ready" in caplog.text
     assert not sched._lock.locked()
 
@@ -249,6 +249,6 @@ async def test_trigger_endpoint_returns_409_when_busy(fake_redis, runs, monkeypa
         main.app.dependency_overrides.pop(main.verify_api_key, None)
 
     assert resp.status_code == 409
-    assert "try again later" in resp.json()["detail"]
+    assert "try again later" in resp.json()["message"]
     assert fake_redis.store[MANUAL_KEY] == "other-worker"
     assert runs == []

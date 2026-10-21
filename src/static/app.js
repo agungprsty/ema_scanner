@@ -244,9 +244,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function setKeyHeader(options, key) {
     if (options.headers instanceof Headers) {
-      options.headers.set('X-API-KEY', key);
+      options.headers.set('Authorization', `Bearer ${key}`);
     } else {
-      options.headers['X-API-KEY'] = key;
+      options.headers.Authorization = `Bearer ${key}`;
     }
   }
 
@@ -266,21 +266,28 @@ document.addEventListener('DOMContentLoaded', () => {
     return res;
   }
 
+  // Error envelope: { message, errors: [{ field, message }] }; a proxy may answer with HTML instead
   async function responseError(res) {
-    let detail = null;
+    if (res.status === 429) {
+      const wait = Number(res.headers.get('Retry-After'));
+      return wait > 0 ? `too many requests, try again in ${wait}s` : 'too many requests, try again shortly';
+    }
+    let body = null;
     try {
-      detail = (await res.json()).detail;
+      body = await res.json();
     } catch {
-      detail = null;
+      body = null;
     }
-    if (typeof detail === 'string' && detail) return detail;
-    if (Array.isArray(detail) && detail.length) {
-      return detail.map(d => (d && d.msg) ? d.msg : String(d)).join('; ');
+    if (body && typeof body.message === 'string' && body.message) {
+      const details = (Array.isArray(body.errors) ? body.errors : [])
+        .filter(e => e && e.message)
+        .map(e => (e.field ? `${e.field}: ${e.message}` : e.message));
+      return details.length ? `${body.message} (${details.join('; ')})` : body.message;
     }
-    if (res.status === 503) return 'API key is not configured on the server';
     return `request failed (HTTP ${res.status})`;
   }
 
+  // Returns the whole envelope; the payload is in .data, paging in .meta
   async function getJson(url) {
     const res = await fetch(url);
     if (!res.ok) throw new Error(await responseError(res));
@@ -320,7 +327,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Pagination
   function pageParams(tab) {
-    return { limit: String(PAGE_SIZE), offset: String(pageIndex[tab] * PAGE_SIZE) };
+    return { page: String(pageIndex[tab] + 1), per_page: String(PAGE_SIZE) };
   }
 
   function renderPager(tab, total, count) {
@@ -371,7 +378,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const text = $('health-text');
     const cronText = $('cron-text');
     try {
-      const data = await getJson('/api/health');
+      const { data } = await getJson('/api/health');
       if (data.database && data.redis) {
         dot.className = 'dot ok';
         text.textContent = 'Online';
@@ -392,7 +399,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function loadConfig() {
     try {
-      const info = await getJson('/api/info');
+      const info = (await getJson('/api/info')).data;
       Object.assign(config, info.strategy || {});
       if (info.timeframe) config.timeframe = info.timeframe;
       $('brand-meta').textContent = `RSI ${config.oversold}/${config.overbought} scanner · ${config.timeframe} · Binance USDⓈ-M futures`;
@@ -404,7 +411,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Summary
   async function loadSummary() {
     try {
-      const data = await getJson('/api/summary');
+      const { data } = await getJson('/api/summary');
       const wins = data.tp_hit_count || 0;
       const losses = data.sl_hit_count || 0;
       const expired = data.expired_count || 0;
@@ -526,7 +533,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const res = await authFetch('/api/cron/trigger', { method: 'POST' });
       if (!res.ok) throw new Error(await responseError(res));
-      const result = (await res.json()).result || {};
+      const result = (await res.json()).data.result || {};
       const failed = result.failed_symbols || [];
       if (failed.length) {
         showNotice(failed.length === result.symbols_scanned
@@ -571,14 +578,20 @@ document.addEventListener('DOMContentLoaded', () => {
       setSignalsMessage(`${outcomeOf(filterStatus.value).label} signals are listed under ${tab === 'active' ? 'History' : 'Active'}.`);
       return;
     }
+    const base = { status: statuses.join(',') };
     try {
-      const data = await getJson(`/api/signals?${filterParams({ status: statuses.join(','), ...pageParams(tab) })}`);
+      // The caption is a nice-to-have, so a failed summary still lets the list render
+      const [page, summary] = await Promise.all([
+        getJson(`/api/signals?${filterParams({ ...base, ...pageParams(tab) })}`),
+        getJson(`/api/summary?${filterParams(base)}`).then(body => body.data, () => ({})),
+      ]);
       if (request !== listRequest || activeTab !== tab) return;
-      const signals = data.signals || [];
-      if (stepBackIfEmpty(tab, signals.length, data.total)) return;
-      setCaption(signalsCaption(data.total, data.summary || {}));
+      const signals = page.data || [];
+      const total = page.meta.total_data;
+      if (stepBackIfEmpty(tab, signals.length, total)) return;
+      setCaption(signalsCaption(total, summary));
       renderSignals(signals);
-      renderPager(tab, data.total, signals.length);
+      renderPager(tab, total, signals.length);
     } catch (e) {
       if (request !== listRequest || activeTab !== tab) return;
       setCaption('');
@@ -611,13 +624,17 @@ document.addEventListener('DOMContentLoaded', () => {
     if (search) params.append('symbol', search);
     if (filterJournal.value) params.append('status', filterJournal.value);
     try {
-      const data = await getJson(`/api/journal?${params}`);
+      const [page, summary] = await Promise.all([
+        getJson(`/api/journal?${params}`),
+        getJson('/api/journal/summary').then(body => body.data, () => ({})),
+      ]);
       if (request !== listRequest || activeTab !== 'journal') return;
-      const entries = data.entries || [];
-      if (stepBackIfEmpty('journal', entries.length, data.total)) return;
-      setCaption(journalCaption(data.summary || {}));
+      const entries = page.data || [];
+      const total = page.meta.total_data;
+      if (stepBackIfEmpty('journal', entries.length, total)) return;
+      setCaption(journalCaption(summary));
       renderJournal(entries, Boolean(search || filterJournal.value));
-      if (entries.length) renderPager('journal', data.total, entries.length);
+      if (entries.length) renderPager('journal', total, entries.length);
     } catch (e) {
       if (request !== listRequest || activeTab !== 'journal') return;
       setCaption('');
@@ -686,8 +703,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Watchlist
   async function loadWatchlist() {
     try {
-      const data = await getJson('/api/watchlist');
-      watchlist = data.watchlist || [];
+      watchlist = (await getJson('/api/watchlist')).data || [];
       watchlistNotice.hidden = watchlist.some(w => w.is_active);
       renderWatchlist();
     } catch (e) {
@@ -903,7 +919,7 @@ document.addEventListener('DOMContentLoaded', () => {
     renderJournalForm(sig);
     if (!modal.open) modal.showModal();
     try {
-      const fresh = await getJson(`/api/signals/${encodeURIComponent(sig.id)}`);
+      const fresh = (await getJson(`/api/signals/${encodeURIComponent(sig.id)}`)).data;
       if (currentSignal !== sig) return;
       currentSignal = { ...sig, ...fresh };
       fillDetail(currentSignal);
@@ -999,7 +1015,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const res = await saveJournal(sig, status, entry, exit);
       if (!res.ok) throw new Error(await responseError(res));
-      const saved = status ? await res.json() : null;
+      const saved = status ? (await res.json()).data : null;
       sig.journal = saved ? saved.journal : null;
       sig.journal_status = sig.journal ? sig.journal.status : null;
       shownSignals.forEach(s => {
@@ -1073,7 +1089,7 @@ document.addEventListener('DOMContentLoaded', () => {
         showChartMessage(escapeHtml(`Chart unavailable: ${await responseError(res)}`), true);
         return;
       }
-      const payload = await res.json();
+      const payload = (await res.json()).data || {};
       if (request !== chartRequest) return;
       if (!Array.isArray(payload.candles) || payload.candles.length === 0) {
         showChartMessage('No candle data for this symbol.');

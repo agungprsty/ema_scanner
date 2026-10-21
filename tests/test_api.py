@@ -8,7 +8,7 @@ from src.services import db
 pytestmark = pytest.mark.unit
 
 TEST_API_KEY = "test_api_secret_key"
-AUTH_HEADERS = {"X-API-KEY": TEST_API_KEY}
+AUTH_HEADERS = {"Authorization": f"Bearer {TEST_API_KEY}"}
 
 SIGNAL = {
     "id": 1,
@@ -23,7 +23,7 @@ SIGNAL = {
 
 @pytest.fixture(autouse=True)
 def api_secret_key(monkeypatch):
-    monkeypatch.setattr("src.main.API_SECRET_KEY", TEST_API_KEY)
+    monkeypatch.setattr("src.api.security.API_SECRET_KEY", TEST_API_KEY)
     return TEST_API_KEY
 
 
@@ -33,7 +33,7 @@ def mock_db_services(monkeypatch):
         "BTCUSDT": {"symbol": "BTCUSDT", "is_active": True, "notes": "Default"},
         "ETHUSDT": {"symbol": "ETHUSDT", "is_active": True, "notes": "Default"},
     }
-    calls = {"signals": []}
+    calls = {"signals": [], "stats": []}
 
     async def mock_is_db_connected():
         return True
@@ -66,14 +66,13 @@ def mock_db_services(monkeypatch):
         return False
 
     async def mock_signal_stats(conditions=()):
+        calls["stats"].append(conditions)
         counts = {"total": 3, "long": 2, "short": 1, "symbols": 2, "TP_HIT": 1, "NOT_FILLED": 1, "OPEN": 1}
         return db.build_stats(counts, 1.9, [1.9])
 
     async def mock_list_signals(**kwargs):
         calls["signals"].append(kwargs)
-        db.signal_conditions(**{k: v for k, v in kwargs.items() if k not in ("limit", "offset")})  # 422 path
-        summary = await mock_signal_stats()
-        return [SIGNAL], 1, summary
+        return [SIGNAL], 101, {}
 
     monkeypatch.setattr("src.main.is_db_connected", mock_is_db_connected)
     monkeypatch.setattr("src.main.is_redis_connected", mock_is_redis_connected)
@@ -92,7 +91,11 @@ async def test_health_endpoint():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/health")
         assert resp.status_code == 200
-        data = resp.json()
+        assert '"status":"healthy"' in resp.text  # the deploy gate greps the compact body
+        body = resp.json()
+        assert body["code"] == 200 and body["status"] == "success"
+        assert body["meta"]["path"] == "/api/health"
+        data = body["data"]
         assert data["status"] == "healthy"
         assert data["database"] is True
         assert data["redis"] is True
@@ -102,12 +105,27 @@ async def test_health_endpoint():
 
 
 @pytest.mark.asyncio
+async def test_health_degraded_still_returns_200(monkeypatch):
+    async def down():
+        return False
+
+    monkeypatch.setattr("src.main.is_redis_connected", down)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/health")
+        assert resp.status_code == 200
+        assert resp.json()["data"]["status"] == "degraded"
+        assert '"status":"healthy"' not in resp.text
+
+
+@pytest.mark.asyncio
 async def test_info_endpoint():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/info")
         assert resp.status_code == 200
-        data = resp.json()
+        data = resp.json()["data"]
+        assert data["app"] == "Simpletrade"
         assert data["version"] == "3.0.0"
         assert data["timeframe"] == settings.TIMEFRAME
         assert data["interval_ms"] == settings.TIMEFRAME_MS
@@ -132,30 +150,41 @@ async def test_watchlist_lifecycle():
         # 1. List
         resp = await client.get("/api/watchlist")
         assert resp.status_code == 200
-        assert "watchlist" in resp.json()
+        assert [w["symbol"] for w in resp.json()["data"]] == ["BTCUSDT", "ETHUSDT"]
 
         # 2. Add
         add_resp = await client.post("/api/watchlist", json={"symbol": "TESTCOINUSDT", "notes": "Automated Test"})
         assert add_resp.status_code == 200
         assert add_resp.json()["status"] == "success"
+        assert add_resp.json()["data"]["symbol"] == "TESTCOINUSDT"
 
         # 3. Toggle
         toggle_resp = await client.patch("/api/watchlist/TESTCOINUSDT/toggle", json={"is_active": False})
         assert toggle_resp.status_code == 200
-        assert toggle_resp.json()["is_active"] is False
+        assert toggle_resp.json()["data"] == {"symbol": "TESTCOINUSDT", "is_active": False}
 
         # 4. Delete
         del_resp = await client.delete("/api/watchlist/TESTCOINUSDT")
         assert del_resp.status_code == 200
+        assert del_resp.json()["data"] == {"symbol": "TESTCOINUSDT"}
+
+        # 5. Gone
+        missing = await client.delete("/api/watchlist/TESTCOINUSDT")
+        assert missing.status_code == 404
+        assert missing.json()["message"] == "Symbol not found in watchlist"
 
 
 @pytest.mark.asyncio
-async def test_signals_summary_endpoint():
+async def test_signals_summary_endpoint(mock_db_services):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/summary")
+        assert (await client.get("/api/summary")).json()["data"]["total_signals"] == 3
+        assert mock_db_services["stats"][-1] == []  # no filters: every signal
+
+        resp = await client.get("/api/summary?status=TP_HIT&side=LONG&start_date=2025-10-01")
         assert resp.status_code == 200
-        data = resp.json()
+        assert len(mock_db_services["stats"][-1]) == 3
+        data = resp.json()["data"]
         assert data["tp_hit_count"] == 1
         assert data["open_count"] == 1
         assert data["not_filled_count"] == 1
@@ -171,25 +200,42 @@ async def test_signals_summary_endpoint():
 async def test_signals_list_and_filters(mock_db_services):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/signals?status=PENDING,OPEN&side=LONG&date=2025-10-11&limit=10")
+        resp = await client.get("/api/signals?status=PENDING,OPEN&side=LONG&date=2025-10-11&page=2&per_page=10")
         assert resp.status_code == 200
-        data = resp.json()
-        assert data["total"] == 1
-        assert data["limit"] == 10
-        assert data["signals"][0]["status"] == "TP_HIT"
-        assert data["summary"]["total_signals"] == 3
+        body = resp.json()
+        assert body["data"][0]["status"] == "TP_HIT"
+        assert "summary" not in body
+        meta = body["meta"]
+        assert (meta["total_data"], meta["total_pages"], meta["current_page"], meta["per_page"]) == (101, 11, 2, 10)
+        assert meta["path"] == "/api/signals"
     kwargs = mock_db_services["signals"][0]
     assert kwargs["status"] == "PENDING,OPEN"
     assert kwargs["date"] == "2025-10-11"
     assert kwargs["timeframe"] is None  # no default timeframe filter
+    assert (kwargs["limit"], kwargs["offset"]) == (10, 10)
 
 
 @pytest.mark.asyncio
-async def test_signals_bad_date_returns_422():
+@pytest.mark.parametrize("path", ["/api/signals", "/api/summary"])
+async def test_signals_bad_date_returns_422(path, mock_db_services):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/signals?date=11-10-2025")
+        resp = await client.get(f"{path}?date=11-10-2025")
         assert resp.status_code == 422
+        assert resp.json()["message"] == "Dates must be YYYY-MM-DD"
+    assert mock_db_services["signals"] == [] and mock_db_services["stats"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query", ["page=0", "page=1000001", "per_page=0", "per_page=201", "limit=10&offset=-1&page=x"]
+)
+async def test_signals_rejects_bad_paging(query):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(f"/api/signals?{query}")
+        assert resp.status_code == 422
+        assert resp.json()["errors"][0]["field"] in ("page", "per_page")
 
 
 @pytest.mark.asyncio
@@ -202,8 +248,10 @@ async def test_single_signal(monkeypatch):
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/signals/1")
         assert resp.status_code == 200
-        assert resp.json()["signal_candle_ms"] == SIGNAL["signal_candle_ms"]
-        assert (await client.get("/api/signals/2")).status_code == 404
+        assert resp.json()["data"]["signal_candle_ms"] == SIGNAL["signal_candle_ms"]
+        missing = await client.get("/api/signals/2")
+        assert missing.status_code == 404
+        assert missing.json()["message"] == "Signal not found"
 
 
 @pytest.mark.asyncio
@@ -212,7 +260,7 @@ async def test_cron_endpoints():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         status_resp = await client.get("/api/cron/status")
         assert status_resp.status_code == 200
-        status_data = status_resp.json()
+        status_data = status_resp.json()["data"]
         assert "enabled" in status_data
         assert status_data["timeframe"] == settings.TIMEFRAME
         assert status_data["interval_ms"] == settings.TIMEFRAME_MS
@@ -230,12 +278,13 @@ async def test_cron_trigger_success_and_error(monkeypatch):
     async with AsyncClient(transport=transport, base_url="http://test", headers=AUTH_HEADERS) as client:
         ok = await client.post("/api/cron/trigger")
         assert ok.status_code == 200
-        assert ok.json()["result"]["new_signals"] == 2
-        assert ok.json()["summary"]["total_signals"] == 3
+        assert ok.json()["data"]["result"]["new_signals"] == 2
+        assert ok.json()["data"]["summary"]["total_signals"] == 3
 
         failed = await client.post("/api/cron/trigger")
         assert failed.status_code == 503
-        assert failed.json()["detail"] == "Database not ready"
+        assert failed.json()["message"] == "Scan failed, see server logs"
+        assert "Database not ready" not in failed.text
 
 
 @pytest.mark.asyncio
@@ -258,6 +307,7 @@ async def test_removed_routes_are_gone(method, path):
     async with AsyncClient(transport=transport, base_url="http://test", headers=AUTH_HEADERS) as client:
         resp = await client.request(method, path)
         assert resp.status_code == 404
+        assert resp.json()["status"] == "error"
 
 
 @pytest.mark.asyncio
@@ -267,48 +317,22 @@ async def test_api_key_protection():
         fail_resp = await client.post("/api/watchlist", json={"symbol": "KEYTESTUSDT"})
         assert fail_resp.status_code == 401
 
-        ok_resp = await client.post(
-            "/api/watchlist",
-            json={"symbol": "KEYTESTUSDT"},
-            headers=AUTH_HEADERS,
-        )
+        ok_resp = await client.post("/api/watchlist", json={"symbol": "KEYTESTUSDT"}, headers=AUTH_HEADERS)
         assert ok_resp.status_code == 200
-
-        bearer_resp = await client.post(
-            "/api/watchlist",
-            json={"symbol": "KEYTEST2USDT"},
-            headers={"Authorization": f"Bearer {TEST_API_KEY}"},
-        )
-        assert bearer_resp.status_code == 200
-
-        await client.delete("/api/watchlist/KEYTESTUSDT", headers=AUTH_HEADERS)
-        await client.delete("/api/watchlist/KEYTEST2USDT", headers=AUTH_HEADERS)
 
 
 @pytest.mark.asyncio
-async def test_api_key_unset_returns_503(monkeypatch):
-    monkeypatch.setattr("src.main.API_SECRET_KEY", "")
+@pytest.mark.parametrize("key", ["", "your_secret_api_key_here"])
+async def test_api_key_unconfigured_returns_503(monkeypatch, key):
+    monkeypatch.setattr("src.api.security.API_SECRET_KEY", key)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post("/api/watchlist", json={"symbol": "KEYTESTUSDT"}, headers=AUTH_HEADERS)
         assert resp.status_code == 503
-        assert resp.json()["detail"] == "API key not configured on server"
+        assert resp.json()["message"] == "API key not configured on server"
 
         no_header_resp = await client.post("/api/cron/trigger")
         assert no_header_resp.status_code == 503
-
-
-@pytest.mark.asyncio
-async def test_api_key_placeholder_returns_503(monkeypatch):
-    placeholder = "your_secret_api_key_here"
-    monkeypatch.setattr("src.main.API_SECRET_KEY", placeholder)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/api/watchlist", json={"symbol": "KEYTESTUSDT"}, headers={"X-API-KEY": placeholder}
-        )
-        assert resp.status_code == 503
-        assert resp.json()["detail"] == "API key not configured on server"
 
 
 @pytest.mark.asyncio
@@ -316,16 +340,20 @@ async def test_api_key_wrong_returns_401():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
-            "/api/watchlist",
-            json={"symbol": "KEYTESTUSDT"},
-            headers={"X-API-KEY": "wrong_key"},
+            "/api/watchlist", json={"symbol": "KEYTESTUSDT"}, headers={"Authorization": "Bearer wrong_key"}
         )
         assert resp.status_code == 401
         assert resp.headers["www-authenticate"] == "Bearer"
+        assert resp.json()["message"] == "Invalid or missing API key"
 
-        bearer_resp = await client.post(
-            "/api/watchlist",
-            json={"symbol": "KEYTESTUSDT"},
-            headers={"Authorization": "Bearer wrong_key"},
-        )
-        assert bearer_resp.status_code == 401
+
+def test_openapi_documents_envelopes_and_bearer():
+    spec = app.openapi()
+    assert spec["info"]["title"] == "Simpletrade"
+    assert spec["components"]["securitySchemes"]["HTTPBearer"]["scheme"] == "bearer"
+    assert spec["paths"]["/api/cron/trigger"]["post"]["security"] == [{"HTTPBearer": []}]
+    signals = spec["paths"]["/api/signals"]["get"]
+    params = {p["name"] for p in signals["parameters"]}
+    assert {"page", "per_page", "status", "date"} <= params and not {"limit", "offset"} & params
+    assert signals["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("PageEnvelope_dict_")
+    assert {"page", "per_page"} & {p["name"] for p in spec["paths"]["/api/summary"]["get"]["parameters"]} == set()

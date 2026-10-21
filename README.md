@@ -82,6 +82,14 @@ All settings come from `.env` (see `.env.example`).
 | `CRON_SAFETY_DELAY_SECONDS` | `15` | Delay after each candle close |
 | `CRON_LOOKBACK_CANDLES` | `3` | Closed candles re-checked per run |
 | `TELEGRAM_OUTCOME_ALERTS` | `true` | Send trade updates to Telegram |
+| `CORS_ORIGINS` | `*` | Comma list of browser origins (`scheme://host[:port]`) or `*`. Anything else stops the app at startup. |
+| `LOG_LEVEL` | `INFO` | Root log level |
+| `LOG_FORMAT` | `json` | `json` (one object per line) or `text` for local development |
+| `RATE_LIMIT_ENABLED` | `true` | Per-IP sliding-window rate limits on `/api/*` |
+| `RATE_LIMIT_PER_MINUTE` | `120` | Reads (any other `/api/*` request) |
+| `RATE_LIMIT_WRITE_PER_MINUTE` | `20` | `POST`, `PUT`, `PATCH`, `DELETE` |
+| `RATE_LIMIT_TRIGGER_PER_MINUTE` | `5` | `POST /api/cron/trigger` |
+| `FORWARDED_ALLOW_IPS` | `172.16.0.0/12` in the image | Proxies whose `X-Forwarded-For`/`-Proto` uvicorn trusts; see [Behind nginx](#behind-nginx) |
 
 Server, database, Redis, Binance and Telegram credentials are documented in `.env.example`.
 
@@ -113,6 +121,7 @@ src/
   services/alerts.py           Telegram message text
   services/telegram.py         Telegram transport
   static/                      Dashboard (index.html, app.js)
+  api/                         HTTP foundation: envelopes, exceptions, logging, auth, security headers, rate limits
   main.py                      API routes
 tests/                         Unit and integration tests
 ```
@@ -127,16 +136,80 @@ docker compose ps
 
 Then open <http://localhost:7860>.
 
-Write endpoints (cron trigger, watchlist and journal changes) require the `X-API-KEY` header to match `API_SECRET_KEY`. The dashboard asks for the key the first time it is needed and remembers it in the browser.
+Write endpoints (cron trigger, watchlist and journal changes) require `Authorization: Bearer <API_SECRET_KEY>`. The dashboard asks for the key the first time it is needed and remembers it in the browser. Interactive API docs are at `/docs` (use "Authorize" for the key) and `/redoc`.
 
 ## API
 
+### Responses
+
+Every JSON response uses one envelope. `code` repeats the HTTP status, `status` is `success` for 2xx and `error` otherwise, and `meta.path` has no query string. The pages `/`, `/static/*`, `/docs`, `/redoc` and `/openapi.json` are not wrapped, but their errors are.
+
+Success:
+
+```json
+{
+  "code": 200,
+  "status": "success",
+  "message": "OK",
+  "data": {"id": 42, "symbol": "SUIUSDT", "side": "LONG", "status": "OPEN"},
+  "meta": {"request_id": "8ae00a92a43b4e0ea81fc21f4257d93b", "timestamp": "2026-10-21T00:45:40.081Z", "path": "/api/signals/42"}
+}
+```
+
+Paginated (`page` from 1, default 1; `per_page` 1-200, default 50; `total_pages` is 0 when there is no data):
+
+```json
+{
+  "code": 200,
+  "status": "success",
+  "message": "OK",
+  "data": [{"id": 42, "symbol": "SUIUSDT"}],
+  "meta": {
+    "request_id": "8ae00a92a43b4e0ea81fc21f4257d93b", "timestamp": "2026-10-21T00:45:40.081Z", "path": "/api/signals",
+    "total_data": 101, "total_pages": 3, "current_page": 1, "per_page": 50
+  }
+}
+```
+
+Error (4xx/5xx). `errors` lists field problems and is empty otherwise:
+
+```json
+{
+  "code": 422,
+  "status": "error",
+  "message": "Validation failed",
+  "data": null,
+  "errors": [{"field": "per_page", "message": "Input should be less than or equal to 200"}],
+  "meta": {"request_id": "8ae00a92a43b4e0ea81fc21f4257d93b", "timestamp": "2026-10-21T00:45:40.081Z", "path": "/api/signals"}
+}
+```
+
+Unknown paths return 404 and wrong methods 405 in the same shape. Unexpected failures return 500 `Internal server error` with no exception details; the traceback is logged with the request id.
+
+### Authentication
+
+Protected routes take `Authorization: Bearer <API_SECRET_KEY>` (the `HTTPBearer` scheme in OpenAPI). A missing or wrong key returns 401 with `WWW-Authenticate: Bearer`. While `API_SECRET_KEY` is empty, a placeholder or shorter than 16 characters, protected routes return 503.
+
+### Request id
+
+Send `X-Request-ID` (1-64 characters of `A-Z a-z 0-9 . _ -`) to set the id, otherwise the app generates one. It comes back in the `X-Request-ID` header and `meta.request_id`, and is on every log line written while the request runs.
+
+### Rate limits
+
+Each client IP gets a sliding one-minute window per bucket: `trigger` for `POST /api/cron/trigger`, `write` for other `POST`/`PUT`/`PATCH`/`DELETE`, and `default` for any other `/api/*` request. `/api/health` and everything outside `/api/` are exempt. Windows live in Redis; while Redis is unreachable each worker counts on its own.
+
+Limited responses carry `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset` (seconds until a slot frees). Over the limit the app returns 429 `Too many requests` with the same headers plus `Retry-After`.
+
+### Logging
+
+Logs go to stdout, one JSON object per line with `timestamp`, `level`, `logger`, `message`, `request_id` and any extra fields (tracebacks in `exc_info`). Each request writes one access line from `src.api.middleware` with `method`, `path`, `status`, `duration_ms`, `client_ip` and `user_agent`; uvicorn's own access log is off. Authorization headers, bearer tokens, API keys, signatures, passwords, cookies and Telegram bot tokens are redacted, and request bodies are never logged. Set `LOG_FORMAT=text` for readable local logs.
+
 ### Signals
 
-- `GET /api/signals` lists stored signals, newest first, with a summary for the same filters. Filters: `status` (comma-separated, e.g. `PENDING,OPEN`), `side` (`LONG`, `SHORT`), `symbol`, `timeframe`, `date`, `start_date`, `end_date` (WIB days, `YYYY-MM-DD`, end inclusive), `limit` (1-100, default 50), `offset`.
+- `GET /api/signals` lists stored signals, newest first, paginated. Filters: `status` (comma-separated, e.g. `PENDING,OPEN`), `side` (`LONG`, `SHORT`), `symbol`, `timeframe`, `date`, `start_date`, `end_date` (WIB days, `YYYY-MM-DD`, end inclusive), plus `page` and `per_page`.
 - `GET /api/signals/{signal_id}` returns one signal with its journal entry. Each signal has its levels, status, fill and exit prices and times, P/L, R, `fill_deadline` and `hold_deadline`.
-- `GET /api/signals/{signal_id}/chart` returns the candles and RSI series around one trade: from 30 candles before the signal to now while it is active, or to 6 candles after the exit once it has closed. Closed charts are cached for 7 days.
-- `GET /api/summary` returns signal counts per status, fill rate, win rate (target hits over closed trades; unfilled orders are left out), net P/L, total and average R, and max drawdown in R.
+- `GET /api/signals/{signal_id}/chart` returns the candles and RSI series around one trade: from 30 candles before the signal to now while it is active, or to 6 candles after the exit once it has closed. Closed charts are cached for 7 days. Returns 503 with `Retry-After` while the Binance request budget is used up.
+- `GET /api/summary` takes the same filters as `/api/signals` (without paging) and returns signal counts per status, fill rate, win rate (target hits over closed trades; unfilled orders are left out), net P/L, total and average R, and max drawdown in R.
 
 ### Watchlist
 
@@ -147,16 +220,32 @@ Write endpoints (cron trigger, watchlist and journal changes) require the `X-API
 
 ### Journal
 
-- `GET /api/journal` lists journal entries with their signals. Filters: `status` (`TAKEN`, `SKIPPED`), `symbol`, `limit`, `offset`.
+- `GET /api/journal` lists journal entries with their signals, paginated. Filters: `status` (`TAKEN`, `SKIPPED`), `symbol`, `page`, `per_page`.
+- `GET /api/journal/summary` returns taken and skipped counts and your R and P/L over all entries.
 - `PUT /api/signals/{signal_id}/journal` saves an entry: `{ "status": "TAKEN", "entry_fill": 1.399, "exit_fill": 1.361, "notes": "optional" }`.
 - `DELETE /api/signals/{signal_id}/journal` removes it.
 
 ### Operations
 
 - `GET /api/info` returns the version, mode, timeframe and strategy settings.
-- `GET /api/health` checks PostgreSQL, Redis and the scheduler. `status` is `healthy` or `degraded`.
+- `GET /api/health` checks PostgreSQL, Redis and the scheduler. It always answers 200; `data.status` is `healthy` or `degraded`.
 - `GET /api/cron/status` shows the scheduler state, last result and next run.
 - `POST /api/cron/trigger` runs the job now: scan, store, evaluate and alert. Returns 409 while another run is going, and 503 when the run fails (for example, the database is not ready).
+
+## Behind nginx
+
+`nginx.conf.example` proxies to the app port published on `127.0.0.1`. Docker forwards those connections into the container from the compose network gateway, so without help every user looks like that one address: they share one rate-limit bucket, and the app never sees HTTPS, so it does not send HSTS.
+
+The image runs uvicorn with `--proxy-headers`, which takes the client IP from `X-Forwarded-For` and the scheme from `X-Forwarded-Proto`, but only from peers in `FORWARDED_ALLOW_IPS` (uvicorn reads it from the environment). The image sets it to `172.16.0.0/12`; override it in the server `.env` only if the compose network gateway lies outside that range:
+
+```bash
+# Exact gateway of the deploy's compose network (project name comes from the folder, ema_scanner)
+docker network inspect ema_scanner_default -f '{{(index .IPAM.Config 0).Gateway}}'   # e.g. 172.18.0.1
+```
+
+`172.16.0.0/12` covers Docker's default bridge pools and survives the network being recreated with a new subnet. It also trusts any other container on those networks to set the headers, so keep the app port bound to `127.0.0.1` (`APP_BIND_ADDR`) and never use `*`. nginx overwrites `X-Forwarded-For` with the real peer address, so clients cannot spoof it.
+
+Clients of the old API must switch from `X-API-KEY` to `Authorization: Bearer`, from `limit`/`offset` to `page`/`per_page`, and read results under `data`.
 
 ## Upgrading from the MACD version
 
@@ -171,6 +260,8 @@ C="docker compose -f docker-compose.prod.yml"
 # 1. Update .env: remove MACD_*, RISK_REWARD_RATIO, SWING_LOOKBACK_CANDLES, SIGNAL_EXPIRY_CANDLES,
 #    VOLUME_THRESHOLD_USD; add the settings above (TIMEFRAME=1h, ...);
 #    set POSTGRES_DB=simple-trade and point any DATABASE_URL at /simple-trade.
+#    If FORWARDED_ALLOW_IPS is set, it must cover the compose gateway (see "Behind nginx"),
+#    otherwise every visitor shares one rate-limit bucket.
 
 # 2. Stop the app so nothing is connected to the database
 $C stop app

@@ -82,7 +82,7 @@ async def test_closed_signal_charts_its_own_trade_window_with_warmup(env):
     resp = await _get("/api/signals/7/chart")
 
     assert resp.status_code == 200
-    data = resp.json()
+    data = resp.json()["data"]
     assert data["final"] is True
     start_ms = SIGNAL_MS - 30 * H1
     end_ms = SIGNAL_MS + 5 * H1 + 6 * H1
@@ -110,7 +110,7 @@ async def test_rsi_without_enough_history_drops_nan_instead_of_zero(env, monkeyp
     monkeypatch.setattr(main, "SIGNAL_RSI_WARMUP", 0)
     resp = await _get("/api/signals/7/chart")
 
-    data = resp.json()
+    data = resp.json()["data"]
     assert len(data["candles"]) == 42
     assert len(data["rsi"]) == 42 - main.RSI_PERIOD
     assert data["rsi"][0]["time"] == data["candles"][main.RSI_PERIOD]["time"]
@@ -128,18 +128,18 @@ async def test_active_signal_runs_to_now_without_browser_cache(env, status):
     env["signal"] = _signal(status=status, closed_ms=None)
     resp = await _get("/api/signals/7/chart")
 
-    assert resp.json()["final"] is False
+    assert resp.json()["data"]["final"] is False
     start_ms = SIGNAL_MS - 30 * H1
     assert env["fetch_calls"] == [("BTCUSDT", "1h", start_ms - WARMUP * H1, NOW_MS)]
     assert env["set_calls"] == [("chart:7:live", main.KLINES_CACHE_TTL)]
-    assert "cache-control" not in resp.headers
+    assert resp.headers["cache-control"] == "no-store"
 
 
 async def test_recently_closed_window_is_not_final_yet(env, monkeypatch):
     monkeypatch.setattr(main.time, "time", lambda: (SIGNAL_MS + 8 * H1) / 1000)
     resp = await _get("/api/signals/7/chart")
 
-    assert resp.json()["final"] is False
+    assert resp.json()["data"]["final"] is False
     assert env["fetch_calls"][0][3] == SIGNAL_MS + 8 * H1
 
 
@@ -159,6 +159,7 @@ async def test_unsupported_timeframe_is_an_error_not_a_guess(env):
     env["signal"] = _signal(timeframe="1w")
     resp = await _get("/api/signals/7/chart")
     assert resp.status_code == 500
+    assert resp.json()["message"] == "Signal has an unsupported timeframe"
     assert env["fetch_calls"] == []
 
 
@@ -166,7 +167,7 @@ async def test_upstream_failure_returns_502_and_is_not_cached_by_browsers(env):
     env["fail"] = True
     resp = await _get("/api/signals/7/chart")
     assert resp.status_code == 502
-    assert "cache-control" not in resp.headers
+    assert resp.headers["cache-control"] == "no-store"
     assert env["set_calls"] == [("chart:7:final:miss", main.KLINES_MISS_TTL)]
 
 
@@ -174,6 +175,7 @@ async def test_upstream_budget_exhausted_returns_503(env, monkeypatch):
     monkeypatch.setattr(main, "KLINES_UPSTREAM_BUDGET", 0)
     resp = await _get("/api/signals/7/chart")
     assert resp.status_code == 503
+    assert resp.headers["retry-after"] == str(main.KLINES_BUDGET_WINDOW)
     assert env["fetch_calls"] == []
 
 

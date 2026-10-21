@@ -1,9 +1,9 @@
+import re
 from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from src import main
 from src.main import app
 
 pytestmark = pytest.mark.unit
@@ -22,14 +22,14 @@ def added_symbols(monkeypatch):
         return {"id": len(calls), "symbol": symbol.strip().upper(), "is_active": True, "notes": notes}
 
     monkeypatch.setattr("src.main.add_watchlist_symbol", mock_add_watchlist_symbol)
-    monkeypatch.setattr(main, "API_SECRET_KEY", API_KEY)
+    monkeypatch.setattr("src.api.security.API_SECRET_KEY", API_KEY)
     return calls
 
 
 async def _post_watchlist(payload: dict):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        return await client.post("/api/watchlist", json=payload, headers={"X-API-KEY": API_KEY})
+        return await client.post("/api/watchlist", json=payload, headers={"Authorization": f"Bearer {API_KEY}"})
 
 
 @pytest.mark.asyncio
@@ -139,7 +139,7 @@ def test_dashboard_shows_fill_rate_and_brand():
     assert 'id="stat-fillrate"' in html
     assert "data.fill_rate" in APP_JS.read_text()
     assert '<span class="brand-name">simple-trade</span>' in html
-    assert '<script src="/static/app.js?v=3"></script>' in html
+    assert '<script src="/static/app.js?v=4"></script>' in html
 
 
 def test_journal_preview_uses_planned_risk():
@@ -166,6 +166,8 @@ def test_app_js_pages_lists_twenty_rows_at_a_time():
     source = APP_JS.read_text()
     assert "const PAGE_SIZE = 20;" in source
     assert "limit: '100'" not in source
+    assert "page: String(pageIndex[tab] + 1), per_page: String(PAGE_SIZE)" in source
+    assert "offset" not in source
     for loader in ("pageParams(tab)", "pageParams('journal')"):
         assert loader in source
 
@@ -180,3 +182,27 @@ def test_chart_library_loads_on_demand():
     html = INDEX_HTML.read_text()
     assert "lightweight-charts" not in html.split("<body>")[0].replace('href="https://unpkg.com"', "")
     assert "function loadChartLibrary(" in APP_JS.read_text()
+
+
+def test_app_js_reads_api_envelopes():
+    source = APP_JS.read_text()
+    assert "X-API-KEY" not in source
+    assert "`Bearer ${key}`" in source
+    assert "page.meta.total_data" in source
+    assert "`/api/summary?${filterParams(base)}`" in source
+    assert "getJson('/api/journal/summary')" in source
+    assert "body.message" in source and "body.errors" in source
+    assert "res.headers.get('Retry-After')" in source
+    for stale in ("data.signals", "data.entries", "data.watchlist", "data.summary", ".detail"):
+        assert stale not in source
+
+
+def test_index_html_satisfies_csp():
+    # APP_CSP has no 'unsafe-inline' for scripts: no inline scripts or handlers, no eval
+    html = INDEX_HTML.read_text()
+    source = APP_JS.read_text()
+    assert re.findall(r"<script[^>]*>", html) == ['<script src="/static/app.js?v=4">']
+    assert not re.search(r"\son[a-z]+\s*=", html)
+    assert "javascript:" not in html
+    for needle in ("eval(", "new Function", "innerHTML = `<script"):
+        assert needle not in source
