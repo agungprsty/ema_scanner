@@ -241,7 +241,7 @@ async def test_trigger_endpoint_returns_409_when_busy(fake_redis, runs, monkeypa
 
     fake_redis.store[MANUAL_KEY] = "other-worker"
     monkeypatch.setattr(main, "cron_scheduler", _scheduler())
-    main.app.dependency_overrides[main.require_admin] = lambda: Principal(id=None, username="admin", role="administrator", via="api_key")
+    main.app.dependency_overrides[main.require_admin] = lambda: Principal(id=None, username="admin", role="administrator")
     try:
         transport = ASGITransport(app=main.app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:

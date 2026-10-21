@@ -14,7 +14,6 @@ class Principal:
     id: int
     username: str
     role: str
-    via: str = "session"
     email: str | None = None
     created_at: str | None = None
 
@@ -52,7 +51,6 @@ async def get_principal(request: Request) -> Principal:
                 id=user["id"],
                 username=user["username"],
                 role=user["role"],
-                via="session",
                 email=user.get("email"),
                 created_at=user.get("created_at"),
             )

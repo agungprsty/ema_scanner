@@ -120,9 +120,10 @@ src/
   services/cron_scheduler.py   Per-candle scheduled job
   services/alerts.py           Telegram message text
   services/telegram.py         Telegram transport
-  static/                      Dashboard (index.html, app.js)
+  pages/                       HTML pages: landing.html, login.html, register.html, dashboard.html
+  static/                      Frontend assets: base.css, auth.js, app.js
   api/                         HTTP foundation: envelopes, exceptions, logging, auth, security headers, rate limits
-  main.py                      API routes
+  main.py                      API routes and page handlers
 tests/                         Unit and integration tests
 ```
 
@@ -134,15 +135,20 @@ docker compose up --build -d
 docker compose ps
 ```
 
-Then open <http://localhost:7860>.
+Then open <http://localhost:7860> for the landing page.
 
-Write endpoints (cron trigger, watchlist and journal changes) require `Authorization: Bearer <API_SECRET_KEY>`. The dashboard asks for the key the first time it is needed and remembers it in the browser. Interactive API docs are at `/docs` (use "Authorize" for the key) and `/redoc`.
+- Visitor accounts can self-register at `/register` to view signals, charts, watchlist, and stats (read-only).
+- To bootstrap an administrator account, run:
+  ```bash
+  docker compose exec app python -m scripts.create_admin --email admin@example.com --username admin
+  ```
+- Interactive API docs are at `/docs` and `/redoc`.
 
 ## API
 
 ### Responses
 
-Every JSON response uses one envelope. `code` repeats the HTTP status, `status` is `success` for 2xx and `error` otherwise, and `meta.path` has no query string. The pages `/`, `/static/*`, `/docs`, `/redoc` and `/openapi.json` are not wrapped, but their errors are.
+Every JSON response uses one envelope. `code` repeats the HTTP status, `status` is `success` for 2xx and `error` otherwise, and `meta.path` has no query string. The pages `/`, `/login`, `/register`, `/dashboard`, `/static/*`, `/docs`, `/redoc` and `/openapi.json` are not wrapped, but their errors are.
 
 Success:
 
@@ -188,7 +194,11 @@ Unknown paths return 404 and wrong methods 405 in the same shape. Unexpected fai
 
 ### Authentication
 
-Protected routes take `Authorization: Bearer <API_SECRET_KEY>` (the `HTTPBearer` scheme in OpenAPI). A missing or wrong key returns 401 with `WWW-Authenticate: Bearer`. While `API_SECRET_KEY` is empty, a placeholder or shorter than 16 characters, protected routes return 503.
+- **Session cookie**: Browser authentication uses an opaque session token in an `HttpOnly`, `SameSite=Lax`, `Secure` cookie (`st_session`), backed by PostgreSQL `user_sessions` with stdlib scrypt password hashing.
+- **Roles**:
+  - `user`: Read-only access to signals, charts, watchlist, summary stats, and cron status. Journal entries and write actions are restricted.
+  - `administrator`: Full access including watchlist management, trade journaling, and manual cron triggers.
+- **Machine/CI access**: Automation endpoints accept `Authorization: Bearer <API_SECRET_KEY>` for administrator privileges. When `API_SECRET_KEY` is omitted, machine Bearer requests return 401.
 
 ### Request id
 

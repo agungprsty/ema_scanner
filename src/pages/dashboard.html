@@ -10,66 +10,13 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/tailwind.css">
+  <link rel="stylesheet" href="/static/base.css">
 
   <!-- The chart library loads on demand (see app.js); warming the connection keeps the first chart quick -->
   <link rel="preconnect" href="https://unpkg.com">
 
   <style>
-    :root {
-      --bg: #0f1012;
-      --surface: #151619;
-      --surface-2: #1b1c20;
-      --line: #25272c;
-      --line-strong: #34373d;
-
-      --text: #e6e7e9;
-      --text-2: #a3a6ad;
-      --text-3: #6f737b;
-
-      --long: #3fb68b;
-      --long-bg: rgba(63, 182, 139, 0.12);
-      --short: #e5605a;
-      --short-bg: rgba(229, 96, 90, 0.12);
-      --entry: #7aa2f7;
-      --entry-bg: rgba(122, 162, 247, 0.12);
-      --warn: #d4a72c;
-      --warn-bg: rgba(212, 167, 44, 0.12);
-
-      --font-sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
-      --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
-
-      --radius: 6px;
-      --control-h: 34px;
-      --gutter: max(16px, env(safe-area-inset-left), env(safe-area-inset-right));
-    }
-
-    @media (max-width: 599px) {
-      :root { --control-h: 40px; }
-    }
-
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-    html { color-scheme: dark; -webkit-text-size-adjust: 100%; }
-
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: var(--font-sans);
-      font-size: 14px;
-      line-height: 1.5;
-      -webkit-font-smoothing: antialiased;
-      min-height: 100vh;
-    }
-
-    button, input, select, textarea { font: inherit; color: inherit; }
-
-    :focus-visible { outline: 2px solid var(--entry); outline-offset: 2px; }
-
-    .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-    .muted { color: var(--text-3); }
-    .is-long { color: var(--long); }
-    .is-short { color: var(--short); }
-
     .wrap {
       max-width: 1240px;
       margin: 0 auto;
@@ -106,6 +53,44 @@
 
     .status div { display: flex; gap: 6px; align-items: center; }
     .status dt { color: var(--text-3); }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px 20px;
+    }
+
+    .user-info {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding-left: 12px;
+      border-left: 1px solid var(--line);
+    }
+
+    .user-name {
+      font-size: 13px;
+      color: var(--text-2);
+    }
+
+    .user-role-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 6px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      background: var(--surface-2);
+      border: 1px solid var(--line-strong);
+      color: var(--text-2);
+    }
+
+    .user-role-badge.admin {
+      background: var(--entry-bg);
+      border-color: rgba(122, 162, 247, 0.3);
+      color: var(--entry);
+    }
 
     .dot {
       width: 7px;
@@ -727,11 +712,18 @@
         <span class="brand-name">simple-trade</span>
         <span class="brand-meta" id="brand-meta">RSI 28/72 scanner · Binance USDⓈ-M futures</span>
       </div>
-      <dl class="status">
-        <div><dt>API</dt><dd><span class="dot" id="health-dot"></span> <span id="health-text">Checking</span></dd></div>
-        <div><dt>Next cron</dt><dd class="num" id="cron-text">--:--</dd></div>
-        <div><dt>WIB</dt><dd class="num" id="clock">--:--:--</dd></div>
-      </dl>
+      <div class="topbar-right">
+        <dl class="status">
+          <div><dt>API</dt><dd><span class="dot" id="health-dot"></span> <span id="health-text">Checking</span></dd></div>
+          <div><dt>Next cron</dt><dd class="num" id="cron-text">--:--</dd></div>
+          <div><dt>WIB</dt><dd class="num" id="clock">--:--:--</dd></div>
+        </dl>
+        <div class="user-info">
+          <span class="num user-name" id="user-name"></span>
+          <span class="user-role-badge" id="user-role"></span>
+          <button class="btn btn-quiet" id="btn-logout" type="button">Log out</button>
+        </div>
+      </div>
     </header>
 
     <section class="stats" aria-label="Summary">
@@ -763,7 +755,7 @@
       </div>
     </section>
 
-    <section class="controls" aria-label="Run">
+    <section class="controls admin-only" aria-label="Run">
       <p class="controls-note">Runs after every candle close. Run now scans the watchlist and updates open trades immediately.</p>
       <div class="actions">
         <button class="btn btn-primary" id="btn-scan" type="button">
@@ -781,7 +773,7 @@
         <div class="tabs" role="tablist" aria-label="Views">
           <button class="tab" role="tab" id="tab-active" data-tab="active" aria-selected="true">Active</button>
           <button class="tab" role="tab" id="tab-history" data-tab="history" aria-selected="false">History</button>
-          <button class="tab" role="tab" id="tab-journal" data-tab="journal" aria-selected="false">Journal</button>
+          <button class="tab admin-only" role="tab" id="tab-journal" data-tab="journal" aria-selected="false">Journal</button>
           <button class="tab" role="tab" id="tab-watchlist" data-tab="watchlist" aria-selected="false">Watchlist<span class="count num" id="wl-count"></span></button>
         </div>
         <div class="filters" id="filters">
@@ -801,7 +793,7 @@
             <option value="EXPIRED">Expired</option>
             <option value="NOT_FILLED">Not filled</option>
           </select>
-          <select id="filter-journal" data-tabs="journal" aria-label="Filter by journal status">
+          <select id="filter-journal" class="admin-only" data-tabs="journal" aria-label="Filter by journal status">
             <option value="">Any decision</option>
             <option value="TAKEN">Taken</option>
             <option value="SKIPPED">Skipped</option>
@@ -867,7 +859,7 @@
       </div>
 
       <div id="view-watchlist" hidden>
-        <form class="wl-add" id="wl-form">
+        <form class="wl-add admin-only" id="wl-form">
           <input type="text" id="input-new-symbol" placeholder="Add symbol, e.g. SUIUSDT" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Symbol to add">
           <button class="btn" id="btn-add-symbol" type="submit">Add</button>
         </form>
@@ -898,7 +890,7 @@
         <div><dt>Exit</dt><dd class="num" id="detail-exit">–</dd></div>
       </dl>
 
-      <form class="journal" id="journal-form" novalidate>
+      <form class="journal admin-only" id="journal-form" novalidate>
         <h3>Your trade</h3>
         <p class="journal-help">Record whether you took this signal and at what prices, to compare your results with the signal's.</p>
         <div id="journal-fields">
@@ -932,6 +924,6 @@
 
   <output class="toast" id="toast" hidden></output>
 
-  <script src="/static/app.js?v=4"></script>
+  <script src="/static/app.js?v=5"></script>
 </body>
 </html>

@@ -19,7 +19,7 @@ if _bad_origins:
 SESSION_TTL_HOURS = int(os.getenv("SESSION_TTL_HOURS", "168"))
 if SESSION_TTL_HOURS < 1:
     raise ValueError("SESSION_TTL_HOURS must be at least 1")
-SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "true").lower() in ("true", "1", "yes")
+SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "false").lower() in ("true", "1", "yes")
 
 # Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()

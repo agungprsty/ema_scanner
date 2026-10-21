@@ -10,7 +10,9 @@ from src.main import app
 pytestmark = pytest.mark.unit
 
 APP_JS = Path(__file__).resolve().parent.parent / "src" / "static" / "app.js"
-INDEX_HTML = APP_JS.parent / "index.html"
+PAGES_DIR = Path(__file__).resolve().parent.parent / "src" / "pages"
+DASHBOARD_HTML = PAGES_DIR / "dashboard.html"
+INDEX_HTML = DASHBOARD_HTML
 
 
 @pytest.fixture
@@ -90,7 +92,7 @@ def test_app_js_runs_the_job_only_on_click():
     calls = [line.strip() for line in source.splitlines() if "runNow" in line]
     assert calls == ["async function runNow() {", "btnScan.addEventListener('click', runNow);"]
     assert source.count("/api/cron/trigger") == 1
-    assert "authFetch('/api/cron/trigger', { method: 'POST' })" in source
+    assert "fetch('/api/cron/trigger', { method: 'POST' })" in source
 
 
 def test_frontend_has_no_macd_era_remnants():
@@ -140,7 +142,7 @@ def test_dashboard_shows_fill_rate_and_brand():
     assert 'id="stat-fillrate"' in html
     assert "data.fill_rate" in APP_JS.read_text()
     assert '<span class="brand-name">simple-trade</span>' in html
-    assert '<script src="/static/app.js?v=4"></script>' in html
+    assert '<script src="/static/app.js?v=5"></script>' in html
 
 
 def test_journal_preview_uses_planned_risk():
@@ -188,7 +190,8 @@ def test_chart_library_loads_on_demand():
 def test_app_js_reads_api_envelopes():
     source = APP_JS.read_text()
     assert "X-API-KEY" not in source
-    assert "`Bearer ${key}`" in source
+    assert "prompt(" not in source
+    assert "crossline_api_key" in source
     assert "page.meta.total_data" in source
     assert "`/api/summary?${filterParams(base)}`" in source
     assert "getJson('/api/journal/summary')" in source
@@ -198,12 +201,28 @@ def test_app_js_reads_api_envelopes():
         assert stale not in source
 
 
-def test_index_html_satisfies_csp():
+def test_pages_satisfy_csp():
     # APP_CSP has no 'unsafe-inline' for scripts: no inline scripts or handlers, no eval
-    html = INDEX_HTML.read_text()
-    source = APP_JS.read_text()
-    assert re.findall(r"<script[^>]*>", html) == ['<script src="/static/app.js?v=4">']
-    assert not re.search(r"\son[a-z]+\s*=", html)
-    assert "javascript:" not in html
-    for needle in ("eval(", "new Function", "innerHTML = `<script"):
-        assert needle not in source
+    pages = [
+        PAGES_DIR / "landing.html",
+        PAGES_DIR / "login.html",
+        PAGES_DIR / "register.html",
+        PAGES_DIR / "dashboard.html",
+    ]
+    scripts = [
+        APP_JS,
+        APP_JS.parent / "auth.js",
+    ]
+    for page in pages:
+        html = page.read_text()
+        assert not re.search(r"\son[a-z]+\s*=", html), f"{page.name} contains inline event handler"
+        assert "javascript:" not in html, f"{page.name} contains javascript: protocol"
+        # Scripts should only be external script tags
+        script_tags = re.findall(r"<script[^>]*>", html)
+        for tag in script_tags:
+            assert 'src="/static/' in tag, f"Unexpected script tag in {page.name}: {tag}"
+
+    for script_file in scripts:
+        source = script_file.read_text()
+        for needle in ("eval(", "new Function", "innerHTML = `<script"):
+            assert needle not in source, f"Forbidden '{needle}' found in {script_file.name}"

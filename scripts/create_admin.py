@@ -2,10 +2,14 @@ import argparse
 import asyncio
 import getpass
 import os
-import re
 import sys
+from pathlib import Path
+
+# Add project root to sys.path so the script can be run directly
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.api.passwords import hash_password
+from src.main import RegisterRequest
 from src.services.db import (
     close_db,
     create_user,
@@ -14,33 +18,6 @@ from src.services.db import (
     init_db,
     update_user,
 )
-
-EMAIL_REGEX = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
-USERNAME_REGEX = r"^[A-Za-z0-9_]{3,32}$"
-
-
-def _validate_inputs(email: str, username: str, password: str, confirm_password: str) -> tuple[str, str]:
-    clean_email = email.strip().lower()
-    if len(clean_email) > 254 or not re.fullmatch(EMAIL_REGEX, clean_email):
-        raise ValueError("Invalid email format")
-
-    clean_username = username.strip().lower()
-    if not re.fullmatch(USERNAME_REGEX, clean_username):
-        raise ValueError("Username must be 3-32 characters (letters, numbers, underscores)")
-
-    if password != confirm_password:
-        raise ValueError("Passwords do not match")
-
-    if len(password) < 10 or len(password) > 128:
-        raise ValueError("Password must be between 10 and 128 characters")
-
-    pw_lower = password.lower()
-    if pw_lower == clean_email:
-        raise ValueError("Password cannot match email")
-    if pw_lower == clean_username:
-        raise ValueError("Password cannot match username")
-
-    return clean_email, clean_username
 
 
 async def run_create_admin(email: str, username: str, role: str, password: str | None = None) -> None:
@@ -54,7 +31,11 @@ async def run_create_admin(email: str, username: str, role: str, password: str |
     else:
         confirm = password
 
-    clean_email, clean_username = _validate_inputs(email, username, password, confirm)
+    if password != confirm:
+        raise ValueError("Passwords do not match")
+
+    req = RegisterRequest(email=email, username=username, password=password)
+    clean_email, clean_username = req.email, req.username
 
     if not await init_db():
         print("Error: Could not connect to database", file=sys.stderr)

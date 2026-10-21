@@ -1,0 +1,28 @@
+{
+  "name": "simple-trade",
+  "version": "1.0.0",
+  "description": "Crossline (project `simple-trade`) scans Binance USDⓈ-M futures for RSI(14) crosses into oversold (28) or overbought (72) on one configurable timeframe (default 1h). Each signal becomes a limit order at the signal candle's low or high, with a fixed take profit and stop loss. The app follows every order through fill and exit, and keeps a running win rate, fill rate and result in R.",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "build:css": "tailwindcss -i ./src/static/input.css -o ./src/static/tailwind.css --minify",
+    "watch:css": "tailwindcss -i ./src/static/input.css -o ./src/static/tailwind.css --watch"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agungprsty/ema_scanner.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/agungprsty/ema_scanner/issues"
+  },
+  "homepage": "https://github.com/agungprsty/ema_scanner#readme",
+  "devDependencies": {
+    "tailwindcss": "^3.4.19"
+  }
+}

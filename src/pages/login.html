@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0f1012">
+  <title>Log in — simple-trade</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/tailwind.css">
+  <link rel="stylesheet" href="/static/base.css">
+</head>
+<body class="bg-bg text-brand-text font-sans antialiased min-h-screen">
+  <main class="min-h-screen flex flex-col justify-center items-center px-4 py-8">
+    <div class="w-full max-w-[400px] bg-surface border border-line rounded p-7 shadow-2xl">
+      <header class="mb-6 text-center">
+        <a href="/" class="inline-flex items-center gap-2 text-sm font-semibold tracking-tight text-brand-muted hover:text-brand-text mb-4 transition-colors" aria-label="simple-trade home">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"></polyline>
+            <polyline points="16 7 22 7 22 13"></polyline>
+          </svg>
+          <span>simple-trade</span>
+        </a>
+        <h1 class="text-xl font-semibold text-brand-text tracking-tight mb-1.5">Sign in</h1>
+        <p class="text-xs text-brand-faint">Monitor RSI 28/72 signals and manage your trades</p>
+      </header>
+
+      <div id="form-alert" class="p-3 rounded bg-trade-short-bg border border-trade-short text-brand-text text-xs leading-normal mb-4 hidden" role="alert" aria-live="polite"></div>
+
+      <form id="login-form" method="post" novalidate>
+        <div class="flex flex-col gap-1.5 mb-4 text-left">
+          <label class="text-xs font-medium text-brand-muted flex justify-between items-center" for="login-email">Email</label>
+          <input
+            id="login-email"
+            class="h-[34px] max-sm:h-[40px] bg-surface border border-line-strong rounded px-3 text-xs max-sm:text-base w-full text-brand-text placeholder-brand-faint focus:border-trade-entry focus:outline-none hover:border-[#43464d] transition-colors aria-[invalid=true]:border-trade-short"
+            type="email"
+            name="email"
+            autocomplete="username"
+            placeholder="name@example.com"
+            required
+            aria-describedby="error-email"
+          >
+          <div id="error-email" class="text-xs text-trade-short min-h-[16px] leading-tight" aria-live="polite"></div>
+        </div>
+
+        <div class="flex flex-col gap-1.5 mb-4 text-left">
+          <label class="text-xs font-medium text-brand-muted flex justify-between items-center" for="login-password">Password</label>
+          <input
+            id="login-password"
+            class="h-[34px] max-sm:h-[40px] bg-surface border border-line-strong rounded px-3 text-xs max-sm:text-base w-full text-brand-text placeholder-brand-faint focus:border-trade-entry focus:outline-none hover:border-[#43464d] transition-colors aria-[invalid=true]:border-trade-short"
+            type="password"
+            name="password"
+            autocomplete="current-password"
+            placeholder="••••••••••"
+            required
+            aria-describedby="error-password"
+          >
+          <div id="error-password" class="text-xs text-trade-short min-h-[16px] leading-tight" aria-live="polite"></div>
+        </div>
+
+        <div class="flex items-center gap-2 mb-5">
+          <label class="flex items-center gap-2 text-xs text-brand-muted cursor-pointer select-none">
+            <input type="checkbox" id="show-password" class="w-4 h-4 accent-trade-entry cursor-pointer rounded">
+            <span>Show password</span>
+          </label>
+        </div>
+
+        <button type="submit" class="h-[34px] max-sm:h-[40px] px-3.5 rounded bg-trade-entry text-bg font-semibold text-xs flex items-center justify-center gap-2 cursor-pointer hover:bg-[#92b4fa] transition-colors w-full disabled:opacity-50 disabled:cursor-not-allowed">Sign in</button>
+      </form>
+
+      <footer class="mt-5 pt-4 border-t border-line flex flex-col gap-2.5 text-center text-xs text-brand-muted">
+        <p>Don't have an account? <a href="/register" class="text-trade-entry hover:underline">Sign up</a></p>
+        <p><a href="/" class="text-brand-faint hover:text-brand-text transition-colors">← Back to home</a></p>
+      </footer>
+    </div>
+  </main>
+
+  <script src="/static/auth.js?v=1"></script>
+</body>
+</html>

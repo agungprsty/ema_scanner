@@ -66,7 +66,6 @@ async def test_get_principal_with_valid_session_cookie():
     assert principal.id == 1
     assert principal.username == "admin"
     assert principal.role == "administrator"
-    assert principal.via == "session"
 
 
 @pytest.mark.asyncio

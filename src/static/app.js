@@ -1,7 +1,12 @@
 document.addEventListener('DOMContentLoaded', () => {
   const TZ = 'Asia/Jakarta';
-  const API_KEY_STORAGE = 'crossline_api_key';
-  const LEGACY_API_KEY_STORAGE = 'tokyo_api_key';
+  // One-time cleanup of legacy API key storage
+  try {
+    localStorage.removeItem('crossline_api_key');
+    localStorage.removeItem('tokyo_api_key');
+  } catch {
+    /* storage unavailable */
+  }
   const PAGE_SIZE = 20;
   const TF_UNIT_MS = { m: 60 * 1000, h: 60 * 60 * 1000, d: 24 * 60 * 60 * 1000 };
   const TAB_STATUSES = {
@@ -230,44 +235,15 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // API helpers
-  function readStorage(key) {
-    try { return localStorage.getItem(key); } catch { return null; }
-  }
-
-  function writeStorage(key, value) {
-    try { localStorage.setItem(key, value); } catch { /* storage unavailable */ }
-  }
-
-  function getApiKey() {
-    return readStorage(API_KEY_STORAGE) || readStorage(LEGACY_API_KEY_STORAGE) || '';
-  }
-
-  function setKeyHeader(options, key) {
-    if (options.headers instanceof Headers) {
-      options.headers.set('Authorization', `Bearer ${key}`);
-    } else {
-      options.headers.Authorization = `Bearer ${key}`;
-    }
-  }
-
-  async function authFetch(url, options = {}) {
-    const key = getApiKey();
-    options.headers = options.headers || {};
-    if (key) setKeyHeader(options, key);
-    const res = await fetch(url, options);
-    if (res.status === 401) {
-      const entered = (prompt('This action needs the server API key (API_SECRET_KEY).') || '').trim();
-      if (entered) {
-        writeStorage(API_KEY_STORAGE, entered);
-        setKeyHeader(options, entered);
-        return await fetch(url, options);
-      }
-    }
-    return res;
-  }
-
   // Error envelope: { message, errors: [{ field, message }] }; a proxy may answer with HTML instead
   async function responseError(res) {
+    if (res.status === 401) {
+      window.location.assign('/login');
+      return 'Session expired, redirecting to login...';
+    }
+    if (res.status === 403) {
+      return 'Administrator only';
+    }
     if (res.status === 429) {
       const wait = Number(res.headers.get('Retry-After'));
       return wait > 0 ? `too many requests, try again in ${wait}s` : 'too many requests, try again shortly';
@@ -531,7 +507,7 @@ document.addEventListener('DOMContentLoaded', () => {
     showNotice('');
 
     try {
-      const res = await authFetch('/api/cron/trigger', { method: 'POST' });
+      const res = await fetch('/api/cron/trigger', { method: 'POST' });
       if (!res.ok) throw new Error(await responseError(res));
       const result = (await res.json()).data.result || {};
       const failed = result.failed_symbols || [];
@@ -733,12 +709,12 @@ document.addEventListener('DOMContentLoaded', () => {
           <span class="sym">${escapeHtml(item.symbol)}</span>
           <span class="wl-notes">${escapeHtml(item.notes || '')}</span>
         </div>
-        <label class="toggle">
+        <label class="toggle admin-only">
           <input type="checkbox" class="wl-toggle" data-symbol="${escapeHtml(item.symbol)}" ${item.is_active ? 'checked' : ''}>
           <span class="track"></span>
           <span>Scan</span>
         </label>
-        <button class="btn btn-quiet wl-delete" type="button" data-symbol="${escapeHtml(item.symbol)}">Remove</button>
+        <button class="btn btn-quiet wl-delete admin-only" type="button" data-symbol="${escapeHtml(item.symbol)}">Remove</button>
       </li>
     `).join('');
   }
@@ -749,7 +725,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const sym = input.dataset.symbol;
     const active = input.checked;
     try {
-      const res = await authFetch(`/api/watchlist/${encodeURIComponent(sym)}/toggle`, {
+      const res = await fetch(`/api/watchlist/${encodeURIComponent(sym)}/toggle`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ is_active: active }),
@@ -774,7 +750,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const sym = btn.dataset.symbol;
     if (!confirm(`Remove ${sym} from the watchlist?`)) return;
     try {
-      const res = await authFetch(`/api/watchlist/${encodeURIComponent(sym)}`, { method: 'DELETE' });
+      const res = await fetch(`/api/watchlist/${encodeURIComponent(sym)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(await responseError(res));
       showNotice('');
     } catch (err) {
@@ -792,7 +768,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!sym) return;
     btnAddSymbol.disabled = true;
     try {
-      const res = await authFetch('/api/watchlist', {
+      const res = await fetch('/api/watchlist', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ symbol: sym }),
@@ -981,8 +957,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function saveJournal(sig, status, entry, exit) {
     const url = `/api/signals/${encodeURIComponent(sig.id)}/journal`;
-    if (!status) return authFetch(url, { method: 'DELETE' });
-    return authFetch(url, {
+    if (!status) return fetch(url, { method: 'DELETE' });
+    return fetch(url, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1239,7 +1215,39 @@ document.addEventListener('DOMContentLoaded', () => {
     currentSignal = null;
   });
 
+  // Authentication & Session
+  async function initAuth() {
+    try {
+      const envelope = await getJson('/api/auth/me');
+      const user = envelope.data;
+      if (user) {
+        document.body.dataset.role = user.role;
+        const userNameEl = document.getElementById('user-name');
+        const userRoleEl = document.getElementById('user-role');
+        if (userNameEl) userNameEl.textContent = user.username;
+        if (userRoleEl) {
+          userRoleEl.textContent = user.role === 'administrator' ? 'Admin' : 'User';
+          if (user.role === 'administrator') userRoleEl.classList.add('admin');
+        }
+      }
+    } catch {
+      // getJson redirects to /login on 401
+    }
+  }
+
+  const btnLogout = document.getElementById('btn-logout');
+  if (btnLogout) {
+    btnLogout.addEventListener('click', async () => {
+      try {
+        await fetch('/api/auth/logout', { method: 'POST' });
+      } finally {
+        window.location.assign('/');
+      }
+    });
+  }
+
   // Initialization
+  initAuth();
   btnScan.addEventListener('click', runNow);
   // The "new" tag needs the last run time, which may arrive after the first list
   checkHealth().then(() => { if (shownSignals.length) renderSignals(shownSignals); });

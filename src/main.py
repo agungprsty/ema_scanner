@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import logging
-import re
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -10,7 +9,7 @@ from typing import Annotated, Literal
 
 import pandas as pd
 from fastapi import Depends, FastAPI, Query, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -61,6 +60,7 @@ from src.services.db import (
     delete_watchlist_symbol,
     get_journal,
     get_journal_summary,
+    get_session_user,
     get_signal,
     get_user_by_email,
     get_watchlist,
@@ -119,24 +119,34 @@ setup_http(app)
 app.mount("/static", StaticFiles(directory="src/static"), name="static")
 
 
-def _set_session_cookie(response: Response, token: str) -> None:
+def _cookie_secure(request: Request | None = None) -> bool:
+    if not SESSION_COOKIE_SECURE:
+        return False
+    if request is not None:
+        scheme = request.headers.get("x-forwarded-proto", request.url.scheme).lower()
+        if scheme != "https":
+            return False
+    return True
+
+
+def _set_session_cookie(response: Response, token: str, request: Request | None = None) -> None:
     response.set_cookie(
         key="st_session",
         value=token,
         max_age=SESSION_TTL_HOURS * 3600,
         httponly=True,
-        secure=SESSION_COOKIE_SECURE,
+        secure=_cookie_secure(request),
         samesite="lax",
         path="/",
     )
 
 
-def _clear_session_cookie(response: Response) -> None:
+def _clear_session_cookie(response: Response, request: Request | None = None) -> None:
     response.delete_cookie(
         key="st_session",
         path="/",
         httponly=True,
-        secure=SESSION_COOKIE_SECURE,
+        secure=_cookie_secure(request),
         samesite="lax",
     )
 
@@ -145,45 +155,31 @@ EMAIL_REGEX = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
 USERNAME_REGEX = r"^[A-Za-z0-9_]{3,32}$"
 
 
-class RegisterRequest(BaseModel):
-    email: str = Field(..., max_length=254)
-    username: str = Field(..., pattern=USERNAME_REGEX)
-    password: str = Field(..., min_length=10, max_length=128)
-
-    @field_validator("email")
-    @classmethod
-    def validate_email(cls, v: str) -> str:
-        clean = v.strip().lower()
-        if not re.fullmatch(EMAIL_REGEX, clean):
-            raise ValueError("Invalid email address")
-        return clean
-
-    @field_validator("username")
-    @classmethod
-    def validate_username(cls, v: str) -> str:
-        return v.strip().lower()
-
-    @model_validator(mode="after")
-    def validate_password_not_similar(self) -> "RegisterRequest":
-        pw_lower = self.password.lower()
-        if pw_lower == self.email.lower():
-            raise ValueError("Password cannot match email")
-        if pw_lower == self.username.lower():
-            raise ValueError("Password cannot match username")
-        return self
-
-
 class LoginRequest(BaseModel):
-    email: str = Field(..., max_length=254)
+    email: str = Field(..., pattern=EMAIL_REGEX, max_length=254)
     password: str = Field(..., min_length=1, max_length=128)
 
     @field_validator("email")
     @classmethod
-    def validate_email(cls, v: str) -> str:
-        clean = v.strip().lower()
-        if not re.fullmatch(EMAIL_REGEX, clean):
-            raise ValueError("Invalid email address")
-        return clean
+    def _clean_email(cls, v: str) -> str:
+        return v.strip().lower()
+
+
+class RegisterRequest(LoginRequest):
+    username: str = Field(..., pattern=USERNAME_REGEX)
+    password: str = Field(..., min_length=10, max_length=128)
+
+    @field_validator("username")
+    @classmethod
+    def _clean_username(cls, v: str) -> str:
+        return v.strip().lower()
+
+    @model_validator(mode="after")
+    def _validate_password(self) -> "RegisterRequest":
+        pw = self.password.lower()
+        if pw in (self.email.lower(), self.username.lower()):
+            raise ValueError("Password cannot match email or username")
+        return self
 
 
 # Authentication Endpoints
@@ -193,7 +189,7 @@ class LoginRequest(BaseModel):
     dependencies=[Depends(check_same_origin)],
     response_model=Envelope[dict],
 )
-async def register_endpoint(body: RegisterRequest):
+async def register_endpoint(request: Request, body: RegisterRequest):
     password_hash = await hash_password(body.password)
     user = await create_user(
         email=body.email,
@@ -206,7 +202,7 @@ async def register_endpoint(body: RegisterRequest):
     expires_at = datetime.now(UTC) + timedelta(hours=SESSION_TTL_HOURS)
     await create_session(token_hash, user["id"], expires_at)
     res = success(user, "User registered successfully", code=201)
-    _set_session_cookie(res, token)
+    _set_session_cookie(res, token, request)
     return res
 
 
@@ -215,7 +211,7 @@ async def register_endpoint(body: RegisterRequest):
     dependencies=[Depends(check_same_origin)],
     response_model=Envelope[dict],
 )
-async def login_endpoint(body: LoginRequest):
+async def login_endpoint(request: Request, body: LoginRequest):
     user = await get_user_by_email(body.email)
     stored_hash = user["password_hash"] if user else DUMMY_HASH
     is_valid = await verify_password(body.password, stored_hash)
@@ -237,7 +233,7 @@ async def login_endpoint(body: LoginRequest):
         "created_at": user["created_at"],
     }
     res = success(user_data, "Logged in successfully")
-    _set_session_cookie(res, token)
+    _set_session_cookie(res, token, request)
     return res
 
 
@@ -252,7 +248,7 @@ async def logout_endpoint(request: Request):
         token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
         await delete_session(token_hash)
     res = success(None, "Logged out successfully")
-    _clear_session_cookie(res)
+    _clear_session_cookie(res, request)
     return res
 
 
@@ -317,10 +313,48 @@ class HealthResponse(BaseModel):
     version: str = APP_VERSION
 
 
+async def _page(
+    request: Request,
+    filepath: str,
+    *,
+    require_session: bool = False,
+    redirect_if_authenticated: bool = False,
+) -> Response:
+    user = None
+    token = request.cookies.get("st_session")
+    if token:
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        user = await get_session_user(token_hash)
+
+    if require_session:
+        if not user:
+            return RedirectResponse(url="/login", status_code=303)
+        return FileResponse(filepath, headers={"Cache-Control": "no-store"})
+
+    if redirect_if_authenticated and user:
+        return RedirectResponse(url="/dashboard", status_code=303)
+
+    return FileResponse(filepath)
+
+
 @app.get("/")
-@app.head("/")
-async def root():
-    return FileResponse("src/static/index.html")
+async def root(request: Request):
+    return await _page(request, "src/pages/landing.html")
+
+
+@app.get("/login")
+async def login_page(request: Request):
+    return await _page(request, "src/pages/login.html", redirect_if_authenticated=True)
+
+
+@app.get("/register")
+async def register_page(request: Request):
+    return await _page(request, "src/pages/register.html", redirect_if_authenticated=True)
+
+
+@app.get("/dashboard")
+async def dashboard_page(request: Request):
+    return await _page(request, "src/pages/dashboard.html", require_session=True)
 
 
 @app.get("/api/info", response_model=Envelope[dict])
