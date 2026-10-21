@@ -82,6 +82,9 @@ All settings come from `.env` (see `.env.example`).
 | `CRON_SAFETY_DELAY_SECONDS` | `15` | Delay after each candle close |
 | `CRON_LOOKBACK_CANDLES` | `3` | Closed candles re-checked per run |
 | `TELEGRAM_OUTCOME_ALERTS` | `true` | Send trade updates to Telegram |
+| `API_SECRET_KEY` | empty | Optional machine/CI administrator access via `Authorization: Bearer`; at least 16 characters, empty disables it |
+| `SESSION_TTL_HOURS` | `168` | Login session lifetime; absolute, never extended |
+| `SESSION_COOKIE_SECURE` | `true` | `Secure` flag on the session cookie. Browsers accept it on `http://localhost`; set `false` only for plain HTTP on another host |
 | `CORS_ORIGINS` | `*` | Comma list of browser origins (`scheme://host[:port]`) or `*`. Anything else stops the app at startup. |
 | `LOG_LEVEL` | `INFO` | Root log level |
 | `LOG_FORMAT` | `json` | `json` (one object per line) or `text` for local development |
@@ -89,6 +92,7 @@ All settings come from `.env` (see `.env.example`).
 | `RATE_LIMIT_PER_MINUTE` | `120` | Reads (any other `/api/*` request) |
 | `RATE_LIMIT_WRITE_PER_MINUTE` | `20` | `POST`, `PUT`, `PATCH`, `DELETE` |
 | `RATE_LIMIT_TRIGGER_PER_MINUTE` | `5` | `POST /api/cron/trigger` |
+| `RATE_LIMIT_AUTH_PER_MINUTE` | `5` | `POST /api/auth/login` and `/api/auth/register` |
 | `FORWARDED_ALLOW_IPS` | `172.16.0.0/12` in the image | Proxies whose `X-Forwarded-For`/`-Proto` uvicorn trusts; see [Behind nginx](#behind-nginx) |
 
 Server, database, Redis, Binance and Telegram credentials are documented in `.env.example`.
@@ -103,7 +107,7 @@ Server, database, Redis, Binance and Telegram credentials are documented in `.en
 | Database | PostgreSQL 16 via SQLAlchemy 2.0 and asyncpg |
 | Cache and locks | Redis 7 (`redis.asyncio`) |
 | Alerts | Telegram Bot API via httpx |
-| Dashboard | Plain HTML, CSS and JavaScript; TradingView Lightweight Charts 4.2 |
+| Frontend | Plain HTML and JavaScript without a bundler; Tailwind CSS 3 (prebuilt, committed) for the landing, login and register pages; TradingView Lightweight Charts 4.2 |
 | Deployment | Docker Compose |
 
 ## Project layout
@@ -121,10 +125,18 @@ src/
   services/alerts.py           Telegram message text
   services/telegram.py         Telegram transport
   pages/                       HTML pages: landing.html, login.html, register.html, dashboard.html
-  static/                      Frontend assets: base.css, auth.js, app.js
+  static/                      Frontend assets: base.css, tailwind.css (built from input.css), auth.js, app.js
   api/                         HTTP foundation: envelopes, exceptions, logging, auth, security headers, rate limits
   main.py                      API routes and page handlers
+scripts/create_admin.py        Create an account, reset its password or change its role
 tests/                         Unit and integration tests
+```
+
+`src/static/tailwind.css` is committed, so the image and the deploy need no Node. After changing Tailwind classes in `src/pages/` or `src/static/`, rebuild it and commit the result:
+
+```bash
+npm install
+npm run build:css      # or npm run watch:css while editing
 ```
 
 ## Running locally
@@ -198,7 +210,15 @@ Unknown paths return 404 and wrong methods 405 in the same shape. Unexpected fai
 - **Roles**:
   - `user`: Read-only access to signals, charts, watchlist, summary stats, and cron status. Journal entries and write actions are restricted.
   - `administrator`: Full access including watchlist management, trade journaling, and manual cron triggers.
-- **Machine/CI access**: Automation endpoints accept `Authorization: Bearer <API_SECRET_KEY>` for administrator privileges. When `API_SECRET_KEY` is omitted, machine Bearer requests return 401.
+- **Endpoints**: `POST /api/auth/register` (`{email, username, password}`, always role `user`, 201), `POST /api/auth/login` (`{email, password}`), `POST /api/auth/logout` and `GET /api/auth/me`. Register and login set the cookie and return the user, never the token. Email is the only login identifier; passwords are 10-128 characters and may not equal the email or username.
+- **Pages**: `/dashboard` needs a session and redirects to `/login` (303) without one. `/login` and `/register` redirect to `/dashboard` when already signed in. `/api/health`, `/api/info`, register and login stay public, and logout answers 200 even without a session; every other `/api/*` route answers 401 without credentials.
+- **CSRF**: cookie-authenticated `POST`/`PUT`/`PATCH`/`DELETE`, plus login, register and logout, are rejected with 403 when the `Origin` header names another host. Requests without `Origin` (curl, CI) pass.
+- **Administrators**: public registration never grants `administrator`. Create the first one, reset a password or change a role with the CLI below. It prompts for the password twice, and updating an existing email revokes all of that user's sessions:
+  ```bash
+  docker compose -f docker-compose.prod.yml exec app python -m scripts.create_admin \
+    --email you@example.com --username admin [--role administrator|user]
+  ```
+- **Machine/CI access**: `Authorization: Bearer <API_SECRET_KEY>` acts as an administrator on every route. When the key is empty, a placeholder or shorter than 16 characters, Bearer requests return 401 and the app logs a warning at startup.
 
 ### Request id
 
@@ -206,7 +226,7 @@ Send `X-Request-ID` (1-64 characters of `A-Z a-z 0-9 . _ -`) to set the id, othe
 
 ### Rate limits
 
-Each client IP gets a sliding one-minute window per bucket: `trigger` for `POST /api/cron/trigger`, `write` for other `POST`/`PUT`/`PATCH`/`DELETE`, and `default` for any other `/api/*` request. `/api/health` and everything outside `/api/` are exempt. Windows live in Redis; while Redis is unreachable each worker counts on its own.
+Each client IP gets a sliding one-minute window per bucket: `auth` for `POST /api/auth/login` and `/api/auth/register`, `trigger` for `POST /api/cron/trigger`, `write` for other `POST`/`PUT`/`PATCH`/`DELETE`, and `default` for any other `/api/*` request. `/api/health` and everything outside `/api/` are exempt. Windows live in Redis; while Redis is unreachable each worker counts on its own.
 
 Limited responses carry `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset` (seconds until a slot frees). Over the limit the app returns 429 `Too many requests` with the same headers plus `Retry-After`.
 
@@ -256,6 +276,17 @@ docker network inspect ema_scanner_default -f '{{(index .IPAM.Config 0).Gateway}
 `172.16.0.0/12` covers Docker's default bridge pools and survives the network being recreated with a new subnet. It also trusts any other container on those networks to set the headers, so keep the app port bound to `127.0.0.1` (`APP_BIND_ADDR`) and never use `*`. nginx overwrites `X-Forwarded-For` with the real peer address, so clients cannot spoof it.
 
 Clients of the old API must switch from `X-API-KEY` to `Authorization: Bearer`, from `limit`/`offset` to `page`/`per_page`, and read results under `data`.
+
+## Upgrading to accounts (3.1.0)
+
+Breaking: every `GET /api/*` except `/api/health` and `/api/info` now needs credentials, so external readers must send `Authorization: Bearer <API_SECRET_KEY>`. An empty or too short key now gives 401 instead of 503.
+
+1. In the server `.env`, keep `SESSION_COOKIE_SECURE=true` (the site is HTTPS through nginx); `SESSION_TTL_HOURS` and `RATE_LIMIT_AUTH_PER_MINUTE` are optional.
+2. Deploy as usual. Startup creates the `users` and `user_sessions` tables and leaves the existing tables alone.
+3. Create the first administrator with `scripts.create_admin` (see [Authentication](#authentication)). Until then nobody can use admin actions in the UI; the scheduled job and Bearer requests keep working.
+4. Log in at `/login` and check `/dashboard`. Browsers that stored the old API key drop it the first time they open the dashboard.
+
+Rollback is the previous image; it ignores the new tables.
 
 ## Upgrading from the MACD version
 

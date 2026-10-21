@@ -43,7 +43,7 @@
             <span>Binance USDⓈ-M Futures Scanner</span>
           </div>
           <h1 class="text-3xl sm:text-4xl lg:text-[40px] font-semibold tracking-tight text-brand-text leading-tight mb-4">
-            RSI 28/72 limit-entry signals for Binance futures
+            RSI 28/72 limit-entry signals for Binance USDⓈ-M futures
           </h1>
           <p class="text-base text-brand-muted leading-relaxed mb-8">
             Automated limit orders at extremes, built-in TP/SL tracking, and trade-window charts.
@@ -54,7 +54,7 @@
           </div>
         </div>
 
-        <div class="hero-mock" role="img" aria-label="Mock preview of an active trading signal">
+        <div class="hero-mock" role="img" aria-label="Mock preview of a filled LONG signal and a pending SHORT signal">
           <div class="bg-surface border border-line rounded p-5 shadow-2xl">
             <div class="flex items-center justify-between pb-3.5 border-b border-line mb-3.5">
               <div class="flex items-baseline gap-2">
@@ -88,6 +88,13 @@
             <div class="mt-4 pt-3.5 border-t border-line flex items-center justify-between text-xs text-brand-faint">
               <span>Status: <strong class="text-trade-long">OPEN</strong> (Filled at low)</span>
               <span class="font-mono">Holding 3h</span>
+            </div>
+            <div class="mt-3 pt-3 border-t border-line flex items-center justify-between text-xs text-brand-muted">
+              <span class="flex items-baseline gap-2">
+                <span class="font-mono font-semibold text-brand-text">ETHUSDT</span>
+                <span class="px-2 py-0.5 rounded text-[11px] font-mono font-semibold tracking-wider bg-trade-short-bg text-trade-short border border-trade-short/30">SHORT</span>
+              </span>
+              <span class="font-mono"><span class="text-trade-short">RSI 76.10</span> &middot; limit pending</span>
             </div>
           </div>
         </div>
@@ -138,7 +145,7 @@
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
             </div>
             <h3 class="text-sm font-semibold text-brand-text mb-1.5">Watchlist Control</h3>
-            <p class="text-xs text-brand-muted leading-relaxed">Active watchlist symbols with instant toggle and note annotations.</p>
+            <p class="text-xs text-brand-muted leading-relaxed">The symbols the scanner watches, each with its own active state and notes.</p>
           </div>
 
           <div class="bg-surface border border-line rounded p-5">
@@ -170,15 +177,15 @@
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
             </div>
             <h3 class="text-sm font-semibold text-brand-text mb-1.5">Deterministic Cron</h3>
-            <p class="text-xs text-brand-muted leading-relaxed">Single-flight scanner execution locked to exchange candle boundaries to avoid duplicates.</p>
+            <p class="text-xs text-brand-muted leading-relaxed">One scan right after every candle close, with the cron status and next run shown on the dashboard.</p>
           </div>
 
           <div class="bg-surface border border-line rounded p-5">
             <div class="w-8 h-8 rounded bg-surface-2 flex items-center justify-center text-trade-entry mb-3.5" aria-hidden="true">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
             </div>
-            <h3 class="text-sm font-semibold text-brand-text mb-1.5">Telegram Alerts</h3>
-            <p class="text-xs text-brand-muted leading-relaxed">Real-time alerts broadcast whenever a new signal is generated, filled, or closed.</p>
+            <h3 class="text-sm font-semibold text-brand-text mb-1.5">WIB Clock</h3>
+            <p class="text-xs text-brand-muted leading-relaxed">Signal and candle times shown in Western Indonesia Time next to the live dashboard clock.</p>
           </div>
         </div>
       </div>
@@ -193,7 +200,7 @@
           <p class="text-sm text-brand-muted leading-relaxed">Default parameters used across all scanner iterations on Binance USDⓈ-M futures.</p>
         </div>
 
-        <div class="overflow-hidden border border-line rounded bg-surface">
+        <div class="overflow-x-auto border border-line rounded bg-surface">
           <table class="w-full border-collapse text-xs sm:text-sm text-left">
             <thead>
               <tr class="bg-surface-2 border-b border-line text-brand-faint text-xs uppercase tracking-wider">
@@ -239,16 +246,15 @@
 
         <!-- Final CTA Banner -->
         <div class="bg-surface border border-line-strong rounded p-8 sm:p-10 text-center my-12">
-          <h2 class="text-2xl font-semibold text-brand-text mb-2.5">Ready to track signals?</h2>
+          <h2 class="text-2xl font-semibold text-brand-text mb-2.5">Start watching signals</h2>
           <p class="text-sm text-brand-muted max-w-md mx-auto mb-6">Join now to access live scanner signals, historical outcomes, and candlestick charts.</p>
           <div class="flex flex-wrap justify-center gap-3">
-            <a href="/register" class="inline-flex items-center justify-center h-[40px] px-5 rounded bg-trade-entry text-bg font-semibold text-sm hover:bg-[#92b4fa] transition-colors max-sm:w-full">Create free account</a>
-            <a href="/login" class="inline-flex items-center justify-center h-[40px] px-5 rounded border border-line-strong bg-surface-2 text-brand-text font-medium text-sm hover:border-[#43464d] transition-colors max-sm:w-full">Log in to dashboard</a>
+            <a href="/register" class="inline-flex items-center justify-center h-[40px] px-5 rounded bg-trade-entry text-bg font-semibold text-sm hover:bg-[#92b4fa] transition-colors max-sm:w-full">Sign up</a>
           </div>
         </div>
 
         <div class="pt-6 border-t border-line text-xs text-brand-faint leading-relaxed">
-          <strong class="text-brand-muted">Risk Disclaimer:</strong> Not financial advice. Cryptocurrency futures trading carries significant financial risk and may not be suitable for all investors. Simpletrade provides analytical automation and signals for informational purposes only.
+          <strong class="text-brand-muted">Risk Disclaimer:</strong> Not financial advice. Futures trading is high risk. simple-trade provides signals for informational purposes only.
         </div>
       </div>
     </section>

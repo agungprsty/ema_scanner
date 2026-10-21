@@ -1,6 +1,6 @@
 # Rencana: Landing page, Login/Register, Users & Dashboard
 
-> Branch `feat/rsi-rewrite`. Stack tetap: FastAPI + `src/api/` (envelope, `AppException`, middleware CSP, rate limit), Postgres via SQLAlchemy async (`create_all`, tanpa Alembic), Redis, dan vanilla JS tanpa build step.
+> Branch `feat/rsi-rewrite`. Stack tetap: FastAPI + `src/api/` (envelope, `AppException`, middleware CSP, rate limit), Postgres via SQLAlchemy async (`create_all`, tanpa Alembic), Redis, dan vanilla JS tanpa build step (khusus CSS, lihat revisi "Styling halaman baru" di §1: Tailwind di-build lalu di-commit, dan `tailwind.css` dimuat sebelum `base.css`).
 > **Tidak ada dependency baru.** Hash password memakai `hashlib.scrypt`, token memakai `secrets`, dan hash token memakai `hashlib.sha256`. Semuanya stdlib Python 3.12 (`Dockerfile`: `python:3.12-slim`). Body form dikirim sebagai JSON, jadi tidak perlu `python-multipart`. Email divalidasi dengan regex, jadi tidak perlu `email-validator`/`EmailStr`.
 
 ---
@@ -27,6 +27,7 @@
 | Identifier login | Email saja | Kodenya lebih sedikit dan hanya ada satu jalur yang bisa dipakai untuk enumerasi. Username dipakai sebagai nama tampilan. |
 | Journal | Tetap global dan **khusus administrator**, baik baca maupun tulis | Journal berisi catatan trade milik admin (fill, catatan). `signal_journal.signal_id` bersifat UNIQUE, dan `create_all` tidak pernah menjalankan ALTER (lihat §15). |
 | Lokasi file HTML | `src/pages/`, folder yang **tidak** di-mount | `app.mount("/static", ...)` (`main.py:112`) akan melayani `/static/dashboard.html` tanpa melewati guard. |
+| Styling halaman baru | Tailwind CSS 3 sebagai devDependency npm. `src/static/tailwind.css` di-build dengan `npm run build:css` lalu di-commit. | *Revisi saat implementasi.* Runtime tetap tanpa dependency baru dan image Docker tidak butuh Node. Build hanya diperlukan saat class di halaman berubah. |
 | Parameter `next` | Tidak dipakai. Login selalu menuju `/dashboard`. | Hanya ada satu halaman terlindungi, dan tanpa `next` tidak ada risiko open redirect. |
 
 ---

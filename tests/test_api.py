@@ -338,3 +338,6 @@ def test_openapi_documents_envelopes():
     assert {"page", "per_page", "status", "date"} <= params and not {"limit", "offset"} & params
     assert signals["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("PageEnvelope_dict_")
     assert {"page", "per_page"} & {p["name"] for p in spec["paths"]["/api/summary"]["get"]["parameters"]} == set()
+    # The cookie is read from request.cookies, so Bearer stays the only documented scheme
+    assert spec["components"]["securitySchemes"]["HTTPBearer"]["scheme"] == "bearer"
+    assert spec["paths"]["/api/cron/trigger"]["post"]["security"] == [{"HTTPBearer": []}]

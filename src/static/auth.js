@@ -35,15 +35,47 @@
     });
   }
 
+  // Returns the input when the field exists on this form, so callers can focus it or fall back to the banner
   function setFieldError(field, message) {
     const input = form.elements[field];
-    if (input) {
-      input.setAttribute('aria-invalid', 'true');
-    }
     const err = document.getElementById('error-' + field);
-    if (err) {
-      err.textContent = message;
+    if (!input || !err) return null;
+    input.setAttribute('aria-invalid', 'true');
+    err.textContent = message;
+    return input;
+  }
+
+  // Same rules as RegisterRequest / LoginRequest in src/main.py
+  const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+  const USERNAME_RE = /^[A-Za-z0-9_]{3,32}$/;
+
+  // Pydantic counts code points, JS .length counts UTF-16 units (emoji count twice)
+  function charCount(text) {
+    return [...text].length;
+  }
+
+  function validate(values) {
+    const errors = [];
+    if (!EMAIL_RE.test(values.email) || charCount(values.email) > 254) {
+      errors.push(['email', 'Enter a valid email address']);
     }
+    if (!isRegister) {
+      if (!values.password || charCount(values.password) > 128) errors.push(['password', 'Enter your password']);
+      return errors;
+    }
+    if (!USERNAME_RE.test(values.username)) {
+      errors.push(['username', '3-32 characters: letters, numbers or underscore']);
+    }
+    const pw = values.password;
+    if (charCount(pw) < 10 || charCount(pw) > 128) {
+      errors.push(['password', 'Password must be 10 to 128 characters']);
+    } else if (pw.toLowerCase() === values.email || pw.toLowerCase() === values.username) {
+      errors.push(['password', 'Password cannot match email or username']);
+    }
+    if (values.confirm !== pw) {
+      errors.push(['confirm_password', 'Passwords do not match']);
+    }
+    return errors;
   }
 
   function setAlert(message) {
@@ -59,15 +91,18 @@
     let firstInvalid = null;
 
     const email = (form.elements['email']?.value || '').trim().toLowerCase();
+    const username = (form.elements['username']?.value || '').trim().toLowerCase();
     const password = form.elements['password']?.value || '';
+    const confirm = form.elements['confirm_password']?.value || '';
 
-    if (isRegister) {
-      const confirmPw = form.elements['confirm_password']?.value || '';
-      if (password && confirmPw !== password) {
-        setFieldError('confirm_password', 'Passwords do not match');
-        form.elements['confirm_password']?.focus();
-        return;
-      }
+    const clientErrors = validate({ email: email, username: username, password: password, confirm: confirm });
+    if (clientErrors.length) {
+      clientErrors.forEach(function (pair) {
+        const input = setFieldError(pair[0], pair[1]);
+        if (!firstInvalid) firstInvalid = input;
+      });
+      if (firstInvalid) firstInvalid.focus();
+      return;
     }
 
     // Submit request
@@ -80,7 +115,7 @@
     const payload = isRegister
       ? {
           email: email,
-          username: (form.elements['username'].value || '').trim().toLowerCase(),
+          username: username,
           password: password,
         }
       : {
@@ -110,7 +145,7 @@
         setAlert('Request rejected');
       } else if (res.status === 429) {
         const wait = Number(res.headers.get('Retry-After'));
-        setAlert(wait > 0 ? `Too many attempts, try again in ${wait}s` : 'Too many attempts, try again shortly');
+        setAlert(wait > 0 ? `Too many attempts, try again in ${wait} s` : 'Too many attempts, try again shortly');
       } else if (res.status === 422) {
         let body = null;
         try {
@@ -119,18 +154,14 @@
           body = null;
         }
         if (body && Array.isArray(body.errors) && body.errors.length > 0) {
-          let fieldFound = false;
+          const unmatched = [];
           body.errors.forEach(function (err) {
-            if (err.field) {
-              setFieldError(err.field, err.message);
-              if (!firstInvalid && form.elements[err.field]) {
-                firstInvalid = form.elements[err.field];
-              }
-              fieldFound = true;
-            }
+            const input = err.field ? setFieldError(err.field, err.message) : null;
+            if (!input) unmatched.push(err.message);
+            else if (!firstInvalid) firstInvalid = input;
           });
           if (firstInvalid) firstInvalid.focus();
-          if (!fieldFound) setAlert(body.message || 'Validation failed');
+          if (unmatched.length) setAlert(unmatched.join('. ') || body.message || 'Validation failed');
         } else {
           setAlert((body && body.message) || 'Validation failed');
         }

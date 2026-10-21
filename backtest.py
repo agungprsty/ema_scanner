@@ -1,8 +1,8 @@
-import requests
 import pandas as pd
-import numpy as np
 import plotly.graph_objects as go
+import requests
 from plotly.subplots import make_subplots
+
 
 # -------------------------------------------------------------------------
 # 1. PENGAMBILAN DATA DARI BINANCE FUTURES (FAPI)
@@ -27,7 +27,7 @@ def fetch_binance_futures_klines(symbol="BTCUSDT", interval="1h", limit=500):
     df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = df[col].astype(float)
-        
+
     return df[["open_time", "open", "high", "low", "close", "volume"]]
 
 # -------------------------------------------------------------------------
@@ -37,11 +37,11 @@ def calculate_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -1 * delta.clip(upper=0)
-    
+
     # Wilder's Smoothing (alpha = 1 / period)
     avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    
+
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
     return rsi
@@ -52,19 +52,19 @@ def calculate_rsi(series, period=14):
 def apply_signals(df):
     df["rsi"] = calculate_rsi(df["close"], period=14)
     df["signal"] = None
-    
+
     rsi = df["rsi"]
     prev_rsi = df["rsi"].shift(1)
-    
+
     # Long: candle sebelumnya masih di atas 28.0, lalu candle ini turun menyentuh/menembus <= 28.0
     long_cond = (prev_rsi > 28.0) & (rsi <= 28.0)
-    
+
     # Short: candle sebelumnya masih di bawah 72.0, lalu candle ini naik menyentuh/menembus >= 72.0
     short_cond = (prev_rsi < 72.0) & (rsi >= 72.0)
-    
+
     df.loc[long_cond, "signal"] = "LONG"
     df.loc[short_cond, "signal"] = "SHORT"
-    
+
     return df
 
 # -------------------------------------------------------------------------
@@ -144,7 +144,7 @@ def export_interactive_html(df, symbol="BTCUSDT", output_path="crypto_rsi_strate
         height=850,
         margin=dict(l=45, r=45, t=55, b=45)
     )
-    
+
     fig.update_yaxes(title_text="Price (USDT)", row=1, col=1)
     fig.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
 
@@ -161,10 +161,10 @@ if __name__ == "__main__":
 
     print(f"Mengambil data {pair} ({tf}) dari fapi.binance.com...")
     df_data = fetch_binance_futures_klines(symbol=pair, interval=tf, limit=limit_bars)
-    
+
     print("Memproses sinyal RSI...")
     df_result = apply_signals(df_data)
-    
+
     total_long = (df_result["signal"] == "LONG").sum()
     total_short = (df_result["signal"] == "SHORT").sum()
     print(f"Sinyal terdeteksi -> Long: {total_long}, Short: {total_short}")

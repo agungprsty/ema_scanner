@@ -11,7 +11,7 @@ import pandas as pd
 from fastapi import Depends, FastAPI, Query, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 from src.api import setup_http
 from src.api.exceptions import (
@@ -27,7 +27,14 @@ from src.api.exceptions import (
 from src.api.log import configure_logging
 from src.api.passwords import DUMMY_HASH, hash_password, verify_password
 from src.api.responses import Envelope, PageEnvelope, paginated, success
-from src.api.security import Principal, check_same_origin, get_principal, require_admin
+from src.api.security import (
+    API_KEY_MIN_LENGTH,
+    Principal,
+    api_key_configured,
+    check_same_origin,
+    get_principal,
+    require_admin,
+)
 from src.config.settings import (
     DRY_RUN,
     FILL_WINDOW_CANDLES,
@@ -96,6 +103,12 @@ def _get_client():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if not api_key_configured():
+        logger.warning(
+            "API_SECRET_KEY is unset, a placeholder, or shorter than %d characters; "
+            "machine access via Bearer is disabled",
+            API_KEY_MIN_LENGTH,
+        )
     await init_db()
     await init_redis()
     cron_scheduler.start(_get_client)
@@ -119,34 +132,24 @@ setup_http(app)
 app.mount("/static", StaticFiles(directory="src/static"), name="static")
 
 
-def _cookie_secure(request: Request | None = None) -> bool:
-    if not SESSION_COOKIE_SECURE:
-        return False
-    if request is not None:
-        scheme = request.headers.get("x-forwarded-proto", request.url.scheme).lower()
-        if scheme != "https":
-            return False
-    return True
-
-
-def _set_session_cookie(response: Response, token: str, request: Request | None = None) -> None:
+def _set_session_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         key="st_session",
         value=token,
         max_age=SESSION_TTL_HOURS * 3600,
         httponly=True,
-        secure=_cookie_secure(request),
+        secure=SESSION_COOKIE_SECURE,
         samesite="lax",
         path="/",
     )
 
 
-def _clear_session_cookie(response: Response, request: Request | None = None) -> None:
+def _clear_session_cookie(response: Response) -> None:
     response.delete_cookie(
         key="st_session",
         path="/",
         httponly=True,
-        secure=_cookie_secure(request),
+        secure=SESSION_COOKIE_SECURE,
         samesite="lax",
     )
 
@@ -155,31 +158,32 @@ EMAIL_REGEX = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
 USERNAME_REGEX = r"^[A-Za-z0-9_]{3,32}$"
 
 
+def _trim_lower(v):
+    return v.strip().lower() if isinstance(v, str) else v
+
+
 class LoginRequest(BaseModel):
     email: str = Field(..., pattern=EMAIL_REGEX, max_length=254)
     password: str = Field(..., min_length=1, max_length=128)
 
-    @field_validator("email")
-    @classmethod
-    def _clean_email(cls, v: str) -> str:
-        return v.strip().lower()
+    # mode="before" so the pattern and length checks see the trimmed value
+    _clean_email = field_validator("email", mode="before")(_trim_lower)
 
 
-class RegisterRequest(LoginRequest):
+class RegisterRequest(BaseModel):
+    # Field order matters: the password check reads the already validated email and username
+    email: str = Field(..., pattern=EMAIL_REGEX, max_length=254)
     username: str = Field(..., pattern=USERNAME_REGEX)
     password: str = Field(..., min_length=10, max_length=128)
 
-    @field_validator("username")
-    @classmethod
-    def _clean_username(cls, v: str) -> str:
-        return v.strip().lower()
+    _clean = field_validator("email", "username", mode="before")(_trim_lower)
 
-    @model_validator(mode="after")
-    def _validate_password(self) -> "RegisterRequest":
-        pw = self.password.lower()
-        if pw in (self.email.lower(), self.username.lower()):
+    @field_validator("password")
+    @classmethod
+    def _password_not_identity(cls, v: str, info: ValidationInfo) -> str:
+        if v.lower() in (info.data.get("email"), info.data.get("username")):
             raise ValueError("Password cannot match email or username")
-        return self
+        return v
 
 
 # Authentication Endpoints
@@ -189,7 +193,7 @@ class RegisterRequest(LoginRequest):
     dependencies=[Depends(check_same_origin)],
     response_model=Envelope[dict],
 )
-async def register_endpoint(request: Request, body: RegisterRequest):
+async def register_endpoint(body: RegisterRequest):
     password_hash = await hash_password(body.password)
     user = await create_user(
         email=body.email,
@@ -202,7 +206,7 @@ async def register_endpoint(request: Request, body: RegisterRequest):
     expires_at = datetime.now(UTC) + timedelta(hours=SESSION_TTL_HOURS)
     await create_session(token_hash, user["id"], expires_at)
     res = success(user, "User registered successfully", code=201)
-    _set_session_cookie(res, token, request)
+    _set_session_cookie(res, token)
     return res
 
 
@@ -211,7 +215,7 @@ async def register_endpoint(request: Request, body: RegisterRequest):
     dependencies=[Depends(check_same_origin)],
     response_model=Envelope[dict],
 )
-async def login_endpoint(request: Request, body: LoginRequest):
+async def login_endpoint(body: LoginRequest):
     user = await get_user_by_email(body.email)
     stored_hash = user["password_hash"] if user else DUMMY_HASH
     is_valid = await verify_password(body.password, stored_hash)
@@ -233,7 +237,7 @@ async def login_endpoint(request: Request, body: LoginRequest):
         "created_at": user["created_at"],
     }
     res = success(user_data, "Logged in successfully")
-    _set_session_cookie(res, token, request)
+    _set_session_cookie(res, token)
     return res
 
 
@@ -248,7 +252,7 @@ async def logout_endpoint(request: Request):
         token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
         await delete_session(token_hash)
     res = success(None, "Logged out successfully")
-    _clear_session_cookie(res, request)
+    _clear_session_cookie(res)
     return res
 
 
@@ -324,7 +328,12 @@ async def _page(
     token = request.cookies.get("st_session")
     if token:
         token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        user = await get_session_user(token_hash)
+        try:
+            user = await get_session_user(token_hash)
+        except Exception:
+            # Database down: public pages still render, /dashboard falls back to /login
+            logger.warning("Session lookup failed while serving %s", request.url.path, exc_info=True)
+            user = None
 
     if require_session:
         if not user:
@@ -337,22 +346,22 @@ async def _page(
     return FileResponse(filepath)
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
 async def root(request: Request):
     return await _page(request, "src/pages/landing.html")
 
 
-@app.get("/login")
+@app.api_route("/login", methods=["GET", "HEAD"], include_in_schema=False)
 async def login_page(request: Request):
     return await _page(request, "src/pages/login.html", redirect_if_authenticated=True)
 
 
-@app.get("/register")
+@app.api_route("/register", methods=["GET", "HEAD"], include_in_schema=False)
 async def register_page(request: Request):
     return await _page(request, "src/pages/register.html", redirect_if_authenticated=True)
 
 
-@app.get("/dashboard")
+@app.api_route("/dashboard", methods=["GET", "HEAD"], include_in_schema=False)
 async def dashboard_page(request: Request):
     return await _page(request, "src/pages/dashboard.html", require_session=True)
 

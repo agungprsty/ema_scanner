@@ -9,6 +9,8 @@ from scripts.create_admin import run_create_admin
 from src import main
 from src.api import security
 from src.api.passwords import hash_password, verify_password
+from src.config import settings
+from src.services import redis_client
 
 pytestmark = pytest.mark.unit
 
@@ -157,7 +159,8 @@ async def test_scrypt_password_hashing():
     assert hashed != hashed2
 
 
-async def test_register_endpoint(auth_db):
+async def test_register_endpoint(auth_db, monkeypatch):
+    monkeypatch.setattr(main, "SESSION_COOKIE_SECURE", True)  # independent of a local .env
     transport = ASGITransport(app=main.app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         payload = {
@@ -175,9 +178,12 @@ async def test_register_endpoint(auth_db):
         assert "password" not in data
         assert "password_hash" not in data
 
-        # Check Set-Cookie
+        # Check Set-Cookie: token only in the cookie, never in the body
         cookie = resp.cookies.get("st_session")
-        assert cookie is not None
+        assert cookie is not None and cookie not in resp.text
+        set_cookie = resp.headers["set-cookie"].lower()
+        for attr in ("httponly", "secure", "samesite=lax", "path=/", f"max-age={settings.SESSION_TTL_HOURS * 3600}"):
+            assert attr in set_cookie
 
 
 async def test_register_duplicate_conflict(auth_db):
@@ -230,12 +236,28 @@ async def test_register_validation_rules(auth_db):
         )
         assert res.status_code == 422
 
-        # Password matches username
+        # Password matches username (case-insensitive), reported on the password field
         res = await client.post(
             "/api/auth/register",
-            json={"email": "u@example.com", "username": "user123456", "password": "user123456"},
+            json={"email": "u@example.com", "username": "user123456", "password": "USER123456"},
         )
         assert res.status_code == 422
+        assert [e["field"] for e in res.json()["errors"]] == ["password"]
+
+        # Errors are reported per field
+        res = await client.post(
+            "/api/auth/register",
+            json={"email": "not-an-email", "username": "x", "password": "Password12345"},
+        )
+        assert {e["field"] for e in res.json()["errors"]} == {"email", "username"}
+
+        # Email is trimmed before it is validated
+        res = await client.post(
+            "/api/auth/register",
+            json={"email": "  Spaced@Example.com ", "username": "spaced", "password": "Password12345"},
+        )
+        assert res.status_code == 201
+        assert res.json()["data"]["email"] == "spaced@example.com"
 
 
 async def test_login_timing_identical_messages(auth_db):
@@ -353,6 +375,14 @@ async def test_role_authorization_and_journal_stripping(auth_db, monkeypatch):
 
         assert (
             await client.get("/api/journal", cookies={"st_session": user_token})
+        ).status_code == 403
+
+        assert (
+            await client.put(
+                "/api/signals/10/journal",
+                json={"status": "TAKEN"},
+                cookies={"st_session": user_token},
+            )
         ).status_code == 403
 
         # Standard user: journal_status is stripped from /api/signals
@@ -476,3 +506,113 @@ async def test_create_admin_script(auth_db):
     )
     assert existing[0]["role"] == "user"
     assert admin_token_hash not in auth_db["sessions"]
+
+
+async def test_unauthenticated_access(monkeypatch):
+    async def fake_list_signals(**kwargs):
+        return [], 0, False
+
+    monkeypatch.setattr(main, "list_signals", fake_list_signals)
+    transport = ASGITransport(app=main.app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/signals")
+        assert resp.status_code == 401
+        assert resp.json()["message"] == "Authentication required"
+        assert (await client.get("/api/info")).status_code == 200
+        assert (await client.get("/api/health")).status_code in (200, 503)
+
+
+async def test_pages_answer_head_and_survive_db_outage(monkeypatch):
+    async def db_down(token_hash):
+        raise ConnectionRefusedError("postgres is down")
+
+    monkeypatch.setattr(main, "get_session_user", db_down)
+    transport = ASGITransport(app=main.app)
+    async with AsyncClient(transport=transport, base_url="http://test", cookies={"st_session": "stale"}) as client:
+        for path in ("/", "/login", "/register"):
+            assert (await client.head(path)).status_code == 200
+            assert (await client.get(path)).status_code == 200
+        dash = await client.get("/dashboard", follow_redirects=False)
+        assert dash.status_code == 303 and dash.headers["location"] == "/login"
+
+
+async def test_cookie_write_with_foreign_origin_rejected_bearer_without_origin_passes(auth_db, monkeypatch):
+    admin = await auth_db["create_user"]("root@example.com", "root", "hash", role="administrator")
+    token = "root_token_123"
+    await auth_db["create_session"](
+        hashlib.sha256(token.encode("utf-8")).hexdigest(), admin["id"], datetime.now(UTC) + timedelta(days=1)
+    )
+    saved = []
+
+    async def fake_upsert(signal_id, **fields):
+        saved.append(signal_id)
+        return {"signal_id": signal_id, **fields}
+
+    api_key = "machine_key_for_tests_123"
+    monkeypatch.setattr(main, "upsert_journal_entry", fake_upsert)
+    monkeypatch.setattr(security, "API_SECRET_KEY", api_key)
+
+    transport = ASGITransport(app=main.app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        foreign = await client.put(
+            "/api/signals/7/journal",
+            json={"status": "TAKEN"},
+            cookies={"st_session": token},
+            headers={"Origin": "https://attacker.com"},
+        )
+        assert foreign.status_code == 403
+        assert saved == []
+
+        same_site = await client.put(
+            "/api/signals/7/journal",
+            json={"status": "TAKEN"},
+            cookies={"st_session": token},
+            headers={"Origin": "http://test"},
+        )
+        assert same_site.status_code == 200
+
+        machine = await client.put(
+            "/api/signals/8/journal",
+            json={"status": "SKIPPED"},
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        assert machine.status_code == 200
+        assert saved == [7, 8]
+
+
+async def test_auth_bucket_rate_limits_after_five_attempts(auth_db, monkeypatch):
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", True)
+    monkeypatch.setattr(settings, "RATE_LIMIT_AUTH_PER_MINUTE", 5)
+    monkeypatch.setattr(redis_client, "_redis", None)
+    from fastapi import FastAPI
+
+    from src.api import setup_http
+
+    # A fresh app picks up the enabled limiter; the routes are borrowed from main
+    app = FastAPI()
+    setup_http(app)
+    app.router.routes.extend(r for r in main.app.router.routes if getattr(r, "path", "") == "/api/auth/login")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        body = {"email": "nobody@example.com", "password": "WrongPassword123"}
+        statuses = [(await client.post("/api/auth/login", json=body)).status_code for _ in range(5)]
+        assert statuses == [401] * 5
+        blocked = await client.post("/api/auth/login", json=body)
+        assert blocked.status_code == 429
+        assert int(blocked.headers["Retry-After"]) >= 1
+        assert blocked.headers["X-RateLimit-Limit"] == "5"
+
+
+async def test_create_admin_reset_keeps_role_and_username(auth_db):
+    await auth_db["create_user"]("bob@example.com", "bob_trader", "old_hash", role="user")
+
+    # A password reset without --role must not promote the account
+    await run_create_admin(email="bob@example.com", username="ignored", password="BrandNewPassword1")
+    bob = next(u for u in auth_db["users"].values() if u["email"] == "bob@example.com")
+    assert bob["role"] == "user"
+    assert bob["username"] == "bob_trader"
+    assert await verify_password("BrandNewPassword1", bob["password_hash"])
+
+    # The register rule is checked against the stored username, not the CLI value
+    with pytest.raises(ValueError):
+        await run_create_admin(email="bob@example.com", username="ignored", password="BOB_TRADER")

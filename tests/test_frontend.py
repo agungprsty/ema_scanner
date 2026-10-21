@@ -191,7 +191,9 @@ def test_app_js_reads_api_envelopes():
     source = APP_JS.read_text()
     assert "X-API-KEY" not in source
     assert "prompt(" not in source
-    assert "crossline_api_key" in source
+    # The old API key is only ever removed, never read or sent
+    assert "localStorage.removeItem('crossline_api_key')" in source
+    assert "getItem" not in source and "Bearer" not in source
     assert "page.meta.total_data" in source
     assert "`/api/summary?${filterParams(base)}`" in source
     assert "getJson('/api/journal/summary')" in source

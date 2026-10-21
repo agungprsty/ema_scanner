@@ -350,6 +350,11 @@ def test_sanitize_text(text, expected):
     assert sanitize_text(text) == expected
 
 
+def test_sanitize_redacts_cookie_header():
+    headers = {"cookie": "st_session=abc", "Set-Cookie": "st_session=abc; HttpOnly", "accept": "json"}
+    assert sanitize(headers) == {"cookie": "[REDACTED]", "Set-Cookie": "[REDACTED]", "accept": "json"}
+
+
 def test_sanitize_nested_extra():
     assert sanitize({"cfg": {"API_SECRET_KEY": "s", "x-api-key": "k", "items": [{"password": "p", "n": 1}]}}) == {
         "cfg": {

@@ -10,6 +10,8 @@ load_dotenv()
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "7860"))
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() in ("true", "1", "yes")
+# Optional: machine/CI admin access via Authorization: Bearer; the dashboard uses session cookies
+API_SECRET_KEY = os.getenv("API_SECRET_KEY", "").strip()
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
 _bad_origins = [o for o in CORS_ORIGINS if o != "*" and not re.fullmatch(r"https?://[A-Za-z0-9.-]+(:\d{1,5})?", o)]
 if _bad_origins:
@@ -19,7 +21,7 @@ if _bad_origins:
 SESSION_TTL_HOURS = int(os.getenv("SESSION_TTL_HOURS", "168"))
 if SESSION_TTL_HOURS < 1:
     raise ValueError("SESSION_TTL_HOURS must be at least 1")
-SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "false").lower() in ("true", "1", "yes")
+SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "true").lower() in ("true", "1", "yes")
 
 # Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()

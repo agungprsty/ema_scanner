@@ -20,7 +20,7 @@ module.exports = {
         brand: {
           text: '#e6e7e9',
           muted: '#a3a6ad',
-          faint: '#6f737b',
+          faint: '#858991', // 4.5:1 on surface-2; #6f737b failed WCAG AA
         },
         trade: {
           long: '#3fb68b',
