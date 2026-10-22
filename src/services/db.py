@@ -14,9 +14,12 @@ from sqlalchemy import (
     Integer,
     String,
     UniqueConstraint,
+    and_,
     delete,
     desc,
     func,
+    literal,
+    or_,
     select,
     text,
     update,
@@ -40,7 +43,7 @@ from src.config.settings import (
     ROUND_TRIP_FEE_PERCENT,
     TIMEFRAME,
 )
-from src.strategy.outcome import resolve, trade_return
+from src.strategy.outcome import Trade, resolve, resolve_exit, trade_return
 from src.strategy.rsi import Signal
 
 logger = logging.getLogger(__name__)
@@ -147,6 +150,10 @@ class SignalModel(Base):
     closed_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     pnl_percent: Mapped[float | None] = mapped_column(Float, nullable=True)  # net of fees, closed trades only
     r_multiple: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # When an admin last moved the levels; they only count on candles that open after it
+    levels_edited_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # 1R kept from the levels at the fill when an admin later moves the stop of the open trade
+    risk_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     alerted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -187,6 +194,8 @@ class SignalModel(Base):
             "r_multiple": round(self.r_multiple, 2) if self.r_multiple is not None else None,
             "fill_deadline": _ms_to_iso(fill_deadline),
             "hold_deadline": _ms_to_iso(hold_deadline),
+            "levels_edited_at": _ms_to_iso(self.levels_edited_ms),
+            "risk_percent": round(planned_risk_percent(self), 4),
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -258,25 +267,62 @@ class SessionModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-def build_signals_insert(signals: list[Signal], timeframe: str = TIMEFRAME):
-    """One INSERT for a run's hits; signals already stored are skipped and not returned."""
+def live_same_side(symbol: str, side: str, timeframe: str, candle_ms: int):
+    """Signals on `side` of `symbol` that are still active, or were live at `candle_ms` (an
+    earlier one that closed after it); any of them means a trade there would run two at once."""
+    return select(SignalModel.id).where(
+        SignalModel.symbol == symbol,
+        SignalModel.side == side,
+        SignalModel.timeframe == timeframe,
+        or_(
+            SignalModel.status.in_(ACTIVE_STATUSES),
+            and_(SignalModel.signal_candle_ms < candle_ms, SignalModel.closed_ms > candle_ms),
+        ),
+    )
+
+
+def fill_start_ms(signal_candle_ms: int, levels_edited_ms: int | None, interval_ms: int) -> int:
+    """Open time of the first candle the limit can fill on: the one after the signal candle, or,
+    after an edit, the first that opens at or after the edit, since a moved order cannot have
+    filled earlier. Intra-candle timing is unknown, so the candle running at the edit is skipped."""
+    first = signal_candle_ms + interval_ms
+    if levels_edited_ms is None:
+        return first
+    return max(first, -(-levels_edited_ms // interval_ms) * interval_ms)
+
+
+def build_signal_insert(s: Signal, timeframe: str = TIMEFRAME):
+    """INSERT for one hit, returning the row only when it is new. Skipped when already stored, or
+    when the symbol has a trade on the same side that is still active or closed after this hit's
+    candle, so a symbol never runs two trades in one direction. A cross the scan lookback sees
+    again after that trade closed is still skipped, since it happened while the trade was live."""
+    values = {
+        "symbol": s.symbol,
+        "side": s.side,
+        "timeframe": timeframe,
+        "signal_candle_ms": s.signal_candle_ms,
+        "rsi": s.rsi,
+        "prev_rsi": s.prev_rsi,
+        "candle_close": s.candle_close,
+        "entry_price": s.entry_price,
+        "take_profit": s.take_profit,
+        "stop_loss": s.stop_loss,
+    }
+    columns = SignalModel.__table__.c
+    live = live_same_side(s.symbol, s.side, timeframe, s.signal_candle_ms)
+    # One candle crosses one way, so a row on it on either side means this hit is already stored,
+    # even after an admin flipped that row's side
+    same_candle = select(SignalModel.id).where(
+        SignalModel.symbol == s.symbol,
+        SignalModel.timeframe == timeframe,
+        SignalModel.signal_candle_ms == s.signal_candle_ms,
+    )
+    row = select(*(literal(v, columns[k].type) for k, v in values.items())).where(
+        ~live.exists(), ~same_candle.exists()
+    )
     return (
         pg_insert(SignalModel)
-        .values([
-            {
-                "symbol": s.symbol,
-                "side": s.side,
-                "timeframe": timeframe,
-                "signal_candle_ms": s.signal_candle_ms,
-                "rsi": s.rsi,
-                "prev_rsi": s.prev_rsi,
-                "candle_close": s.candle_close,
-                "entry_price": s.entry_price,
-                "take_profit": s.take_profit,
-                "stop_loss": s.stop_loss,
-            }
-            for s in signals
-        ])
+        .from_select(list(values), row)
         .on_conflict_do_nothing(constraint="uq_signals_key")
         .returning(SignalModel)
     )
@@ -339,6 +385,10 @@ async def init_db(max_retries: int = 5, retry_interval: float = 2.0) -> bool:
             )
             async with _engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
+                # shortcut: create_all never adds columns to an existing table; move to Alembic when a
+                # second schema change needs one
+                await conn.execute(text("ALTER TABLE signals ADD COLUMN IF NOT EXISTS levels_edited_ms BIGINT"))
+                await conn.execute(text("ALTER TABLE signals ADD COLUMN IF NOT EXISTS risk_percent DOUBLE PRECISION"))
 
             async with _session_maker() as session:
                 await seed_default_watchlist(session)
@@ -471,10 +521,15 @@ async def insert_signals(signals: list[Signal], timeframe: str = TIMEFRAME) -> l
     if _session_maker is None:
         raise RuntimeError("Database not initialized")
 
+    # shortcut: the active check is not atomic across runs; one uvicorn worker never overlaps
+    # runs (Scheduler._lock), so take pg_advisory_xact_lock first if it ever runs several
+    rows = []
     async with _session_maker() as session:
-        rows = (await session.execute(build_signals_insert(signals, timeframe))).scalars().all()
+        # One statement each, oldest first, so of two crosses in one run the earlier opens the trade
+        for s in sorted(signals, key=lambda s: s.signal_candle_ms):
+            rows += (await session.execute(build_signal_insert(s, timeframe))).scalars().all()
         await session.commit()
-        return [r.to_dict() for r in rows]
+    return [r.to_dict() for r in rows]
 
 
 async def claim_unalerted_signals(since_ms: int) -> list[dict]:
@@ -708,14 +763,22 @@ def fetch_trade_klines(client, symbol: str, timeframe: str, start_ms: int, count
     return candles
 
 
+def planned_risk_percent(sig) -> float:
+    """Loss after fees when the stop is hit, i.e. 1R. Taken from the stored levels, so later
+    changes to SL_PERCENT keep old R intact, or from the risk kept when an admin moved the stop
+    of the open trade, so a stop at break-even does not blow R up."""
+    kept = getattr(sig, "risk_percent", None)
+    if kept is not None:
+        return kept
+    return abs(sig.entry_price - sig.stop_loss) / sig.entry_price * 100 + ROUND_TRIP_FEE_PERCENT
+
+
 def trade_values(rec, trade) -> dict:
     """Columns to store for a replayed trade; P/L only once it has an exit."""
     pnl = r_multiple = None
     if trade.exit_price is not None:
-        # Planned risk from the stored levels, so later changes to SL_PERCENT keep old R intact
-        risk_percent = abs(rec.entry_price - rec.stop_loss) / rec.entry_price * 100
         pnl, r_multiple = trade_return(
-            rec.side, trade.fill_price, trade.exit_price, risk_percent, ROUND_TRIP_FEE_PERCENT
+            rec.side, trade.fill_price, trade.exit_price, planned_risk_percent(rec), ROUND_TRIP_FEE_PERCENT
         )
     return {
         "status": trade.status,
@@ -759,28 +822,7 @@ async def _evaluate_active_unlocked(client) -> dict:
             summary["failed"] += 1
             continue
         try:
-            fill_window, max_hold = window_candles(interval_ms)
-            # The trade starts on the candle after the signal candle
-            candles = await asyncio.to_thread(
-                fetch_trade_klines,
-                client,
-                rec.symbol,
-                rec.timeframe,
-                rec.signal_candle_ms + interval_ms,
-                fill_window + max_hold,
-                interval_ms,
-            )
-            trade = resolve(
-                rec.side,
-                rec.entry_price,
-                rec.take_profit,
-                rec.stop_loss,
-                candles,
-                fill_window,
-                max_hold,
-                interval_ms,
-                now_ms,
-            )
+            trade = await replay_trade(client, rec, interval_ms, now_ms)
             if trade.status not in NEXT_STATUSES[rec.status]:
                 continue
             values = trade_values(rec, trade)
@@ -808,6 +850,112 @@ async def _evaluate_active_unlocked(client) -> dict:
     return summary
 
 
+async def replay_trade(client, rec, interval_ms: int, now_ms: int) -> Trade:
+    """Replay one stored signal's trade from the klines closed by `now_ms`.
+
+    It starts on the candle after the signal candle, or after an admin edit. The candles an edit
+    skips come off the fill window, so the fill deadline stays where it was.
+    """
+    fill_window, max_hold = window_candles(interval_ms)
+    if rec.fill_ms is not None and rec.levels_edited_ms is not None and rec.levels_edited_ms > rec.fill_ms:
+        # Stop or target moved after the fill: only the exit is replayed, from the edit on, within
+        # the same hold window
+        start_ms = fill_start_ms(rec.fill_ms, rec.levels_edited_ms, interval_ms)
+        hold = max_hold - (start_ms - rec.fill_ms) // interval_ms
+        if hold < 1:
+            # shortcut: MAX_HOLD_HOURS was lowered after the edit; the last hold candle is replayed
+            start_ms, hold = rec.fill_ms + (max_hold - 1) * interval_ms, 1
+        # The candle running at the edit is checked against the new stop only: a hit there ends the
+        # trade, but its target never counts, since part of its range came before the move.
+        # shortcut: a stop the edit widened misses a hit on the old one earlier in that candle
+        running_ms = rec.levels_edited_ms // interval_ms * interval_ms
+        has_running = rec.fill_ms <= running_ms < start_ms
+        candles = await asyncio.to_thread(
+            fetch_trade_klines, client, rec.symbol, rec.timeframe,
+            running_ms if has_running else start_ms, hold + has_running, interval_ms,
+        )
+        if has_running:
+            running = next((c for c in candles if int(c[0]) == running_ms), None)
+            if running is None or int(running[0]) + interval_ms > now_ms:
+                return Trade("OPEN", rec.fill_price, rec.fill_ms)
+            open_, high, low = float(running[1]), float(running[2]), float(running[3])
+            if (low <= rec.stop_loss) if rec.side == "LONG" else (high >= rec.stop_loss):
+                exit_price = min(open_, rec.stop_loss) if rec.side == "LONG" else max(open_, rec.stop_loss)
+                return Trade("SL_HIT", rec.fill_price, rec.fill_ms, exit_price, running_ms)
+            candles = [c for c in candles if int(c[0]) >= start_ms]
+        return resolve_exit(
+            rec.side, rec.fill_price, rec.fill_ms, rec.take_profit, rec.stop_loss, candles, hold, interval_ms, now_ms
+        )
+    start_ms = fill_start_ms(rec.signal_candle_ms, rec.levels_edited_ms, interval_ms)
+    fill_window -= (start_ms - rec.signal_candle_ms - interval_ms) // interval_ms
+    if fill_window <= 0:
+        # FILL_WINDOW_HOURS was lowered after the edit: nothing is left to fill on
+        return Trade("NOT_FILLED", closed_ms=start_ms)
+    candles = await asyncio.to_thread(
+        fetch_trade_klines, client, rec.symbol, rec.timeframe, start_ms, fill_window + max_hold, interval_ms
+    )
+    return resolve(
+        rec.side, rec.entry_price, rec.take_profit, rec.stop_loss, candles, fill_window, max_hold, interval_ms, now_ms
+    )
+
+
+async def update_signal_levels(
+    client, signal_id: int, side: str, entry_price: float, take_profit: float, stop_loss: float, now_ms: int
+) -> tuple[dict, bool] | None:
+    """Admin edit of a pending or open signal. While it awaits a fill the side, limit, target and
+    stop can all move, and the order can then only fill on candles that open after the edit. Once
+    filled only the target and stop move: they apply from the next candle, earlier candles keep
+    the old ones, and R stays measured against the risk at the fill.
+
+    Returns (row, already alerted), or None when there is no such signal. Raises Conflict when
+    the signal closed, an open trade's side or entry would change, its window has no candle left,
+    or a new side would run two trades on that side of the symbol. Raises when the klines cannot
+    be fetched.
+    """
+    if _session_maker is None:
+        raise RuntimeError("Database not initialized")
+
+    # A replay running now would store a fill or exit worked out from the old levels
+    async with _evaluation_lock, _session_maker() as session:
+        rec = (await session.execute(select(SignalModel).where(SignalModel.id == signal_id))).scalar_one_or_none()
+        if rec is None:
+            return None
+        if rec.status not in ACTIVE_STATUSES:
+            raise Conflict("Only a signal awaiting fill or open can be edited")
+        interval_ms = INTERVAL_MS.get(rec.timeframe)
+        if interval_ms is None:
+            raise Conflict("Signal has an unsupported timeframe")
+        fill_window, max_hold = window_candles(interval_ms)
+        if rec.status == "OPEN":
+            if side != rec.side or entry_price != rec.entry_price:
+                raise Conflict("The side and entry are fixed once the order filled; move the stop or target")
+            if (fill_start_ms(rec.fill_ms, now_ms, interval_ms) - rec.fill_ms) // interval_ms >= max_hold:
+                raise Conflict("The hold window ends before the next candle, so new levels could not apply")
+        elif (fill_start_ms(rec.signal_candle_ms, now_ms, interval_ms) - rec.signal_candle_ms - interval_ms) // interval_ms >= fill_window:
+            raise Conflict("The fill window ends before the next candle, so the order could not fill")
+        # The stored status is from the last run; candles closed since may already hold a fill or
+        # an exit at the old levels, which an edit would erase. The next run records those.
+        # shortcut: the candle forming now is unknown either way, so an old-level fill or exit in it is lost
+        if (await replay_trade(client, rec, interval_ms, now_ms)).status != rec.status:
+            raise Conflict("The trade already filled or closed at its old levels; the next run records it")
+        if rec.status == "OPEN" and rec.risk_percent is None:
+            rec.risk_percent = planned_risk_percent(rec)
+        if side != rec.side:
+            others = live_same_side(rec.symbol, side, rec.timeframe, rec.signal_candle_ms).where(SignalModel.id != rec.id)
+            if (await session.execute(others.limit(1))).first() is not None:
+                raise Conflict(f"{rec.symbol} already has a {side} trade at this time")
+        symbol = rec.symbol  # a failed commit expires rec
+        rec.side, rec.entry_price, rec.take_profit, rec.stop_loss = side, entry_price, take_profit, stop_loss
+        rec.levels_edited_ms = now_ms
+        try:
+            await session.commit()
+        except IntegrityError as e:
+            raise Conflict(f"{symbol} already has a {side} signal on this candle") from e
+        await session.refresh(rec)  # updated_at is set by the server, so it expired on commit
+        logger.info("Signal %d levels edited: %s entry %s TP %s SL %s", signal_id, side, entry_price, take_profit, stop_loss)
+        return rec.to_dict(), rec.alerted_at is not None
+
+
 async def evaluate_active(client) -> dict:
     """Replay every pending and open trade and store the moves it made since the last run.
 
@@ -832,9 +980,8 @@ def journal_view(sig, entry) -> dict | None:
     view = entry.to_dict()
     pnl, r_multiple = None, None
     if entry.status == "TAKEN" and entry.entry_fill and entry.exit_fill:
-        risk_percent = abs(sig.entry_price - sig.stop_loss) / sig.entry_price * 100
         pnl, r_multiple = trade_return(
-            sig.side, entry.entry_fill, entry.exit_fill, risk_percent, ROUND_TRIP_FEE_PERCENT
+            sig.side, entry.entry_fill, entry.exit_fill, planned_risk_percent(sig), ROUND_TRIP_FEE_PERCENT
         )
     view["pnl_percent"] = round(pnl, 2) if pnl is not None else None
     view["r_multiple"] = round(r_multiple, 2) if r_multiple is not None else None

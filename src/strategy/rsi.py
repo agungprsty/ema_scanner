@@ -2,7 +2,14 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from src.config.settings import RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_PERIOD, SL_PERCENT, TP_PERCENT
+from src.config.settings import (
+    ROUND_TRIP_FEE_PERCENT,
+    RSI_OVERBOUGHT,
+    RSI_OVERSOLD,
+    RSI_PERIOD,
+    SL_PERCENT,
+    TP_PERCENT,
+)
 
 
 @dataclass
@@ -31,10 +38,15 @@ def compute_rsi(close: pd.Series, period: int = RSI_PERIOD) -> pd.Series:
 
 
 def levels(side: str, entry: float) -> tuple[float, float]:
-    """Return (take_profit, stop_loss) placed TP_PERCENT / SL_PERCENT away from the limit entry."""
+    """Return (take_profit, stop_loss) for a net TP_PERCENT gain or SL_PERCENT loss after fees.
+
+    The fees are paid on both exits, so the target moves out by them and the stop moves in.
+    """
+    tp = (TP_PERCENT + ROUND_TRIP_FEE_PERCENT) / 100
+    sl = (SL_PERCENT - ROUND_TRIP_FEE_PERCENT) / 100
     if side == "LONG":
-        return entry * (1 + TP_PERCENT / 100), entry * (1 - SL_PERCENT / 100)
-    return entry * (1 - TP_PERCENT / 100), entry * (1 + SL_PERCENT / 100)
+        return entry * (1 + tp), entry * (1 - sl)
+    return entry * (1 - tp), entry * (1 + sl)
 
 
 def detect_signals(df: pd.DataFrame, symbol: str, lookback: int) -> list[Signal]:

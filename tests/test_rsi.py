@@ -36,8 +36,9 @@ def test_compute_rsi_matches_backtest():
 
 
 def test_levels():
-    assert levels("LONG", 100.0) == (pytest.approx(102.0), pytest.approx(99.0))
-    assert levels("SHORT", 100.0) == (pytest.approx(98.0), pytest.approx(101.0))
+    # Net of the 0.1% round-trip fee: +2% at the target, -1% at the stop
+    assert levels("LONG", 100.0) == (pytest.approx(102.1), pytest.approx(99.1))
+    assert levels("SHORT", 100.0) == (pytest.approx(97.9), pytest.approx(100.9))
 
 
 def _first_index(mask: pd.Series) -> int:
@@ -60,8 +61,8 @@ def test_long_on_cross_down_to_oversold():
     assert sig.prev_rsi > 28 >= sig.rsi
     assert sig.entry_price == df["low"].iloc[i]
     assert sig.candle_close == df["close"].iloc[i]
-    assert sig.take_profit == pytest.approx(sig.entry_price * 1.02)
-    assert sig.stop_loss == pytest.approx(sig.entry_price * 0.99)
+    assert sig.take_profit == pytest.approx(sig.entry_price * 1.021)
+    assert sig.stop_loss == pytest.approx(sig.entry_price * 0.991)
     assert sig.signal_candle_ms == T0_MS + i * 3_600_000
 
 
@@ -75,8 +76,8 @@ def test_short_on_cross_up_to_overbought():
     assert [(s.side, s.bars_ago) for s in sigs] == [("SHORT", 0)]
     sig = sigs[0]
     assert sig.entry_price == df["high"].iloc[i]
-    assert sig.take_profit == pytest.approx(sig.entry_price * 0.98)
-    assert sig.stop_loss == pytest.approx(sig.entry_price * 1.01)
+    assert sig.take_profit == pytest.approx(sig.entry_price * 0.979)
+    assert sig.stop_loss == pytest.approx(sig.entry_price * 1.009)
 
 
 def _with_rsi(monkeypatch, values):

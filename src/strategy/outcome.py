@@ -45,11 +45,32 @@ def resolve(
             return Trade("NOT_FILLED", closed_ms=int(closed[fill_window - 1][0]) + interval_ms)
         return Trade("PENDING")
 
-    window = closed[f : f + max_hold]
+    return _exit(long, entry, tp, sl, closed[f : f + max_hold], fill, fill_ms, max_hold, interval_ms, True)
+
+
+def resolve_exit(
+    side: str,
+    fill: float,
+    fill_ms: int,
+    tp: float,
+    sl: float,
+    candles: list,
+    max_hold: int,
+    interval_ms: int,
+    now_ms: int,
+) -> Trade:
+    """Replay only the exit of a trade that already filled, from `candles` on and for up to
+    `max_hold` of them, with the same rules as resolve. Used after an admin moved the stop or
+    target of an open trade, so the candles before the move keep the levels they had."""
+    closed = [c for c in candles if int(c[0]) + interval_ms <= now_ms]
+    return _exit(side == "LONG", fill, tp, sl, closed[:max_hold], fill, fill_ms, max_hold, interval_ms, False)
+
+
+def _exit(long, entry, tp, sl, window, fill, fill_ms, max_hold, interval_ms, starts_on_fill) -> Trade:
     for j, candle in enumerate(window):
         open_ms = int(candle[0])
         open_, high, low = float(candle[1]), float(candle[2]), float(candle[3])
-        tp_ok = j > 0 or (open_ <= entry if long else open_ >= entry)
+        tp_ok = j > 0 or not starts_on_fill or (open_ <= entry if long else open_ >= entry)
         hit_sl = low <= sl if long else high >= sl
         hit_tp = tp_ok and (high >= tp if long else low <= tp)
         past_tp = tp_ok and (open_ >= tp if long else open_ <= tp)

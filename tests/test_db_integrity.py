@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.dialects import postgresql
 
+from src.api.exceptions import Conflict
 from src.services import db
 from src.strategy.outcome import Trade
 from src.strategy.rsi import Signal
@@ -34,8 +35,8 @@ def _signal(**overrides) -> Signal:
         "prev_rsi": 30.1,
         "candle_close": 100.5,
         "entry_price": 100.0,
-        "take_profit": 102.0,
-        "stop_loss": 99.0,
+        "take_profit": 102.1,
+        "stop_loss": 99.1,
         "bars_ago": 0,
     }
     values.update(overrides)
@@ -53,8 +54,8 @@ def _rec(**overrides) -> db.SignalModel:
         "prev_rsi": 30.1,
         "candle_close": 100.5,
         "entry_price": 100.0,
-        "take_profit": 102.0,
-        "stop_loss": 99.0,
+        "take_profit": 102.1,
+        "stop_loss": 99.1,
         "status": "PENDING",
     }
     values.update(overrides)
@@ -71,6 +72,9 @@ class FakeResult:
 
     def scalars(self):
         return SimpleNamespace(all=lambda: self._rows)
+
+    def first(self):
+        return self._value
 
 
 class FakeSession:
@@ -91,6 +95,9 @@ class FakeSession:
 
     async def commit(self):
         self.commits += 1
+
+    async def refresh(self, row):
+        pass
 
 
 class FakeClient:
@@ -123,12 +130,23 @@ def test_journal_references_signals_with_cascade():
     assert table.c.signal_id.unique and not table.c.signal_id.nullable
 
 
-def test_signals_insert_skips_conflicts_and_returns_new_rows():
-    sql = _compile(db.build_signals_insert([_signal(), _signal(side="SHORT")], "1h"))
-    assert "INSERT INTO signals" in sql
+def test_signal_insert_skips_stored_hits_and_crosses_inside_a_live_trade_on_the_same_side():
+    sql = _compile(db.build_signal_insert(_signal(), "1h"))
+    assert "INSERT INTO signals (symbol, side, timeframe, signal_candle_ms" in sql
+    assert (
+        "WHERE NOT (EXISTS (SELECT signals.id \nFROM signals \nWHERE signals.symbol = %(symbol_1)s::VARCHAR"
+        " AND signals.side = %(side_1)s::VARCHAR AND signals.timeframe = %(timeframe_1)s::VARCHAR"
+        " AND (signals.status IN (__[POSTCOMPILE_status_1])"
+        " OR signals.signal_candle_ms < %(signal_candle_ms_1)s::BIGINT"
+        " AND signals.closed_ms > %(closed_ms_1)s::BIGINT)))"
+    ) in sql
     assert "ON CONFLICT ON CONSTRAINT uq_signals_key DO NOTHING" in sql
     assert "RETURNING signals.id" in sql
-    assert "timeframe_m1" in sql  # one statement for every hit
+    # A row on the same candle on either side, e.g. one an admin flipped, keeps the scan from re-adding it
+    assert (
+        "NOT (EXISTS (SELECT signals.id \nFROM signals \nWHERE signals.symbol = %(symbol_2)s::VARCHAR"
+        " AND signals.timeframe = %(timeframe_2)s::VARCHAR AND signals.signal_candle_ms = %(signal_candle_ms_2)s::BIGINT))"
+    ) in sql
 
 
 def test_transition_update_only_wins_from_the_old_status():
@@ -160,10 +178,14 @@ async def test_insert_signals_returns_inserted_rows(monkeypatch):
     session = FakeSession([FakeResult(rows=[_rec(id=7)])])
     monkeypatch.setattr(db, "_session_maker", lambda: session)
 
-    rows = await db.insert_signals([_signal(), _signal()], "1h")
+    later, earlier = _signal(signal_candle_ms=S + HOUR), _signal()
+    rows = await db.insert_signals([later, earlier], "1h")
 
     assert [r["id"] for r in rows] == [7]
     assert rows[0]["fill_deadline"] == db._ms_to_iso(S + 13 * HOUR)
+    # One statement per hit, oldest first, so the earlier cross opens the trade and blocks the later
+    stored = [s.compile().params["param_4"] for s in session.statements]
+    assert stored == [S, S + HOUR]
     assert session.commits == 1
 
 
@@ -182,6 +204,13 @@ def test_signal_row_deadlines_follow_its_timeframe():
 
 
 def test_trade_values_use_planned_risk():
+    # TP and SL are placed net of fees, so a target is +2% and +2R, a stop -1% and -1R
+    target = db.trade_values(_rec(), Trade("TP_HIT", 100.0, S + HOUR, 102.1, S + 2 * HOUR))
+    assert target["pnl_percent"] == pytest.approx(2.0) and target["r_multiple"] == pytest.approx(2.0)
+    stop = db.trade_values(_rec(), Trade("SL_HIT", 100.0, S + HOUR, 99.1, S + 2 * HOUR))
+    assert stop["pnl_percent"] == pytest.approx(-1.0) and stop["r_multiple"] == pytest.approx(-1.0)
+
+    # A fill that gapped near the stop is still measured against the planned 1R
     gap = db.trade_values(_rec(), Trade("SL_HIT", 99.2, S + HOUR, 98.9, S + 2 * HOUR))
     assert gap["r_multiple"] == pytest.approx((98.9 - 99.2) / 99.2 * 100 - db.ROUND_TRIP_FEE_PERCENT)
 
@@ -231,8 +260,9 @@ async def test_evaluate_active_records_the_transition(monkeypatch):
     moved = transitions[0]
     assert moved["previous_status"] == "PENDING"
     assert moved["status"] == "TP_HIT"
-    assert moved["fill_price"] == 100.0 and moved["exit_price"] == 102.0
-    assert moved["r_multiple"] == pytest.approx(2 - db.ROUND_TRIP_FEE_PERCENT, abs=0.01)
+    assert moved["fill_price"] == 100.0 and moved["exit_price"] == 102.1
+    assert moved["pnl_percent"] == pytest.approx(2.0, abs=0.01)
+    assert moved["r_multiple"] == pytest.approx(2.0, abs=0.01)
     assert "signals.status = " in _compile(session.statements[1])
     assert session.commits == 1
 
@@ -370,3 +400,139 @@ def test_max_drawdown_measures_peak_to_trough():
     assert db._max_drawdown([]) == 0.0
     assert db._max_drawdown([1.5, -1.0, -1.0, 1.5, -1.0]) == pytest.approx(2.0)
     assert db._max_drawdown([-1.0, -1.0]) == pytest.approx(2.0)
+
+
+def test_an_edited_limit_fills_from_the_first_candle_opening_after_the_edit():
+    assert db.fill_start_ms(S, None, HOUR) == S + HOUR
+    assert db.fill_start_ms(S, S + 3 * HOUR, HOUR) == S + 3 * HOUR  # edited right at a candle open
+    assert db.fill_start_ms(S, S + 3 * HOUR + 1, HOUR) == S + 4 * HOUR  # the running candle is skipped
+    assert db.fill_start_ms(S, S + 10, HOUR) == S + HOUR  # never before the candle after the signal
+
+
+async def test_evaluate_active_replays_an_edited_signal_from_the_edit_with_the_same_deadline(monkeypatch):
+    candles = [[S + i * HOUR, "101", "101.5", "100.5", "101"] for i in range(1, 40)]
+    client = FakeClient(candles)
+    session = FakeSession([FakeResult(rows=[_rec(levels_edited_ms=S + 4 * HOUR + 1)]), FakeResult(value=21)])
+    monkeypatch.setattr(db, "_session_maker", lambda: session)
+    monkeypatch.setattr(db, "_evaluation_lock", asyncio.Lock())
+
+    result = await db.evaluate_active(client)
+
+    # Candles 1-4 opened before the edit, so 8 of the 12 fill candles are left, plus the 24 hold
+    assert client.calls == [("BTCUSDT", "1h", S + 5 * HOUR, 8 + 24)]
+    moved = result["transitions"][0]
+    assert moved["status"] == "NOT_FILLED"
+    assert moved["closed_ms"] == S + 13 * HOUR  # the original 12-candle deadline
+
+
+# Candles that never reach the 100.0 limit, so the old levels are still unfilled at the edit
+UNFILLED = FakeClient([[S + i * HOUR, "101", "101.5", "100.5", "101"] for i in range(1, 40)])
+
+
+def _edit_session(monkeypatch, rec, other=None):
+    session = FakeSession([FakeResult(value=rec), FakeResult(value=other)])
+    monkeypatch.setattr(db, "_session_maker", lambda: session)
+    monkeypatch.setattr(db, "_evaluation_lock", asyncio.Lock())
+    return session
+
+
+async def test_update_signal_levels_moves_a_pending_signal_and_stamps_the_edit(monkeypatch):
+    rec = _rec(alerted_at=datetime(2026, 1, 1, tzinfo=UTC))
+    session = _edit_session(monkeypatch, rec)
+
+    row, alerted = await db.update_signal_levels(UNFILLED, 21, "LONG", 99.5, 101.6, 98.6, S + 2 * HOUR)
+
+    assert (row["entry_price"], row["take_profit"], row["stop_loss"]) == (99.5, 101.6, 98.6)
+    assert row["levels_edited_at"] == db._ms_to_iso(S + 2 * HOUR)
+    assert alerted is True and session.commits == 1
+    assert len(session.statements) == 1  # same side: no check for another trade
+
+
+async def test_update_signal_levels_refuses_filled_late_or_doubled_trades(monkeypatch):
+    _edit_session(monkeypatch, _rec(status="TP_HIT"))
+    with pytest.raises(Conflict, match="awaiting fill or open"):
+        await db.update_signal_levels(UNFILLED, 21, "LONG", 99.5, 101.6, 98.6, S + 2 * HOUR)
+
+    _edit_session(monkeypatch, _rec(status="OPEN", fill_price=100.0, fill_ms=S + HOUR))
+    with pytest.raises(Conflict, match="side and entry are fixed"):
+        await db.update_signal_levels(UNFILLED, 21, "LONG", 99.5, 101.6, 98.6, S + 2 * HOUR)
+
+    # 12 fill candles from S + 1h: an edit during the last one leaves none to fill on
+    _edit_session(monkeypatch, _rec())
+    with pytest.raises(Conflict, match="fill window"):
+        await db.update_signal_levels(UNFILLED, 21, "LONG", 99.5, 101.6, 98.6, S + 12 * HOUR + 1)
+
+    # The stored status is from the last run, but a candle closed since then filled the old limit
+    filled = FakeClient([[S + HOUR, "100.5", "100.8", "99.9", "100.2"]])
+    session = _edit_session(monkeypatch, _rec())
+    with pytest.raises(Conflict, match="old levels"):
+        await db.update_signal_levels(filled, 21, "LONG", 99.5, 101.6, 98.6, S + 2 * HOUR)
+    assert session.commits == 0
+
+    session = _edit_session(monkeypatch, _rec(), other=(99,))
+    with pytest.raises(Conflict, match="already has a SHORT"):
+        await db.update_signal_levels(UNFILLED, 21, "SHORT", 100.0, 97.9, 100.9, S + 2 * HOUR)
+    assert session.commits == 0
+
+    _edit_session(monkeypatch, None)
+    assert await db.update_signal_levels(UNFILLED, 21, "LONG", 99.5, 101.6, 98.6, S) is None
+
+
+async def test_a_window_shrunk_below_an_edit_ends_the_order_at_the_edit_without_fetching(monkeypatch):
+    client = FakeClient([])
+    monkeypatch.setattr(db, "FILL_WINDOW_HOURS", 3.0)  # lowered after an edit that skipped 4 candles
+    trade = await db.replay_trade(client, _rec(levels_edited_ms=S + 4 * HOUR + 1), HOUR, S + 10 * HOUR)
+    assert (trade.status, trade.closed_ms) == ("NOT_FILLED", S + 5 * HOUR)
+    assert client.calls == []
+
+
+# Fills on the first candle at 100.0, then trades between the 99.1 stop and the 102.1 target
+FILLED_OPEN = FakeClient(
+    [[S + HOUR, "100.5", "100.8", "99.9", "100.4"]]
+    + [[S + i * HOUR, "100.4", "101", "100.3", "100.6"] for i in range(2, 40)]
+)
+
+
+async def test_an_open_trade_moves_only_its_stop_and_target_and_keeps_its_1r(monkeypatch):
+    rec = _rec(status="OPEN", fill_price=100.0, fill_ms=S + HOUR)
+    session = _edit_session(monkeypatch, rec)
+
+    # Stop to break-even plus fees, target unchanged
+    row, _ = await db.update_signal_levels(FILLED_OPEN, 21, "LONG", 100.0, 102.1, 100.2, S + 3 * HOUR + 1)
+
+    assert (row["stop_loss"], row["take_profit"]) == (100.2, 102.1)
+    assert row["risk_percent"] == pytest.approx(1.0)  # the 0.9% stop at the fill plus the fee
+    assert session.commits == 1
+
+
+async def test_after_an_open_edit_only_the_exit_is_replayed_from_the_next_candle(monkeypatch):
+    rec = _rec(status="OPEN", fill_price=100.0, fill_ms=S + HOUR, levels_edited_ms=S + 3 * HOUR + 1,
+               stop_loss=100.2, risk_percent=1.0)
+    client = FakeClient([
+        [S + 3 * HOUR, "100.6", "100.9", "100.3", "100.5"],  # running at the edit, above the new stop
+        [S + 4 * HOUR, "100.5", "100.9", "100.1", "100.3"],
+    ])
+
+    trade = await db.replay_trade(client, rec, HOUR, S + 6 * HOUR)
+
+    # From the candle running at the edit: it plus the 21 hold candles left after it
+    assert client.calls == [("BTCUSDT", "1h", S + 3 * HOUR, 22)]
+    assert (trade.status, trade.fill_price, trade.exit_price, trade.closed_ms) == ("SL_HIT", 100.0, 100.2, S + 4 * HOUR)
+    # R against the 1% risk at the fill: +0.2% move minus the 0.1% fee
+    assert db.trade_values(rec, trade)["r_multiple"] == pytest.approx(0.1)
+
+
+async def test_the_candle_running_at_an_open_edit_counts_its_new_stop_but_not_its_target():
+    rec = _rec(status="OPEN", fill_price=100.0, fill_ms=S + HOUR, levels_edited_ms=S + 3 * HOUR + 1,
+               stop_loss=99.5, take_profit=100.8, risk_percent=1.0)
+    dropped = FakeClient([[S + 3 * HOUR, "100", "100.2", "99", "99.8"]])
+    trade = await db.replay_trade(dropped, rec, HOUR, S + 6 * HOUR)
+    assert (trade.status, trade.exit_price, trade.closed_ms) == ("SL_HIT", 99.5, S + 3 * HOUR)
+
+    # The target was touched in that candle, maybe before the edit: it only counts from the next one
+    spiked = FakeClient([[S + 3 * HOUR, "100", "101", "99.8", "100.1"], [S + 4 * HOUR, "100.1", "100.9", "100", "100.5"]])
+    trade = await db.replay_trade(spiked, rec, HOUR, S + 6 * HOUR)
+    assert (trade.status, trade.closed_ms) == ("TP_HIT", S + 4 * HOUR)
+
+    # Until the running candle closes nothing is decided
+    assert (await db.replay_trade(dropped, rec, HOUR, S + 3 * HOUR + 2)).status == "OPEN"

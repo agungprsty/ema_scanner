@@ -94,6 +94,8 @@ TIMEFRAME_MS = INTERVAL_MS[TIMEFRAME]
 RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
 RSI_OVERSOLD = float(os.getenv("RSI_OVERSOLD", "28"))
 RSI_OVERBOUGHT = float(os.getenv("RSI_OVERBOUGHT", "72"))
+# Reward and risk after fees: TP sits fees further out and SL fees closer in, so a target nets
+# +TP_PERCENT (+2R) and a stop -SL_PERCENT (-1R)
 TP_PERCENT = float(os.getenv("TP_PERCENT", "2"))
 SL_PERCENT = float(os.getenv("SL_PERCENT", "1"))
 # Windows are set in hours so they mean the same time on every TIMEFRAME, then counted in candles
@@ -103,6 +105,8 @@ FILL_WINDOW_CANDLES = max(1, math.ceil(FILL_WINDOW_HOURS * 3_600_000 / TIMEFRAME
 MAX_HOLD_CANDLES = max(1, math.ceil(MAX_HOLD_HOURS * 3_600_000 / TIMEFRAME_MS))
 # Exchange fees for opening and closing a position, in percent of notional
 ROUND_TRIP_FEE_PERCENT = float(os.getenv("ROUND_TRIP_FEE_PERCENT", "0.1"))
+if SL_PERCENT <= ROUND_TRIP_FEE_PERCENT:
+    raise ValueError("SL_PERCENT must be above ROUND_TRIP_FEE_PERCENT, the fees alone would cost the whole risk")
 
 # Scanning & Concurrency
 # Candles fetched per scan; Wilder RSI needs a long history to match charting platforms

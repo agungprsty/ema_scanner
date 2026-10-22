@@ -151,7 +151,7 @@ def test_dashboard_shows_fill_rate_and_brand():
     assert 'id="stat-fillrate"' in html
     assert "data.fill_rate" in APP_JS.read_text()
     assert '<span class="brand-name">simple-trade</span>' in html
-    assert '<script src="/static/common.js?v=1"></script>\n  <script src="/static/app.js?v=6"></script>' in html
+    assert '<script src="/static/common.js?v=2"></script>\n  <script src="/static/app.js?v=6"></script>' in html
 
 
 def test_journal_preview_uses_planned_risk():
