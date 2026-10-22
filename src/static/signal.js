@@ -64,8 +64,10 @@ document.addEventListener('DOMContentLoaded', () => {
     $('legend-rsi').textContent = `RSI (${config.rsi_period}) ${config.oversold}/${config.overbought}`;
     $('detail-rsi').innerHTML = formatRsi(sig.rsi) + `<span class="hint">Crossed ${isLong
       ? `below ${config.oversold}` : `above ${config.overbought}`} from ${formatRsi(sig.prev_rsi)}</span>`;
-    const risk = Math.abs(entry - sig.stop_loss);
-    $('detail-rr').textContent = risk > 0 ? `1:${Number((Math.abs(sig.take_profit - entry) / risk).toFixed(2))}` : '–';
+    // Net of fees, the same reward and risk R is measured against
+    const risk = Math.abs(entry - sig.stop_loss) / entry * 100 + config.fee_percent;
+    const reward = Math.abs(sig.take_profit - entry) / entry * 100 - config.fee_percent;
+    $('detail-rr').textContent = entry > 0 ? `1:${Number((reward / risk).toFixed(2))}` : '–';
     $('detail-fill').innerHTML = fillHtml(sig);
     $('detail-exit').innerHTML = exitHtml(sig);
   }

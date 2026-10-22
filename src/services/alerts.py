@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from src.config.settings import (
     INTERVAL_MS,
+    ROUND_TRIP_FEE_PERCENT,
     RSI_OVERBOUGHT,
     RSI_OVERSOLD,
     TELEGRAM_OUTCOME_ALERTS,
@@ -33,7 +34,7 @@ def _duration(ms: int) -> str:
 
 
 def _result(row: dict) -> str:
-    """'target hit 60,000.00 → 61,200.00, +1.90R, +1.90% after fees' for a closed trade."""
+    """'target hit 60,000.00 → 61,260.00, +2.00R, +2.00% after fees' for a closed trade."""
     r = row.get("r_multiple")
     r_text = f", {r:+.2f}R" if r is not None else ""
     return (
@@ -50,6 +51,8 @@ def format_signal(row: dict, now_ms: int) -> str:
     entry = row["entry_price"]
     tp_pct = abs(row["take_profit"] - entry) / entry * 100
     sl_pct = abs(entry - row["stop_loss"]) / entry * 100
+    # Both exits pay the round-trip fee, so the net reward and risk are what R:R compares
+    rr = (tp_pct - ROUND_TRIP_FEE_PERCENT) / (sl_pct + ROUND_TRIP_FEE_PERCENT)
     cross = f"crossed below {RSI_OVERSOLD:g}" if long else f"crossed above {RSI_OVERBOUGHT:g}"
 
     # Candles between the signal candle and the latest closed one
@@ -72,7 +75,7 @@ def format_signal(row: dict, now_ms: int) -> str:
         f"RSI {row['rsi']:.1f}, {cross}{age}\n"
         f"Limit entry: {_price(entry)} (signal candle {'low' if long else 'high'})\n"
         f"TP {_price(row['take_profit'])} (+{tp_pct:g}%) · SL {_price(row['stop_loss'])} (-{sl_pct:g}%)"
-        f" · R:R 1:{tp_pct / sl_pct:g}\n"
+        f" · R:R 1:{rr:.3g} after fees\n"
         f"{state}"
     )
 

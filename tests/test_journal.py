@@ -139,7 +139,7 @@ async def test_journal_summary_endpoint(journal_store):
     assert resp.json()["data"] == db._empty_journal_summary()
 
 
-def _sig(side="LONG", entry_price=100.0, stop_loss=99.0, r_multiple=None):
+def _sig(side="LONG", entry_price=100.0, stop_loss=99.1, r_multiple=None):
     return SimpleNamespace(side=side, entry_price=entry_price, stop_loss=stop_loss, r_multiple=r_multiple)
 
 
@@ -155,9 +155,9 @@ def test_journal_table_is_new_and_tied_to_signals():
 def test_journal_view_computes_result_from_fills():
     view = db.journal_view(_sig(), _entry(entry_fill=100.0, exit_fill=102.0))
     assert view["pnl_percent"] == pytest.approx(2.0 - db.ROUND_TRIP_FEE_PERCENT, abs=0.01)
-    # R against the planned 1% risk of the signal, not the user's own fill
+    # R against the signal's planned 1% risk after fees, not the user's own fill
     assert view["r_multiple"] == pytest.approx(2.0 - db.ROUND_TRIP_FEE_PERCENT, abs=0.01)
-    short = db.journal_view(_sig("SHORT", 3000.0, 3030.0), _entry(entry_fill=3010.0, exit_fill=2940.0))
+    short = db.journal_view(_sig("SHORT", 3000.0, 3027.0), _entry(entry_fill=3010.0, exit_fill=2940.0))
     assert short["r_multiple"] == pytest.approx(70 / 3010 * 100 - db.ROUND_TRIP_FEE_PERCENT, abs=0.01)
 
 

@@ -34,8 +34,8 @@ def _signal(**overrides) -> Signal:
         "prev_rsi": 30.1,
         "candle_close": 100.5,
         "entry_price": 100.0,
-        "take_profit": 102.0,
-        "stop_loss": 99.0,
+        "take_profit": 102.1,
+        "stop_loss": 99.1,
         "bars_ago": 0,
     }
     values.update(overrides)
@@ -53,8 +53,8 @@ def _rec(**overrides) -> db.SignalModel:
         "prev_rsi": 30.1,
         "candle_close": 100.5,
         "entry_price": 100.0,
-        "take_profit": 102.0,
-        "stop_loss": 99.0,
+        "take_profit": 102.1,
+        "stop_loss": 99.1,
         "status": "PENDING",
     }
     values.update(overrides)
@@ -123,12 +123,18 @@ def test_journal_references_signals_with_cascade():
     assert table.c.signal_id.unique and not table.c.signal_id.nullable
 
 
-def test_signals_insert_skips_conflicts_and_returns_new_rows():
-    sql = _compile(db.build_signals_insert([_signal(), _signal(side="SHORT")], "1h"))
-    assert "INSERT INTO signals" in sql
+def test_signal_insert_skips_stored_hits_and_crosses_inside_a_live_trade_on_the_same_side():
+    sql = _compile(db.build_signal_insert(_signal(), "1h"))
+    assert "INSERT INTO signals (symbol, side, timeframe, signal_candle_ms" in sql
+    assert (
+        "WHERE NOT (EXISTS (SELECT signals.id \nFROM signals \nWHERE signals.symbol = %(symbol_1)s::VARCHAR"
+        " AND signals.side = %(side_1)s::VARCHAR AND signals.timeframe = %(timeframe_1)s::VARCHAR"
+        " AND (signals.status IN (__[POSTCOMPILE_status_1])"
+        " OR signals.signal_candle_ms < %(signal_candle_ms_1)s::BIGINT"
+        " AND signals.closed_ms > %(closed_ms_1)s::BIGINT)))"
+    ) in sql
     assert "ON CONFLICT ON CONSTRAINT uq_signals_key DO NOTHING" in sql
     assert "RETURNING signals.id" in sql
-    assert "timeframe_m1" in sql  # one statement for every hit
 
 
 def test_transition_update_only_wins_from_the_old_status():
@@ -160,10 +166,14 @@ async def test_insert_signals_returns_inserted_rows(monkeypatch):
     session = FakeSession([FakeResult(rows=[_rec(id=7)])])
     monkeypatch.setattr(db, "_session_maker", lambda: session)
 
-    rows = await db.insert_signals([_signal(), _signal()], "1h")
+    later, earlier = _signal(signal_candle_ms=S + HOUR), _signal()
+    rows = await db.insert_signals([later, earlier], "1h")
 
     assert [r["id"] for r in rows] == [7]
     assert rows[0]["fill_deadline"] == db._ms_to_iso(S + 13 * HOUR)
+    # One statement per hit, oldest first, so the earlier cross opens the trade and blocks the later
+    stored = [s.compile().params["param_4"] for s in session.statements]
+    assert stored == [S, S + HOUR]
     assert session.commits == 1
 
 
@@ -182,6 +192,13 @@ def test_signal_row_deadlines_follow_its_timeframe():
 
 
 def test_trade_values_use_planned_risk():
+    # TP and SL are placed net of fees, so a target is +2% and +2R, a stop -1% and -1R
+    target = db.trade_values(_rec(), Trade("TP_HIT", 100.0, S + HOUR, 102.1, S + 2 * HOUR))
+    assert target["pnl_percent"] == pytest.approx(2.0) and target["r_multiple"] == pytest.approx(2.0)
+    stop = db.trade_values(_rec(), Trade("SL_HIT", 100.0, S + HOUR, 99.1, S + 2 * HOUR))
+    assert stop["pnl_percent"] == pytest.approx(-1.0) and stop["r_multiple"] == pytest.approx(-1.0)
+
+    # A fill that gapped near the stop is still measured against the planned 1R
     gap = db.trade_values(_rec(), Trade("SL_HIT", 99.2, S + HOUR, 98.9, S + 2 * HOUR))
     assert gap["r_multiple"] == pytest.approx((98.9 - 99.2) / 99.2 * 100 - db.ROUND_TRIP_FEE_PERCENT)
 
@@ -231,8 +248,9 @@ async def test_evaluate_active_records_the_transition(monkeypatch):
     moved = transitions[0]
     assert moved["previous_status"] == "PENDING"
     assert moved["status"] == "TP_HIT"
-    assert moved["fill_price"] == 100.0 and moved["exit_price"] == 102.0
-    assert moved["r_multiple"] == pytest.approx(2 - db.ROUND_TRIP_FEE_PERCENT, abs=0.01)
+    assert moved["fill_price"] == 100.0 and moved["exit_price"] == 102.1
+    assert moved["pnl_percent"] == pytest.approx(2.0, abs=0.01)
+    assert moved["r_multiple"] == pytest.approx(2.0, abs=0.01)
     assert "signals.status = " in _compile(session.statements[1])
     assert session.commits == 1
 

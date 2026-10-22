@@ -13,8 +13,12 @@ It runs as a FastAPI service backed by PostgreSQL and Redis, with a small dashbo
 | | LONG | SHORT |
 |---|---|---|
 | Limit entry `E` | signal candle low | signal candle high |
-| Take profit (`TP_PERCENT=2`) | `E × 1.02` | `E × 0.98` |
-| Stop loss (`SL_PERCENT=1`) | `E × 0.99` | `E × 1.01` |
+| Take profit (`TP_PERCENT=2`) | `E × 1.021` | `E × 0.979` |
+| Stop loss (`SL_PERCENT=1`) | `E × 0.991` | `E × 1.009` |
+
+`TP_PERCENT` and `SL_PERCENT` are net of the round-trip fee (`ROUND_TRIP_FEE_PERCENT=0.1`): the target sits the fee further out (2 + 0.1 = 2.1%) and the stop the fee closer in (1 − 0.1 = 0.9%), so a target nets +2% and a stop −1% after fees, a true 1:2.
+
+A symbol runs at most one trade per side: a new cross is skipped when an earlier signal on the same symbol and side was still PENDING or OPEN at its candle. The opposite side is still taken.
 
 Only closed candles count, for both detection and tracking. A candle that is still forming is never used.
 
@@ -28,7 +32,7 @@ Only closed candles count, for both detection and tracking. A candle that is sti
 - **TP_HIT / SL_HIT:** a candle reaches the target or the stop. A candle that opens past a level exits at its open. A candle that touches both levels counts as a stop. On the fill candle, the target only counts when the candle opened at or past `E`, since the candle data cannot show whether the target came before the fill.
 - **EXPIRED:** neither level is hit within the hold window. The trade closes at the last candle's close.
 
-P/L is `(exit − fill) / fill × 100` (sign flipped for SHORT) minus `ROUND_TRIP_FEE_PERCENT`. R is P/L divided by the planned risk (`SL_PERCENT`), so a target hit is about +1.9R and a stop about −1.1R after fees.
+P/L is `(exit − fill) / fill × 100` (sign flipped for SHORT) minus `ROUND_TRIP_FEE_PERCENT`. R is P/L divided by the planned risk, the loss after fees at the stop (`SL_PERCENT`), so a target hit is +2R and a stop −1R.
 
 The fill and hold windows are set in **hours**, then rounded up to whole candles of `TIMEFRAME`, so they mean the same time on every timeframe: 30m gives 24 and 48 candles, 1h gives 12 and 24, 15m gives 48 and 96, 2h gives 6 and 12, 1d gives 1 and 1. Each run replays the lifecycle from the stored levels and the closed candles, so the result is the same however often it runs.
 
@@ -70,8 +74,8 @@ All settings come from `.env` (see `.env.example`).
 | `RSI_PERIOD` | `14` | RSI length |
 | `RSI_OVERSOLD` | `28` | LONG trigger level |
 | `RSI_OVERBOUGHT` | `72` | SHORT trigger level |
-| `TP_PERCENT` | `2` | Take profit, percent from the limit entry |
-| `SL_PERCENT` | `1` | Stop loss, percent from the limit entry; also the planned risk for R |
+| `TP_PERCENT` | `2` | Take profit, net gain in percent after fees |
+| `SL_PERCENT` | `1` | Stop loss, net loss in percent after fees; also the planned risk for R. Must be above the fee |
 | `FILL_WINDOW_HOURS` | `12` | How long the limit waits for a fill |
 | `MAX_HOLD_HOURS` | `24` | How long a filled trade is held before it expires |
 | `ROUND_TRIP_FEE_PERCENT` | `0.1` | Fees for opening plus closing, subtracted from P/L |

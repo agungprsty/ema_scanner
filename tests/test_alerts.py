@@ -30,8 +30,8 @@ def _row(**overrides) -> dict:
         "prev_rsi": 30.1,
         "candle_close": 60_300.0,
         "entry_price": 60_000.0,
-        "take_profit": 61_200.0,
-        "stop_loss": 59_400.0,
+        "take_profit": 61_260.0,
+        "stop_loss": 59_460.0,
         "status": "PENDING",
     }
     values.update(overrides)
@@ -56,17 +56,17 @@ def test_pending_signal_asks_for_the_limit_order():
     assert text.startswith("<b>Crossline: RSI 1h signals</b>\n\n")
     assert "<b>LONG</b> #$BTCUSDT (1h) RSI 27.4, crossed below 28\n" in text
     assert "Limit entry: 60,000.00 (signal candle low)" in text
-    assert "TP 61,200.00 (+2%) · SL 59,400.00 (-1%) · R:R 1:2" in text
+    assert "TP 61,260.00 (+2.1%) · SL 59,460.00 (-0.9%) · R:R 1:2 after fees" in text
     assert "Fill by 19:00 WIB 21 Oct (12h window), else cancelled" in text
     assert "before the latest close" not in text
 
 
 def test_short_signal_uses_the_candle_high():
-    row = _row(side="SHORT", rsi=73.2, entry_price=3000.0, take_profit=2940.0, stop_loss=3030.0)
+    row = _row(side="SHORT", rsi=73.2, entry_price=3000.0, take_profit=2937.0, stop_loss=3027.0)
     text = alerts.format_signal(row, now_ms=S + 2 * HOUR)
     assert "RSI 73.2, crossed above 72" in text
     assert "Limit entry: 3,000.00 (signal candle high)" in text
-    assert "TP 2,940.00 (+2%) · SL 3,030.00 (-1%) · R:R 1:2" in text
+    assert "TP 2,937.00 (+2.1%) · SL 3,027.00 (-0.9%) · R:R 1:2 after fees" in text
 
 
 @pytest.mark.parametrize(
@@ -88,9 +88,9 @@ def test_late_signal_reports_its_current_state():
     opened = _row(status="OPEN", fill_price=59_990.0, fill_ms=S + 2 * HOUR)
     assert "Already filled at 59,990.00 (08:00 WIB 21 Oct), trade open" in alerts.format_signal(opened, S)
 
-    closed = _closed("TP_HIT", 61_200.0, 1.9, 1.9)
+    closed = _closed("TP_HIT", 61_260.0, 2.0, 2.0)
     text = alerts.format_signal(closed, S)
-    assert "Already closed: target hit 60,000.00 → 61,200.00, +1.90R, +1.90% after fees" in text
+    assert "Already closed: target hit 60,000.00 → 61,260.00, +2.00R, +2.00% after fees" in text
     assert "Fill by" not in text
 
     assert "Not filled within the window" in alerts.format_signal(_row(status="NOT_FILLED"), S)
@@ -99,8 +99,8 @@ def test_late_signal_reports_its_current_state():
 def test_transitions_list_each_trade():
     text = alerts.format_transitions(
         [
-            _closed("TP_HIT", 61_200.0, 1.9, 1.9),
-            _closed("SL_HIT", 59_400.0, -1.1, -1.1),
+            _closed("TP_HIT", 61_260.0, 2.0, 2.0),
+            _closed("SL_HIT", 59_460.0, -1.0, -1.0),
             _closed("EXPIRED", 60_300.0, 0.4, 0.4),
             _row(id=2, symbol="ETH<b>", side="SHORT", status="NOT_FILLED", entry_price=3000.0,
                  take_profit=2940.0, stop_loss=3030.0),
@@ -108,8 +108,8 @@ def test_transitions_list_each_trade():
     )
     assert text.split("\n") == [
         "<b>Crossline: trade updates</b>",
-        "BTCUSDT Long target hit 60,000.00 → 61,200.00, +1.90R, +1.90% after fees",
-        "BTCUSDT Long stopped out 60,000.00 → 59,400.00, -1.10R, -1.10% after fees",
+        "BTCUSDT Long target hit 60,000.00 → 61,260.00, +2.00R, +2.00% after fees",
+        "BTCUSDT Long stopped out 60,000.00 → 59,460.00, -1.00R, -1.00% after fees",
         "BTCUSDT Long max hold reached 60,000.00 → 60,300.00, +0.40R, +0.40% after fees",
         "ETH&lt;b&gt; Short not filled, cancel the limit at 3,000.00",
     ]

@@ -14,9 +14,12 @@ from sqlalchemy import (
     Integer,
     String,
     UniqueConstraint,
+    and_,
     delete,
     desc,
     func,
+    literal,
+    or_,
     select,
     text,
     update,
@@ -258,25 +261,37 @@ class SessionModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-def build_signals_insert(signals: list[Signal], timeframe: str = TIMEFRAME):
-    """One INSERT for a run's hits; signals already stored are skipped and not returned."""
+def build_signal_insert(s: Signal, timeframe: str = TIMEFRAME):
+    """INSERT for one hit, returning the row only when it is new. Skipped when already stored, or
+    when the symbol has a trade on the same side that is still active or closed after this hit's
+    candle, so a symbol never runs two trades in one direction. A cross the scan lookback sees
+    again after that trade closed is still skipped, since it happened while the trade was live."""
+    values = {
+        "symbol": s.symbol,
+        "side": s.side,
+        "timeframe": timeframe,
+        "signal_candle_ms": s.signal_candle_ms,
+        "rsi": s.rsi,
+        "prev_rsi": s.prev_rsi,
+        "candle_close": s.candle_close,
+        "entry_price": s.entry_price,
+        "take_profit": s.take_profit,
+        "stop_loss": s.stop_loss,
+    }
+    live = select(SignalModel.id).where(
+        SignalModel.symbol == s.symbol,
+        SignalModel.side == s.side,
+        SignalModel.timeframe == timeframe,
+        or_(
+            SignalModel.status.in_(ACTIVE_STATUSES),
+            and_(SignalModel.signal_candle_ms < s.signal_candle_ms, SignalModel.closed_ms > s.signal_candle_ms),
+        ),
+    )
+    columns = SignalModel.__table__.c
+    row = select(*(literal(v, columns[k].type) for k, v in values.items())).where(~live.exists())
     return (
         pg_insert(SignalModel)
-        .values([
-            {
-                "symbol": s.symbol,
-                "side": s.side,
-                "timeframe": timeframe,
-                "signal_candle_ms": s.signal_candle_ms,
-                "rsi": s.rsi,
-                "prev_rsi": s.prev_rsi,
-                "candle_close": s.candle_close,
-                "entry_price": s.entry_price,
-                "take_profit": s.take_profit,
-                "stop_loss": s.stop_loss,
-            }
-            for s in signals
-        ])
+        .from_select(list(values), row)
         .on_conflict_do_nothing(constraint="uq_signals_key")
         .returning(SignalModel)
     )
@@ -471,10 +486,15 @@ async def insert_signals(signals: list[Signal], timeframe: str = TIMEFRAME) -> l
     if _session_maker is None:
         raise RuntimeError("Database not initialized")
 
+    # shortcut: the active check is not atomic across runs; one uvicorn worker never overlaps
+    # runs (Scheduler._lock), so take pg_advisory_xact_lock first if it ever runs several
+    rows = []
     async with _session_maker() as session:
-        rows = (await session.execute(build_signals_insert(signals, timeframe))).scalars().all()
+        # One statement each, oldest first, so of two crosses in one run the earlier opens the trade
+        for s in sorted(signals, key=lambda s: s.signal_candle_ms):
+            rows += (await session.execute(build_signal_insert(s, timeframe))).scalars().all()
         await session.commit()
-        return [r.to_dict() for r in rows]
+    return [r.to_dict() for r in rows]
 
 
 async def claim_unalerted_signals(since_ms: int) -> list[dict]:
@@ -708,14 +728,18 @@ def fetch_trade_klines(client, symbol: str, timeframe: str, start_ms: int, count
     return candles
 
 
+def planned_risk_percent(sig) -> float:
+    """Loss after fees when the stop is hit, i.e. 1R. Taken from the stored levels, so later
+    changes to SL_PERCENT keep old R intact."""
+    return abs(sig.entry_price - sig.stop_loss) / sig.entry_price * 100 + ROUND_TRIP_FEE_PERCENT
+
+
 def trade_values(rec, trade) -> dict:
     """Columns to store for a replayed trade; P/L only once it has an exit."""
     pnl = r_multiple = None
     if trade.exit_price is not None:
-        # Planned risk from the stored levels, so later changes to SL_PERCENT keep old R intact
-        risk_percent = abs(rec.entry_price - rec.stop_loss) / rec.entry_price * 100
         pnl, r_multiple = trade_return(
-            rec.side, trade.fill_price, trade.exit_price, risk_percent, ROUND_TRIP_FEE_PERCENT
+            rec.side, trade.fill_price, trade.exit_price, planned_risk_percent(rec), ROUND_TRIP_FEE_PERCENT
         )
     return {
         "status": trade.status,
@@ -832,9 +856,8 @@ def journal_view(sig, entry) -> dict | None:
     view = entry.to_dict()
     pnl, r_multiple = None, None
     if entry.status == "TAKEN" and entry.entry_fill and entry.exit_fill:
-        risk_percent = abs(sig.entry_price - sig.stop_loss) / sig.entry_price * 100
         pnl, r_multiple = trade_return(
-            sig.side, entry.entry_fill, entry.exit_fill, risk_percent, ROUND_TRIP_FEE_PERCENT
+            sig.side, entry.entry_fill, entry.exit_fill, planned_risk_percent(sig), ROUND_TRIP_FEE_PERCENT
         )
     view["pnl_percent"] = round(pnl, 2) if pnl is not None else None
     view["r_multiple"] = round(r_multiple, 2) if r_multiple is not None else None

@@ -127,12 +127,12 @@ function outcomeHtml(status) {
   return `<span class="outcome ${o.cls}">${o.label}</span>`;
 }
 
-// Same formula as the server: PnL after fees, and R against the signal's own planned risk, not the fill's distance to the stop
+// Same formula as the server: PnL after fees, and R against the signal's own planned risk (its stop loss after fees), not the fill's distance to the stop
 function tradeReturn(sig, entry, exit) {
   if (!(entry > 0) || !(exit > 0)) return null;
   const dir = sig.side === 'LONG' ? 1 : -1;
   const pnl = dir * (exit - entry) / entry * 100 - config.fee_percent;
-  const risk = Math.abs(sig.entry_price - sig.stop_loss) / sig.entry_price * 100;
+  const risk = Math.abs(sig.entry_price - sig.stop_loss) / sig.entry_price * 100 + config.fee_percent;
   return { pnl, r: risk > 0 ? pnl / risk : null };
 }
 
