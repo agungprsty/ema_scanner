@@ -51,7 +51,7 @@ async def _alert(transitions: list[dict], run_ms: int) -> None:
     """Alert every stored signal no run has alerted yet, within the scan lookback; an
     undelivered alert is released so the next run tries again."""
     rows = await claim_unalerted_signals(run_ms - (CRON_LOOKBACK_CANDLES + 1) * TIMEFRAME_MS)
-    if not await notify_run(rows, transitions, run_ms):
+    if not await notify_run(rows, transitions):
         await release_signal_alerts([r["id"] for r in rows])
 
 

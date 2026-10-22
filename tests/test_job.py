@@ -83,8 +83,8 @@ def job(monkeypatch):
             raise state["evaluate_error"]
         return EVALUATED
 
-    async def fake_notify(new_rows, transitions, now_ms):
-        state["notified"].append((new_rows, transitions, now_ms))
+    async def fake_notify(new_rows, transitions):
+        state["notified"].append((new_rows, transitions))
         return state["delivered"]
 
     monkeypatch.setattr(cron_module, "is_db_connected", fake_db_connected)
@@ -130,7 +130,7 @@ async def test_every_unalerted_row_is_alerted(job):
 
     assert [s.symbol for s in job["inserted"][0]] == ["BTCUSDT", "ETHUSDT"]
     assert job["claimed_since"] == job["now"] - (cron_module.CRON_LOOKBACK_CANDLES + 1) * TIMEFRAME_MS
-    assert job["notified"] == [(job["claimed"], EVALUATED["transitions"], job["now"])]
+    assert job["notified"] == [(job["claimed"], EVALUATED["transitions"])]
     assert job["released"] == []
     assert res["new_signals"] == 1
 
@@ -151,7 +151,7 @@ async def test_failed_evaluation_still_alerts_stored_signals(job):
     with pytest.raises(RuntimeError, match="db blip"):
         await run_job(object())
 
-    assert job["notified"] == [(job["claimed"], [], job["now"])]
+    assert job["notified"] == [(job["claimed"], [])]
 
 
 async def test_symbols_whose_candles_failed_are_reported(job):

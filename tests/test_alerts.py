@@ -15,8 +15,6 @@ S = int(datetime(2026, 10, 20, 23, tzinfo=UTC).timestamp() * 1000)
 def strategy_settings(monkeypatch):
     monkeypatch.setattr(db, "FILL_WINDOW_HOURS", 12.0)
     monkeypatch.setattr(db, "MAX_HOLD_HOURS", 24.0)
-    monkeypatch.setattr(alerts, "RSI_OVERSOLD", 28.0)
-    monkeypatch.setattr(alerts, "RSI_OVERBOUGHT", 72.0)
 
 
 def _row(**overrides) -> dict:
@@ -52,48 +50,42 @@ def _closed(status, exit_price, pnl, r, **overrides) -> dict:
 
 
 def test_pending_signal_asks_for_the_limit_order():
-    text = alerts.format_signals([_row()], now_ms=S + HOUR + 15_000)
-    assert text.startswith("<b>Crossline: RSI 1h signals</b>\n\n")
-    assert "<b>LONG</b> #$BTCUSDT (1h) RSI 27.4, crossed below 28\n" in text
-    assert "Limit entry: 60,000.00 (signal candle low)" in text
-    assert "TP 61,260.00 (+2.1%) · SL 59,460.00 (-0.9%) · R:R 1:2 after fees" in text
-    assert "Fill by 19:00 WIB 21 Oct (12h window), else cancelled" in text
-    assert "before the latest close" not in text
+    assert alerts.format_signals([_row()]).split("\n") == [
+        "<b>Simple Trade · 1h</b>",
+        "",
+        "🟢 <b>LONG BTCUSDT</b>",
+        "Entry <code>60000.0</code>",
+        "TP <code>61260.0</code> +2%",
+        "SL <code>59460.0</code> -1%",
+        "⏳ s/d 19:00 WIB 21 Oct",
+    ]
 
 
-def test_short_signal_uses_the_candle_high():
-    row = _row(side="SHORT", rsi=73.2, entry_price=3000.0, take_profit=2937.0, stop_loss=3027.0)
-    text = alerts.format_signal(row, now_ms=S + 2 * HOUR)
-    assert "RSI 73.2, crossed above 72" in text
-    assert "Limit entry: 3,000.00 (signal candle high)" in text
-    assert "TP 2,937.00 (+2.1%) · SL 3,027.00 (-0.9%) · R:R 1:2 after fees" in text
+def test_short_signal():
+    row = _row(side="SHORT", entry_price=3000.25, take_profit=2937.24475, stop_loss=3027.25225)
+    text = alerts.format_signal(row)
+    assert text.startswith("🔴 <b>SHORT BTCUSDT</b>\n")
+    assert "TP <code>2937.24</code> +2%\nSL <code>3027.25</code> -1%" in text
 
 
 @pytest.mark.parametrize(
-    "timeframe, interval, candles_later, age",
-    [("1h", HOUR, 3, "2h"), ("15m", 900_000, 4, "45m"), ("1d", 86_400_000, 2, "1d")],
+    "entry, level, copied",
+    [(84673.4, 82895.26148, "82895.3"), (2402.67, 2453.12607, "2453.13"), (0.00001234, 1.259914e-05, "0.00001260")],
 )
-def test_signal_age_follows_the_timeframe(timeframe, interval, candles_later, age):
-    row = _row(timeframe=timeframe)
-    text = alerts.format_signal(row, now_ms=S + candles_later * interval + 15_000)
-    assert f"({timeframe}) RSI 27.4, crossed below 28 · signal {age} before the latest close" in text
-
-
-@pytest.mark.parametrize("timeframe, window", [("15m", "12h"), ("8h", "16h"), ("1d", "1d")])
-def test_fill_window_label_is_the_rounded_up_candle_window(timeframe, window):
-    assert f"({window} window), else cancelled" in alerts.format_signal(_row(timeframe=timeframe), S)
+def test_levels_are_copied_with_the_entry_tick_decimals(entry, level, copied):
+    text = alerts.format_signal(_row(entry_price=entry, take_profit=level, stop_loss=entry * 0.991))
+    assert f"TP <code>{copied}</code>" in text
 
 
 def test_late_signal_reports_its_current_state():
     opened = _row(status="OPEN", fill_price=59_990.0, fill_ms=S + 2 * HOUR)
-    assert "Already filled at 59,990.00 (08:00 WIB 21 Oct), trade open" in alerts.format_signal(opened, S)
+    assert alerts.format_signal(opened).endswith("\n✅ Filled at <code>59990.0</code>, trade open")
 
-    closed = _closed("TP_HIT", 61_260.0, 2.0, 2.0)
-    text = alerts.format_signal(closed, S)
-    assert "Already closed: target hit 60,000.00 → 61,260.00, +2.00R, +2.00% after fees" in text
-    assert "Fill by" not in text
+    text = alerts.format_signal(_closed("TP_HIT", 61_260.0, 2.0, 2.0))
+    assert text.endswith("\n🎯 +2R (+2.00%)")
+    assert "s/d" not in text
 
-    assert "Not filled within the window" in alerts.format_signal(_row(status="NOT_FILLED"), S)
+    assert alerts.format_signal(_row(status="NOT_FILLED")).endswith("\n⚪ Not filled, no trade")
 
 
 def test_transitions_list_each_trade():
@@ -101,17 +93,18 @@ def test_transitions_list_each_trade():
         [
             _closed("TP_HIT", 61_260.0, 2.0, 2.0),
             _closed("SL_HIT", 59_460.0, -1.0, -1.0),
-            _closed("EXPIRED", 60_300.0, 0.4, 0.4),
+            _closed("EXPIRED", 60_300.0, 0.4, None),
             _row(id=2, symbol="ETH<b>", side="SHORT", status="NOT_FILLED", entry_price=3000.0,
-                 take_profit=2940.0, stop_loss=3030.0),
+                 take_profit=2937.0, stop_loss=3027.0),
         ]
     )
     assert text.split("\n") == [
-        "<b>Crossline: trade updates</b>",
-        "BTCUSDT Long target hit 60,000.00 → 61,260.00, +2.00R, +2.00% after fees",
-        "BTCUSDT Long stopped out 60,000.00 → 59,460.00, -1.00R, -1.00% after fees",
-        "BTCUSDT Long max hold reached 60,000.00 → 60,300.00, +0.40R, +0.40% after fees",
-        "ETH&lt;b&gt; Short not filled, cancel the limit at 3,000.00",
+        "<b>Simple Trade</b>",
+        "",
+        "🎯 BTCUSDT LONG +2R (+2.00%)",
+        "🛑 BTCUSDT LONG -1R (-1.00%)",
+        "⏱ BTCUSDT LONG +0.40%",
+        "⚪ ETH&lt;b&gt; SHORT not filled, cancel the limit at <code>3000.0</code>",
     ]
 
 
@@ -136,25 +129,25 @@ async def test_notify_run_sends_signals_then_updates(sent):
         _row(id=4, symbol="ADAUSDT", status="OPEN", fill_price=60_000.0, fill_ms=S + 2 * HOUR),
     ]
 
-    assert await alerts.notify_run(new, transitions, now_ms=S + 2 * HOUR) is True
+    assert await alerts.notify_run(new, transitions) is True
 
     assert len(sent) == 2
-    assert "#$SOLUSDT (1h)" in sent[0] and "Already closed: target hit" in sent[0]
-    assert "#$BTCUSDT (1h)" in sent[0] and "Fill by" in sent[0]
-    assert "XRPUSDT Long stopped out" in sent[1]
+    assert "<b>LONG SOLUSDT</b>" in sent[0] and "🎯 +1.9R" in sent[0]
+    assert "<b>LONG BTCUSDT</b>" in sent[0] and "⏳ s/d" in sent[0]
+    assert "🛑 XRPUSDT LONG -1.1R" in sent[1]
     assert "SOLUSDT" not in sent[1] and "ADAUSDT" not in sent[1]
 
 
 async def test_notify_run_without_anything_new_sends_nothing(sent):
     opened = _row(id=4, status="OPEN", fill_price=60_000.0, fill_ms=S + 2 * HOUR)
-    assert await alerts.notify_run([], [opened], now_ms=S) is True
+    assert await alerts.notify_run([], [opened]) is True
     assert sent == []
 
 
 async def test_notify_run_respects_outcome_setting(sent, monkeypatch):
     monkeypatch.setattr(alerts, "TELEGRAM_OUTCOME_ALERTS", False)
-    await alerts.notify_run([_row(id=1)], [_closed("SL_HIT", 59_400.0, -1.1, -1.1, id=3)], now_ms=S)
-    assert len(sent) == 1 and "Crossline: RSI 1h signals" in sent[0]
+    await alerts.notify_run([_row(id=1)], [_closed("SL_HIT", 59_400.0, -1.1, -1.1, id=3)])
+    assert len(sent) == 1 and "<b>Simple Trade · 1h</b>" in sent[0]
 
 
 async def test_notify_run_survives_send_errors(monkeypatch):
@@ -163,7 +156,7 @@ async def test_notify_run_survives_send_errors(monkeypatch):
 
     monkeypatch.setattr(alerts, "send_alert", broken_send)
     monkeypatch.setattr(alerts, "TELEGRAM_OUTCOME_ALERTS", True)
-    delivered = await alerts.notify_run([_row(id=1)], [_closed("SL_HIT", 59_400.0, -1.1, -1.1, id=3)], now_ms=S)
+    delivered = await alerts.notify_run([_row(id=1)], [_closed("SL_HIT", 59_400.0, -1.1, -1.1, id=3)])
     assert delivered is False
 
 
@@ -172,4 +165,4 @@ async def test_notify_run_reports_an_undelivered_signal_message(monkeypatch):
         return False
 
     monkeypatch.setattr(alerts, "send_alert", refused_send)
-    assert await alerts.notify_run([_row(id=1)], [], now_ms=S) is False
+    assert await alerts.notify_run([_row(id=1)], []) is False

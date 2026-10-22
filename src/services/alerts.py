@@ -1,104 +1,90 @@
 import html
 import logging
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
-from src.config.settings import (
-    INTERVAL_MS,
-    ROUND_TRIP_FEE_PERCENT,
-    RSI_OVERBOUGHT,
-    RSI_OVERSOLD,
-    TELEGRAM_OUTCOME_ALERTS,
-)
-from src.services.db import window_candles
+from src.config.settings import ROUND_TRIP_FEE_PERCENT, TELEGRAM_OUTCOME_ALERTS
 from src.services.telegram import send_alert
 
 logger = logging.getLogger(__name__)
 
 WIB = timezone(timedelta(hours=7))
-RESULT_LABELS = {"TP_HIT": "target hit", "SL_HIT": "stopped out", "EXPIRED": "max hold reached"}
+TITLE = "<b>Simple Trade</b>"
+SIDE_ICONS = {"LONG": "🟢", "SHORT": "🔴"}
+RESULT_ICONS = {"TP_HIT": "🎯", "SL_HIT": "🛑", "EXPIRED": "⏱"}
 
 
-def _price(value: float) -> str:
-    return f"{value:,.2f}" if value >= 1000 else f"{value:.6g}"
+def _decimals(price: float) -> int:
+    """Decimals Binance quoted `price` with; a level rounded to them stays on the symbol's tick."""
+    return max(0, -Decimal(repr(price)).as_tuple().exponent)
+
+
+def _copy(value: float, decimals: int) -> str:
+    """Price in <code>, which Telegram copies on tap; plain digits so it pastes into an order."""
+    return f"<code>{value:.{decimals}f}</code>"
 
 
 def _wib(iso: str) -> str:
     return datetime.fromisoformat(iso).astimezone(WIB).strftime("%H:%M WIB %d %b")
 
 
-def _duration(ms: int) -> str:
-    for unit, size in (("d", 86_400_000), ("h", 3_600_000)):
-        if ms % size == 0:
-            return f"{ms // size}{unit}"
-    return f"{ms // 60_000}m"
+def _pct(value: float) -> str:
+    return f"{round(value, 2):+g}%"
 
 
 def _result(row: dict) -> str:
-    """'target hit 60,000.00 → 61,260.00, +2.00R, +2.00% after fees' for a closed trade."""
+    """'+2R (+2.00%)' for a closed trade."""
+    pnl = f"{row['pnl_percent']:+.2f}%"
     r = row.get("r_multiple")
-    r_text = f", {r:+.2f}R" if r is not None else ""
-    return (
-        f"{RESULT_LABELS[row['status']]} {_price(row['fill_price'])} → {_price(row['exit_price'])}"
-        f"{r_text}, {row['pnl_percent']:+.2f}% after fees"
-    )
+    return f"{round(r, 2):+g}R ({pnl})" if r is not None else pnl
 
 
-def format_signal(row: dict, now_ms: int) -> str:
-    """One paragraph per new signal, as stored after this run's evaluation, so a signal found
-    late that already filled or closed says so instead of asking for a limit order."""
-    long = row["side"] == "LONG"
-    interval_ms = INTERVAL_MS[row["timeframe"]]
+def format_signal(row: dict) -> str:
+    """One block per new signal, as stored after this run's evaluation, so a signal found late
+    that already filled or closed says so instead of asking for a limit order."""
     entry = row["entry_price"]
-    tp_pct = abs(row["take_profit"] - entry) / entry * 100
-    sl_pct = abs(entry - row["stop_loss"]) / entry * 100
-    # Both exits pay the round-trip fee, so the net reward and risk are what R:R compares
-    rr = (tp_pct - ROUND_TRIP_FEE_PERCENT) / (sl_pct + ROUND_TRIP_FEE_PERCENT)
-    cross = f"crossed below {RSI_OVERSOLD:g}" if long else f"crossed above {RSI_OVERBOUGHT:g}"
-
-    # Candles between the signal candle and the latest closed one
-    bars_ago = now_ms // interval_ms - 1 - row["signal_candle_ms"] // interval_ms
-    age = f" · signal {_duration(bars_ago * interval_ms)} before the latest close" if bars_ago > 0 else ""
+    decimals = _decimals(entry)
+    # Net of the round-trip fee, which both exits pay: the gain at TP and the loss at SL
+    tp_net = abs(row["take_profit"] - entry) / entry * 100 - ROUND_TRIP_FEE_PERCENT
+    sl_net = -abs(entry - row["stop_loss"]) / entry * 100 - ROUND_TRIP_FEE_PERCENT
 
     status = row["status"]
     if status == "PENDING":
-        window = _duration(window_candles(interval_ms)[0] * interval_ms)  # hours rounded up to whole candles
-        state = f"Fill by {_wib(row['fill_deadline'])} ({window} window), else cancelled"
+        state = f"⏳ s/d {_wib(row['fill_deadline'])}"
     elif status == "OPEN":
-        state = f"Already filled at {_price(row['fill_price'])} ({_wib(row['fill_time'])}), trade open"
+        state = f"✅ Filled at {_copy(row['fill_price'], decimals)}, trade open"
     elif status == "NOT_FILLED":
-        state = "Not filled within the window, no trade"
+        state = "⚪ Not filled, no trade"
     else:
-        state = f"Already closed: {_result(row)}"
+        state = f"{RESULT_ICONS[status]} {_result(row)}"
 
     return (
-        f"<b>{row['side']}</b> #${html.escape(row['symbol'])} ({row['timeframe']}) "
-        f"RSI {row['rsi']:.1f}, {cross}{age}\n"
-        f"Limit entry: {_price(entry)} (signal candle {'low' if long else 'high'})\n"
-        f"TP {_price(row['take_profit'])} (+{tp_pct:g}%) · SL {_price(row['stop_loss'])} (-{sl_pct:g}%)"
-        f" · R:R 1:{rr:.3g} after fees\n"
+        f"{SIDE_ICONS[row['side']]} <b>{row['side']} {html.escape(row['symbol'])}</b>\n"
+        f"Entry {_copy(entry, decimals)}\n"
+        f"TP {_copy(row['take_profit'], decimals)} {_pct(tp_net)}\n"
+        f"SL {_copy(row['stop_loss'], decimals)} {_pct(sl_net)}\n"
         f"{state}"
     )
 
 
-def format_signals(rows: list[dict], now_ms: int) -> str:
-    timeframes = ", ".join(sorted({r["timeframe"] for r in rows}))
-    return "\n\n".join([f"<b>Crossline: RSI {timeframes} signals</b>", *(format_signal(r, now_ms) for r in rows)])
+def format_signals(rows: list[dict]) -> str:
+    return "\n\n".join(["<b>Simple Trade</b>", *(format_signal(r) for r in rows)])
 
 
 def format_transitions(rows: list[dict]) -> str:
     """One line per trade that closed or was cancelled; fills are left to the exchange."""
-    lines = ["<b>Crossline: trade updates</b>"]
+    lines = [TITLE, ""]
     for row in rows:
-        side = "Long" if row["side"] == "LONG" else "Short"
+        name = f"{html.escape(row['symbol'])} {row['side']}"
         if row["status"] == "NOT_FILLED":
-            text = f"not filled, cancel the limit at {_price(row['entry_price'])}"
+            entry = row["entry_price"]
+            lines.append(f"⚪ {name} not filled, cancel the limit at {_copy(entry, _decimals(entry))}")
         else:
-            text = _result(row)
-        lines.append(f"{html.escape(row['symbol'])} {side} {text}")
+            lines.append(f"{RESULT_ICONS[row['status']]} {name} {_result(row)}")
     return "\n".join(lines)
 
 
-async def notify_run(new_rows: list[dict], transitions: list[dict], now_ms: int) -> bool:
+async def notify_run(new_rows: list[dict], transitions: list[dict]) -> bool:
     """Send a run's alerts: one message for new signals, then one for trades that closed.
 
     `new_rows` come from claim_unalerted_signals and `transitions` from evaluate_active; a new
@@ -110,7 +96,7 @@ async def notify_run(new_rows: list[dict], transitions: list[dict], now_ms: int)
     delivered = True
     if new_rows:
         try:
-            delivered = await send_alert(format_signals([current.get(r["id"], r) for r in new_rows], now_ms))
+            delivered = await send_alert(format_signals([current.get(r["id"], r) for r in new_rows]))
         except Exception:
             delivered = False
             logger.exception("Failed to send signal alert")
