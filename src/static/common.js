@@ -132,7 +132,8 @@ function tradeReturn(sig, entry, exit) {
   if (!(entry > 0) || !(exit > 0)) return null;
   const dir = sig.side === 'LONG' ? 1 : -1;
   const pnl = dir * (exit - entry) / entry * 100 - config.fee_percent;
-  const risk = Math.abs(sig.entry_price - sig.stop_loss) / sig.entry_price * 100 + config.fee_percent;
+  // The server's 1R, which stays the risk at the fill after an admin moves the stop
+  const risk = sig.risk_percent ?? Math.abs(sig.entry_price - sig.stop_loss) / sig.entry_price * 100 + config.fee_percent;
   return { pnl, r: risk > 0 ? pnl / risk : null };
 }
 

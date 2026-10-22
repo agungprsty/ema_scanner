@@ -15,6 +15,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const journalNotes = $('journal-notes');
   const journalResult = $('journal-result');
   const journalSave = $('journal-save');
+  const levelsForm = $('levels-form');
+  const levelsEntry = $('levels-entry');
+  const levelsSl = $('levels-sl');
+  const levelsTp = $('levels-tp');
+  const levelsResult = $('levels-result');
+  const levelsSave = $('levels-save');
 
   // Signal detail
   function pctFrom(entry, level) {
@@ -54,20 +60,24 @@ document.addEventListener('DOMContentLoaded', () => {
     $('signal-time').textContent = detailSubtitle(sig);
     document.title = `${sig.symbol} ${sig.side === 'LONG' ? 'Long' : 'Short'} · simple-trade`;
 
-    $('detail-entry').innerHTML = formatPrice(entry)
-      + `<span class="hint">Signal candle ${isLong ? 'low' : 'high'}</span>`;
-    $('detail-sl').innerHTML = formatPrice(sig.stop_loss) + pctFrom(entry, sig.stop_loss);
-    $('detail-tp').innerHTML = formatPrice(sig.take_profit) + pctFrom(entry, sig.take_profit);
+    $('detail-entry').innerHTML = formatPrice(entry) + `<span class="hint">${sig.levels_edited_at
+      ? `Edited ${escapeHtml(formatWIB(sig.levels_edited_at))} WIB` : `Signal candle ${isLong ? 'low' : 'high'}`}</span>`;
+    // From the fill once filled, the price the trade's P/L is measured from
+    const base = sig.fill_price ?? entry;
+    $('detail-sl').innerHTML = formatPrice(sig.stop_loss) + pctFrom(base, sig.stop_loss);
+    $('detail-tp').innerHTML = formatPrice(sig.take_profit) + pctFrom(base, sig.take_profit);
     $('detail-outcome').innerHTML = outcomeHtml(sig.status);
 
     $('detail-rsi-label').textContent = `RSI(${config.rsi_period})`;
     $('legend-rsi').textContent = `RSI (${config.rsi_period}) ${config.oversold}/${config.overbought}`;
-    $('detail-rsi').innerHTML = formatRsi(sig.rsi) + `<span class="hint">Crossed ${isLong
+    // From the RSI move, not the side: an admin may have flipped the side since
+    const crossedDown = sig.rsi < sig.prev_rsi;
+    $('detail-rsi').innerHTML = formatRsi(sig.rsi) + `<span class="hint">Crossed ${crossedDown
       ? `below ${config.oversold}` : `above ${config.overbought}`} from ${formatRsi(sig.prev_rsi)}</span>`;
     // Net of fees, the same reward and risk R is measured against
-    const risk = Math.abs(entry - sig.stop_loss) / entry * 100 + config.fee_percent;
-    const reward = Math.abs(sig.take_profit - entry) / entry * 100 - config.fee_percent;
-    $('detail-rr').textContent = entry > 0 ? `1:${Number((reward / risk).toFixed(2))}` : '–';
+    // The target in R against the trade's 1R, which stays the risk at the fill after an admin moves the stop
+    const atTarget = tradeReturn(sig, base, sig.take_profit);
+    $('detail-rr').textContent = atTarget && atTarget.r != null ? `1:${Number(atTarget.r.toFixed(2))}` : '–';
     $('detail-fill').innerHTML = fillHtml(sig);
     $('detail-exit').innerHTML = exitHtml(sig);
   }
@@ -85,9 +95,164 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     fillDetail(currentSignal);
+    renderLevelsForm(currentSignal);
     renderJournalForm(currentSignal);
     renderChart(currentSignal);
   }
+
+  // Levels form (admin, signals awaiting fill)
+  let targetByHand = false;
+
+  function levelsSide() {
+    const checked = levelsForm.querySelector('input[name="levels-side"]:checked');
+    return checked ? checked.value : 'LONG';
+  }
+
+  // A suggested price: as many decimals as the typed entry, and at least 5 significant digits, so
+  // "1.2" still gets a target above it; written out in full, never as 1.2e-7
+  function likeEntry(value) {
+    const typed = levelsEntry.value.trim().replace(',', '.');
+    const typedDecimals = /e/i.test(typed) ? 0 : (typed.split('.')[1] || '').length;
+    const decimals = Math.min(12, Math.max(typedDecimals, 4 - Math.floor(Math.log10(Math.abs(value)))));
+    const text = value.toFixed(Math.max(0, decimals));
+    return text.includes('.') ? text.replace(/\.?0+$/, '') : text;
+  }
+
+  // The scanner's 1:2 after fees: both exits pay the round-trip fee, so the net reward is twice the net risk
+  function defaultTarget(side, entry, stop) {
+    const fee = config.fee_percent;
+    const distance = (2 * (Math.abs(entry - stop) / entry * 100 + fee) + fee) / 100;
+    return side === 'LONG' ? entry * (1 + distance) : entry * (1 - distance);
+  }
+
+  const isFilled = (sig) => sig && sig.status === 'OPEN';
+
+  // The level problem the server would reject, or '' when the levels fit the side. Once filled the
+  // stop may sit past the entry (break-even, trailing), it only has to stay on the far side of the target.
+  function levelsProblem(side, entry, stop, target, filled) {
+    if (![entry, stop, target].every(v => v > 0)) return 'Prices must be positive numbers';
+    const long = side === 'LONG';
+    if (filled) {
+      return (long ? stop < target : stop > target) ? '' : `For a ${long ? 'long' : 'short'} the stop must be ${long ? 'below' : 'above'} the target`;
+    }
+    if (long ? !(stop < entry && entry < target) : !(target < entry && entry < stop)) {
+      return `For a ${long ? 'long' : 'short'} the stop must be ${long ? 'below' : 'above'} the entry and the target ${long ? 'above' : 'below'} it`;
+    }
+    return '';
+  }
+
+  function updateLevelsPreview() {
+    const side = levelsSide();
+    const entry = parseFill(levelsEntry);
+    const stop = parseFill(levelsSl);
+    const target = parseFill(levelsTp);
+    const filled = isFilled(currentSignal);
+    const problem = levelsProblem(side, entry, stop, target, filled);
+    if (problem) {
+      levelsResult.innerHTML = `<span class="is-short">${escapeHtml(problem)}</span>`;
+      return;
+    }
+    if (filled) {
+      // Against the actual fill and the trade's original 1R
+      const fill = currentSignal.fill_price;
+      const at = (level) => {
+        const res = tradeReturn(currentSignal, fill, level);
+        return `${formatPct(res.pnl)} (${formatR(res.r)})`;
+      };
+      levelsResult.textContent = `From the fill at ${formatPrice(fill)}, after fees: target ${at(target)}, stop ${at(stop)}`;
+      return;
+    }
+    const fee = config.fee_percent;
+    const risk = Math.abs(entry - stop) / entry * 100 + fee;
+    const reward = Math.abs(target - entry) / entry * 100 - fee;
+    levelsResult.textContent = `After the ${fee}% fee: target +${reward.toFixed(2)}%, stop −${risk.toFixed(2)}%, R:R 1:${Number((reward / risk).toFixed(2))}`;
+  }
+
+  function followTarget() {
+    const entry = parseFill(levelsEntry);
+    const stop = parseFill(levelsSl);
+    if (!targetByHand && entry > 0 && stop > 0) levelsTp.value = likeEntry(defaultTarget(levelsSide(), entry, stop));
+    updateLevelsPreview();
+  }
+
+  function renderLevelsForm(sig) {
+    const filled = isFilled(sig);
+    levelsForm.hidden = !(sig.status === 'PENDING' || filled);
+    $('levels-help').textContent = filled
+      ? 'The order filled, so only the stop and target can move: to break-even or trailing, for example. '
+        + 'New levels apply from the next candle, earlier candles keep the old ones, and R stays against the risk at the fill. Telegram gets the new levels.'
+      : 'While the order awaits a fill. The target follows 1:2 after fees until you type your own. '
+        + 'The order can only fill on candles that open after you save, and Telegram gets the new levels.';
+    levelsForm.querySelectorAll('input[name="levels-side"]').forEach(r => {
+      r.checked = r.value === sig.side;
+      r.disabled = filled;
+    });
+    levelsEntry.value = sig.entry_price;
+    levelsEntry.readOnly = filled;
+    levelsSl.value = sig.stop_loss;
+    levelsTp.value = sig.take_profit;
+    // A moved stop no longer measures the risk, so the target is not derived from it once filled
+    targetByHand = filled;
+    updateLevelsPreview();
+  }
+
+  levelsEntry.addEventListener('input', followTarget);
+  levelsSl.addEventListener('input', followTarget);
+  levelsTp.addEventListener('input', () => {
+    targetByHand = levelsTp.value.trim() !== '';
+    updateLevelsPreview();
+  });
+  // A new side mirrors the stop across the entry, so the risk stays the same size
+  levelsForm.querySelectorAll('input[name="levels-side"]').forEach(r => r.addEventListener('change', () => {
+    const entry = parseFill(levelsEntry);
+    const stop = parseFill(levelsSl);
+    if (entry > 0 && stop > 0) levelsSl.value = likeEntry(2 * entry - stop);
+    targetByHand = false;
+    followTarget();
+  }));
+
+  levelsForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const sig = currentSignal;
+    if (!sig) return;
+    const values = {
+      side: levelsSide(),
+      entry_price: parseFill(levelsEntry),
+      take_profit: parseFill(levelsTp),
+      stop_loss: parseFill(levelsSl),
+    };
+    const filled = isFilled(sig);
+    if (levelsProblem(values.side, values.entry_price, values.stop_loss, values.take_profit, filled)) return;
+    const labels = { side: 'Side', entry_price: 'Entry', take_profit: 'Target', stop_loss: 'Stop' };
+    const changes = Object.keys(values).filter(k => values[k] !== sig[k]).map(k => `${labels[k]}: ${sig[k]} → ${values[k]}`);
+    if (!changes.length) {
+      showToast('Nothing changed');
+      return;
+    }
+    const when = filled
+      ? 'They apply from the next candle; earlier candles keep the old levels.'
+      : 'The order can only fill on candles that open after now.';
+    if (!confirm(`Save the new levels?\n\n${changes.join('\n')}\n\n${when} Telegram gets the new levels.`)) return;
+
+    levelsSave.disabled = true;
+    try {
+      const res = await fetch(`/api/signals/${encodeURIComponent(sig.id)}/levels`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(values),
+      });
+      if (!res.ok) throw new Error(await responseError(res));
+      currentSignal = (await res.json()).data;
+      fillDetail(currentSignal);
+      renderLevelsForm(currentSignal);
+      renderChart(currentSignal);
+      showToast('Levels saved');
+    } catch (err) {
+      levelsResult.innerHTML = `<span class="is-short">${escapeHtml(`Could not save: ${err.message}`)}</span>`;
+    } finally {
+      levelsSave.disabled = false;
+    }
+  });
 
   // Journal form
   function selectedJournalStatus() {

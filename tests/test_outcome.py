@@ -153,3 +153,14 @@ def test_trade_return_against_planned_risk():
 def test_trade_return_without_risk_has_no_r():
     assert trade_return("LONG", 100.0, 101.0, 0.0, 0.0) == (pytest.approx(1.0), None)
     assert trade_return("LONG", 0.0, 101.0, 1.0, 0.1) == (0.0, None)
+
+
+def test_resolve_exit_counts_the_target_on_its_first_candle():
+    from src.strategy.outcome import resolve_exit
+
+    # No fill on this candle, so the opening-side rule for the fill candle does not apply
+    candles = [[0, "100.5", "102.5", "100.4", "102"]]
+    trade = resolve_exit("LONG", 100.0, -3_600_000, 102.1, 99.1, candles, 5, 3_600_000, 3_600_000)
+    assert (trade.status, trade.exit_price, trade.fill_ms) == ("TP_HIT", 102.1, -3_600_000)
+    assert resolve_exit("LONG", 100.0, 0, 102.1, 99.1, candles, 1, 3_600_000, 3_600_000).status == "TP_HIT"
+    assert resolve_exit("LONG", 100.0, 0, 103.0, 99.1, candles, 1, 3_600_000, 3_600_000).status == "EXPIRED"

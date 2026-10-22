@@ -43,10 +43,15 @@ def format_signal(row: dict) -> str:
     """One block per new signal, as stored after this run's evaluation, so a signal found late
     that already filled or closed says so instead of asking for a limit order."""
     entry = row["entry_price"]
-    decimals = _decimals(entry)
-    # Net of the round-trip fee, which both exits pay: the gain at TP and the loss at SL
-    tp_net = abs(row["take_profit"] - entry) / entry * 100 - ROUND_TRIP_FEE_PERCENT
-    sl_net = -abs(entry - row["stop_loss"]) / entry * 100 - ROUND_TRIP_FEE_PERCENT
+    # Binance quoted the scanner's entry, so its decimals fit the tick; an admin typed all three levels
+    edited = row.get("levels_edited_at")
+    decimals = max(map(_decimals, (entry, row["take_profit"], row["stop_loss"]))) if edited else _decimals(entry)
+    # Net of the round-trip fee, which both exits pay; signed, so a stop an admin moved past the
+    # entry of an open trade shows the profit it locks in. From the fill once filled, like the P/L.
+    direction = 1 if row["side"] == "LONG" else -1
+    base = row.get("fill_price") or entry
+    tp_net = direction * (row["take_profit"] - base) / base * 100 - ROUND_TRIP_FEE_PERCENT
+    sl_net = direction * (row["stop_loss"] - base) / base * 100 - ROUND_TRIP_FEE_PERCENT
 
     status = row["status"]
     if status == "PENDING":
@@ -68,7 +73,7 @@ def format_signal(row: dict) -> str:
 
 
 def format_signals(rows: list[dict]) -> str:
-    return "\n\n".join(["<b>Simple Trade</b>", *(format_signal(r) for r in rows)])
+    return "\n\n".join([TITLE, *(format_signal(r) for r in rows)])
 
 
 def format_transitions(rows: list[dict]) -> str:
@@ -82,6 +87,15 @@ def format_transitions(rows: list[dict]) -> str:
         else:
             lines.append(f"{RESULT_ICONS[row['status']]} {name} {_result(row)}")
     return "\n".join(lines)
+
+
+async def notify_signal_edit(row: dict) -> None:
+    """Send the new levels of a signal the channel already got; a failed send is only logged,
+    since the edit itself is stored."""
+    try:
+        await send_alert(f"{TITLE}\n\n✏️ Levels changed\n{format_signal(row)}")
+    except Exception:
+        logger.exception("Failed to send signal edit alert")
 
 
 async def notify_run(new_rows: list[dict], transitions: list[dict]) -> bool:

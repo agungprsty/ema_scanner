@@ -120,6 +120,8 @@
       max-width: 560px;
     }
     .journal-grid .wide { grid-column: 1 / -1; }
+    .levels-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    @media (max-width: 599px) { .levels-grid { grid-template-columns: 1fr; } }
 
     .journal-foot {
       display: flex;
@@ -178,6 +180,33 @@
         <div><dt>Exit</dt><dd class="num" id="detail-exit">–</dd></div>
       </dl>
 
+      <form class="journal admin-only" id="levels-form" novalidate hidden>
+        <h3>Edit levels</h3>
+        <p class="journal-help" id="levels-help"></p>
+        <div class="seg" role="radiogroup" aria-label="Side">
+          <label><input type="radio" name="levels-side" value="LONG"><span>Long</span></label>
+          <label><input type="radio" name="levels-side" value="SHORT"><span>Short</span></label>
+        </div>
+        <div class="journal-grid levels-grid">
+          <label class="field">
+            <span class="field-label">Entry (limit)</span>
+            <input type="text" id="levels-entry" inputmode="decimal" autocomplete="off">
+          </label>
+          <label class="field">
+            <span class="field-label">Stop loss</span>
+            <input type="text" id="levels-sl" inputmode="decimal" autocomplete="off">
+          </label>
+          <label class="field">
+            <span class="field-label">Target</span>
+            <input type="text" id="levels-tp" inputmode="decimal" autocomplete="off">
+          </label>
+        </div>
+        <div class="journal-foot">
+          <span class="journal-result" id="levels-result" aria-live="polite"></span>
+          <button class="btn btn-primary" id="levels-save" type="submit">Save levels</button>
+        </div>
+      </form>
+
       <form class="journal admin-only" id="journal-form" novalidate>
         <h3>Your trade</h3>
         <p class="journal-help">Record whether you took this signal and at what prices, to compare your results with the signal's.</p>
@@ -212,7 +241,7 @@
 
   <output class="toast" id="toast" hidden></output>
 
-  <script src="/static/common.js?v=1"></script>
-  <script src="/static/signal.js?v=1"></script>
+  <script src="/static/common.js?v=2"></script>
+  <script src="/static/signal.js?v=2"></script>
 </body>
 </html>

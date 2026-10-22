@@ -626,3 +626,62 @@ async def test_create_admin_reset_keeps_role_and_username(auth_db):
     # The register rule is checked against the stored username, not the CLI value
     with pytest.raises(ValueError):
         await run_create_admin(email="bob@example.com", username="ignored", password="BOB_TRADER")
+
+
+async def test_signal_levels_edit_is_admin_only_validated_and_alerted(auth_db, monkeypatch):
+    edits, alerts_sent = [], []
+    row = {"id": 5, "symbol": "BTCUSDT", "side": "LONG", "entry_price": 99.5, "status": "PENDING"}
+
+    async def fake_update(client, signal_id, side, entry_price, take_profit, stop_loss, now_ms):
+        if signal_id != 5:
+            return None
+        edits.append((side, entry_price, take_profit, stop_loss))
+        return row, signal_id == 5
+
+    async def fake_get_signal(signal_id):
+        return row
+
+    async def fake_notify(r):
+        alerts_sent.append(r)
+
+    monkeypatch.setattr(main, "update_signal_levels", fake_update)
+    monkeypatch.setattr(main, "get_signal", fake_get_signal)
+    monkeypatch.setattr(main, "notify_signal_edit", fake_notify)
+
+    admin = await auth_db["create_user"]("lead@example.com", "lead", "hash", role="administrator")
+    user = await auth_db["create_user"]("sam@example.com", "sam", "hash", role="user")
+    expires = datetime.now(UTC) + timedelta(days=1)
+    for token, owner in (("lead_token", admin), ("sam_token", user)):
+        await auth_db["create_session"](hashlib.sha256(token.encode("utf-8")).hexdigest(), owner["id"], expires)
+
+    body = {"side": "LONG", "entry_price": 99.5, "take_profit": 101.6, "stop_loss": 98.6}
+    async with AsyncClient(transport=ASGITransport(app=main.app), base_url="http://test") as client:
+        put = lambda sid, b, token: client.put(f"/api/signals/{sid}/levels", json=b, cookies={"st_session": token})  # noqa: E731
+        assert (await put(5, body, "sam_token")).status_code == 403
+
+        wrong_way = await put(5, {**body, "side": "SHORT"}, "lead_token")
+        assert wrong_way.status_code == 422
+        assert {e["field"] for e in wrong_way.json()["errors"]} == {"take_profit", "stop_loss"}
+        assert (await put(5, {**body, "entry_price": 0}, "lead_token")).status_code == 422
+        # Stored, Infinity would break every later response that holds the row; a raw body can carry it
+        infinite = await client.put(
+            "/api/signals/5/levels",
+            content='{"side": "LONG", "entry_price": 99.5, "take_profit": Infinity, "stop_loss": 98.6}',
+            headers={"Content-Type": "application/json"},
+            cookies={"st_session": "lead_token"},
+        )
+        assert infinite.status_code == 422
+        assert edits == []
+
+        assert (await put(9, body, "lead_token")).status_code == 404
+
+        ok = await put(5, body, "lead_token")
+        assert ok.status_code == 200 and ok.json()["data"] == row
+        assert edits == [("LONG", 99.5, 101.6, 98.6)]
+        assert alerts_sent == [row]
+
+        # Once filled the stop may pass the entry (break-even), but not the target
+        row["status"] = "OPEN"
+        assert (await put(5, {**body, "stop_loss": 99.8}, "lead_token")).status_code == 200
+        crossed = await put(5, {**body, "stop_loss": 101.7}, "lead_token")
+        assert crossed.status_code == 422 and [e["field"] for e in crossed.json()["errors"]] == ["stop_loss"]

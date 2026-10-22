@@ -54,6 +54,7 @@ from src.config.settings import (
 )
 from src.data_feed.binance_client import create_futures_client
 from src.data_feed.ohlcv import fetch_candles_range
+from src.services.alerts import notify_signal_edit
 from src.services.cron_scheduler import cron_scheduler
 from src.services.db import (
     ACTIVE_STATUSES,
@@ -77,6 +78,7 @@ from src.services.db import (
     signal_conditions,
     signal_stats,
     toggle_watchlist_symbol,
+    update_signal_levels,
     upsert_journal_entry,
 )
 from src.services.redis_client import (
@@ -283,6 +285,32 @@ class JournalRequest(BaseModel):
         if self.exit_fill is not None and self.entry_fill is None:
             raise ValueError("exit_fill requires entry_fill")
         return self
+
+
+class SignalLevelsRequest(BaseModel):
+    side: Literal["LONG", "SHORT"]
+    # Infinity would be stored, then fail every JSON response that holds the row
+    entry_price: float = Field(gt=0, allow_inf_nan=False)
+    take_profit: float = Field(gt=0, allow_inf_nan=False)
+    stop_loss: float = Field(gt=0, allow_inf_nan=False)
+
+
+def level_errors(body: SignalLevelsRequest, filled: bool) -> list[dict]:
+    """Before the fill the target must sit on the profit side of the entry and the stop on the
+    loss side. Once filled the stop may move past the entry (break-even, trailing), so it only has
+    to stay on the loss side of the target."""
+    long = body.side == "LONG"
+    above, below = ("above", "below") if long else ("below", "above")
+    if filled:
+        if (body.stop_loss >= body.take_profit) if long else (body.stop_loss <= body.take_profit):
+            return [{"field": "stop_loss", "message": f"must be {below} the target for a {body.side}"}]
+        return []
+    errors = []
+    if (body.take_profit <= body.entry_price) if long else (body.take_profit >= body.entry_price):
+        errors.append({"field": "take_profit", "message": f"must be {above} the entry for a {body.side}"})
+    if (body.stop_loss >= body.entry_price) if long else (body.stop_loss <= body.entry_price):
+        errors.append({"field": "stop_loss", "message": f"must be {below} the entry for a {body.side}"})
+    return errors
 
 
 class SummaryResponse(BaseModel):
@@ -524,6 +552,34 @@ async def save_journal_entry(signal_id: int, body: JournalRequest):
     if item is None:
         raise NotFound("Signal not found")
     return success(item, "Journal entry saved")
+
+
+@app.put("/api/signals/{signal_id}/levels", dependencies=[Depends(require_admin)], response_model=Envelope[dict])
+async def edit_signal_levels(signal_id: int, body: SignalLevelsRequest):
+    """Move the levels of a pending or open signal (only target and stop once filled); Telegram
+    gets the new levels."""
+    sig = await get_signal(signal_id)
+    if not sig:
+        raise NotFound("Signal not found")
+    errors = level_errors(body, filled=sig["status"] == "OPEN")
+    if errors:
+        raise UnprocessableEntity("Validation failed", errors=errors)
+    try:
+        result = await update_signal_levels(
+            _get_client(), signal_id, body.side, body.entry_price, body.take_profit, body.stop_loss,
+            int(time.time() * 1000),
+        )
+    except AppException:
+        raise
+    except Exception as exc:
+        logger.exception("Signal %d edit could not check the latest candles", signal_id)
+        raise BadGateway("Could not check the order against the latest candles, try again") from exc
+    if result is None:
+        raise NotFound("Signal not found")
+    row, alerted = result
+    if alerted:
+        await notify_signal_edit(row)
+    return success(await get_signal(signal_id) or row, "Signal levels saved")
 
 
 @app.delete("/api/signals/{signal_id}/journal", dependencies=[Depends(require_admin)], response_model=Envelope[None])

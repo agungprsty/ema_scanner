@@ -51,7 +51,7 @@ def _closed(status, exit_price, pnl, r, **overrides) -> dict:
 
 def test_pending_signal_asks_for_the_limit_order():
     assert alerts.format_signals([_row()]).split("\n") == [
-        "<b>Simple Trade · 1h</b>",
+        "<b>Simple Trade</b>",
         "",
         "🟢 <b>LONG BTCUSDT</b>",
         "Entry <code>60000.0</code>",
@@ -147,7 +147,7 @@ async def test_notify_run_without_anything_new_sends_nothing(sent):
 async def test_notify_run_respects_outcome_setting(sent, monkeypatch):
     monkeypatch.setattr(alerts, "TELEGRAM_OUTCOME_ALERTS", False)
     await alerts.notify_run([_row(id=1)], [_closed("SL_HIT", 59_400.0, -1.1, -1.1, id=3)])
-    assert len(sent) == 1 and "<b>Simple Trade · 1h</b>" in sent[0]
+    assert len(sent) == 1 and "<b>LONG BTCUSDT</b>" in sent[0]
 
 
 async def test_notify_run_survives_send_errors(monkeypatch):
@@ -166,3 +166,37 @@ async def test_notify_run_reports_an_undelivered_signal_message(monkeypatch):
 
     monkeypatch.setattr(alerts, "send_alert", refused_send)
     assert await alerts.notify_run([_row(id=1)], []) is False
+
+
+async def test_signal_edit_alert_shows_the_new_levels(sent):
+    await alerts.notify_signal_edit(_row(entry_price=60_100.0, take_profit=61_362.1, stop_loss=59_559.1))
+    [text] = sent
+    assert text.startswith("<b>Simple Trade</b>\n\n✏️ Levels changed\n🟢 <b>LONG BTCUSDT</b>\n")
+    assert "Entry <code>60100.0</code>" in text and "TP <code>61362.1</code>" in text
+
+
+async def test_a_failed_edit_alert_is_only_logged(monkeypatch):
+    async def broken_send(text):
+        raise RuntimeError("telegram down")
+
+    monkeypatch.setattr(alerts, "send_alert", broken_send)
+    await alerts.notify_signal_edit(_row())
+
+
+def test_edited_levels_keep_the_decimals_the_admin_typed():
+    # The admin typed a 1-decimal entry with 4-decimal levels; entry decimals alone would print SL 0.5
+    row = _row(entry_price=0.5, take_profit=0.5115, stop_loss=0.4975, levels_edited_ms=S + HOUR)
+    text = alerts.format_signal(row)
+    assert "Entry <code>0.5000</code>" in text
+    assert "TP <code>0.5115</code>" in text and "SL <code>0.4975</code>" in text
+
+
+def test_a_stop_moved_into_profit_shows_what_it_locks_in():
+    row = _row(status="OPEN", fill_price=60_000.0, fill_ms=S + 2 * HOUR, stop_loss=60_120.0, levels_edited_ms=S + 3 * HOUR)
+    assert "SL <code>60120.0</code> +0.1%" in alerts.format_signal(row)
+
+
+def test_open_trade_levels_are_measured_from_the_fill():
+    # Gapped through the 60,000 limit and filled at 59,880; a stop at the fill only costs the fee
+    row = _row(status="OPEN", fill_price=59_880.0, fill_ms=S + 2 * HOUR, stop_loss=59_880.0, levels_edited_ms=S + 3 * HOUR)
+    assert "SL <code>59880.0</code> -0.1%" in alerts.format_signal(row)
