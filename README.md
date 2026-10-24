@@ -28,7 +28,7 @@ Only closed candles count, for both detection and tracking. A candle that is sti
 
 - **PENDING:** the limit waits for a fill during the fill window (`FILL_WINDOW_HOURS`, default 12 hours), counted from the candle after the signal candle. A LONG fills when a candle's low reaches `E`, a SHORT when its high reaches `E`. The signal candle itself never fills.
 - **NOT_FILLED:** no fill within the window. The order is cancelled and there is no P/L.
-- **OPEN:** filled. The trade is held for at most `MAX_HOLD_HOURS` (default 24 hours) from the fill candle.
+- **OPEN:** filled. The trade is held for at most `MAX_HOLD_HOURS` (default 6 hours) from the fill candle.
 - **TP_HIT / SL_HIT:** a candle reaches the target or the stop. A candle that opens past a level exits at its open. A candle that touches both levels counts as a stop. On the fill candle, the target only counts when the candle opened at or past `E`, since the candle data cannot show whether the target came before the fill.
 - **EXPIRED:** neither level is hit within the hold window. The trade closes at the last candle's close.
 
@@ -77,7 +77,7 @@ All settings come from `.env` (see `.env.example`).
 | `TP_PERCENT` | `2` | Take profit, net gain in percent after fees |
 | `SL_PERCENT` | `1` | Stop loss, net loss in percent after fees; also the planned risk for R. Must be above the fee |
 | `FILL_WINDOW_HOURS` | `12` | How long the limit waits for a fill |
-| `MAX_HOLD_HOURS` | `24` | How long a filled trade is held before it expires |
+| `MAX_HOLD_HOURS` | `6` | How long a filled trade is held before it expires |
 | `ROUND_TRIP_FEE_PERCENT` | `0.1` | Fees for opening plus closing, subtracted from P/L |
 | `SCAN_CANDLES` | `500` | Candles fetched per symbol for RSI |
 | `MAX_SYMBOLS` | `50` | Watchlist symbols scanned per run |
