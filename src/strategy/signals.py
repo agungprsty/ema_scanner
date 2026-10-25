@@ -1,13 +1,18 @@
+import math
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 from src.config.settings import (
+    EMA_PERIOD,
     ROUND_TRIP_FEE_PERCENT,
     RSI_OVERBOUGHT,
     RSI_OVERSOLD,
     RSI_PERIOD,
     SL_PERCENT,
+    SUPERTREND_ATR_PERIOD,
+    SUPERTREND_FACTOR,
     TP_PERCENT,
 )
 
@@ -35,6 +40,44 @@ def compute_rsi(close: pd.Series, period: int = RSI_PERIOD) -> pd.Series:
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
+
+
+def compute_ema(close: pd.Series, period: int = EMA_PERIOD) -> pd.Series:
+    """EMA of the close, NaN until `period` candles are seen; also drawn on the signal chart."""
+    return close.ewm(span=period, min_periods=period, adjust=False).mean()
+
+
+def compute_supertrend(
+    df: pd.DataFrame, period: int = SUPERTREND_ATR_PERIOD, factor: float = SUPERTREND_FACTOR
+) -> tuple[pd.Series, pd.Series]:
+    """(line, uptrend) as TradingView's ta.supertrend: hl2 bands at `factor` Wilder ATRs that only
+    tighten while the trend holds. `uptrend` is 1.0 or 0.0, NaN until the ATR is defined; the first
+    defined candle starts as a downtrend, like TradingView, so it is never a flip.
+
+    The ATR is seeded from the first true range rather than TradingView's SMA, like compute_rsi;
+    the gap decays by (1 - 1/period) per candle, so it is gone long before the scanned candles end.
+    """
+    high, low, close = (df[c].to_numpy(dtype=float) for c in ("high", "low", "close"))
+    prev_close = np.concatenate(([np.nan], close[:-1]))
+    # fmax skips the NaN previous close of the first candle, leaving high - low as TradingView does
+    tr = np.fmax(high - low, np.fmax(np.abs(high - prev_close), np.abs(low - prev_close)))
+    atr = pd.Series(tr).ewm(alpha=1 / period, min_periods=period, adjust=False).mean().to_numpy()
+    upper, lower = (high + low) / 2 + factor * atr, (high + low) / 2 - factor * atr
+    line, up = np.full(len(df), np.nan), np.full(len(df), np.nan)
+    for i in range(len(df)):
+        if math.isnan(atr[i]):
+            continue
+        if i == 0 or math.isnan(up[i - 1]):
+            up[i] = 0.0
+        else:
+            if not (lower[i] > lower[i - 1] or close[i - 1] < lower[i - 1]):
+                lower[i] = lower[i - 1]
+            if not (upper[i] < upper[i - 1] or close[i - 1] > upper[i - 1]):
+                upper[i] = upper[i - 1]
+            # Against this candle's bands, not the previous ones
+            up[i] = float(close[i] > upper[i]) if up[i - 1] == 0 else float(close[i] >= lower[i])
+        line[i] = lower[i] if up[i] else upper[i]
+    return pd.Series(line, index=df.index), pd.Series(up, index=df.index)
 
 
 def levels(side: str, entry: float) -> tuple[float, float]:
