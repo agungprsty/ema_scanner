@@ -88,7 +88,7 @@ from src.services.redis_client import (
     is_redis_connected,
     set_cached_json,
 )
-from src.strategy.rsi import compute_rsi
+from src.strategy.signals import compute_rsi
 
 configure_logging()
 logger = logging.getLogger(__name__)

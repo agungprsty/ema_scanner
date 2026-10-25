@@ -3,8 +3,8 @@ import math
 import pandas as pd
 import pytest
 
-from src.strategy import rsi as rsi_mod
-from src.strategy.rsi import Signal, compute_rsi, detect_signals, levels
+from src.strategy import signals as signals_mod
+from src.strategy.signals import Signal, compute_rsi, detect_signals, levels
 
 pytestmark = pytest.mark.unit
 
@@ -81,7 +81,7 @@ def test_short_on_cross_up_to_overbought():
 
 
 def _with_rsi(monkeypatch, values):
-    monkeypatch.setattr(rsi_mod, "compute_rsi", lambda close: pd.Series(values, dtype=float))
+    monkeypatch.setattr(signals_mod, "compute_rsi", lambda close: pd.Series(values, dtype=float))
     return _frame([100.0] * len(values))
 
 

@@ -44,7 +44,7 @@ from src.config.settings import (
     TIMEFRAME,
 )
 from src.strategy.outcome import Trade, resolve, resolve_exit, trade_return
-from src.strategy.rsi import Signal
+from src.strategy.signals import Signal
 
 logger = logging.getLogger(__name__)
 

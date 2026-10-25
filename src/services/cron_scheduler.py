@@ -25,7 +25,7 @@ from src.services.db import (
     release_signal_alerts,
 )
 from src.services.redis_client import acquire_lock, release_lock
-from src.strategy.rsi import detect_signals
+from src.strategy.signals import detect_signals
 
 logger = logging.getLogger(__name__)
 

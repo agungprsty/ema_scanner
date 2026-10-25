@@ -121,7 +121,7 @@ src/
   config/settings.py           Timeframe, RSI, TP/SL and window settings
   data_feed/binance_client.py  Binance futures client (HMAC/RSA)
   data_feed/ohlcv.py           Kline fetching
-  strategy/rsi.py              RSI, signal detection and trade levels
+  strategy/signals.py          RSI, signal detection and trade levels
   strategy/outcome.py          Fill/exit lifecycle and P/L
   services/db.py               Schema, signal storage, evaluation, journal, watchlist
   services/redis_client.py     Redis cache and scheduler locks

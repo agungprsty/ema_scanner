@@ -8,7 +8,7 @@ from sqlalchemy.dialects import postgresql
 from src.api.exceptions import Conflict
 from src.services import db
 from src.strategy.outcome import Trade
-from src.strategy.rsi import Signal
+from src.strategy.signals import Signal
 
 pytestmark = pytest.mark.unit
 
