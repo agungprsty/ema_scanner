@@ -94,6 +94,18 @@ TIMEFRAME_MS = INTERVAL_MS[TIMEFRAME]
 RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
 RSI_OVERSOLD = float(os.getenv("RSI_OVERSOLD", "28"))
 RSI_OVERBOUGHT = float(os.getenv("RSI_OVERBOUGHT", "72"))
+# Entry filter: a Supertrend flip, confirmed by the close against the EMA and RSI inside its band
+SUPERTREND_ATR_PERIOD = int(os.getenv("SUPERTREND_ATR_PERIOD", "10"))
+SUPERTREND_FACTOR = float(os.getenv("SUPERTREND_FACTOR", "3"))
+EMA_PERIOD = int(os.getenv("EMA_PERIOD", "50"))
+# LONG needs RSI_MIDLINE < RSI < RSI_LONG_MAX, SHORT needs RSI_SHORT_MIN < RSI < RSI_MIDLINE
+RSI_MIDLINE = float(os.getenv("RSI_MIDLINE", "50"))
+RSI_LONG_MAX = float(os.getenv("RSI_LONG_MAX", "80"))
+RSI_SHORT_MIN = float(os.getenv("RSI_SHORT_MIN", "20"))
+if min(SUPERTREND_ATR_PERIOD, EMA_PERIOD, RSI_PERIOD) < 1 or SUPERTREND_FACTOR <= 0:
+    raise ValueError("SUPERTREND_ATR_PERIOD, EMA_PERIOD and RSI_PERIOD must be at least 1, SUPERTREND_FACTOR above 0")
+if not 0 <= RSI_SHORT_MIN < RSI_MIDLINE < RSI_LONG_MAX <= 100:
+    raise ValueError("RSI levels must satisfy 0 <= RSI_SHORT_MIN < RSI_MIDLINE < RSI_LONG_MAX <= 100")
 # Reward and risk after fees: TP sits fees further out and SL fees closer in, so a target nets
 # +TP_PERCENT (+2R) and a stop -SL_PERCENT (-1R)
 TP_PERCENT = float(os.getenv("TP_PERCENT", "2"))
