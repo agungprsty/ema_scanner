@@ -5,11 +5,16 @@ import pytest
 
 from src.services import cron_scheduler as cron_module
 from src.services.cron_scheduler import TIMEFRAME_MS, run_job
+from src.strategy.signals import compute_supertrend
 
 pytestmark = pytest.mark.unit
 
 START = 1_792_540_800_000
-CLOSES = [100.0 + i for i in range(40)] + [89.0]  # steady climb, then a crash that crosses RSI 28
+# Long climb, a pullback that turns Supertrend down, then a rally that turns it back up on the last
+# candle with the close above EMA 50 and RSI near 60, so only that candle signals
+_CLIMB = [100 + 0.6 * i + (0.4 if i % 2 else -0.4) for i in range(80)]
+_PULLBACK = [_CLIMB[-1] - 1.5 * i for i in range(1, 9)]
+CLOSES = _CLIMB + _PULLBACK + [_PULLBACK[-1] + 2.0 * i for i in range(1, 5)]
 LAST_OPEN = START + (len(CLOSES) - 1) * TIMEFRAME_MS
 
 
@@ -24,6 +29,9 @@ def _frame() -> pd.DataFrame:
             "close_time": [o + TIMEFRAME_MS - 1 for o in opens],
         }
     )
+
+
+assert compute_supertrend(_frame())[1].iloc[-2:].tolist() == [0.0, 1.0], "fixture must flip up on the last candle"
 
 
 EVALUATED = {
@@ -99,12 +107,12 @@ def job(monkeypatch):
     return state
 
 
-async def test_closed_cross_is_stored_with_the_candle_low_as_entry(job):
+async def test_closed_flip_is_stored_with_the_candle_low_as_entry(job):
     res = await run_job(object())
 
     [hits] = job["inserted"]
     assert [(s.symbol, s.side, s.signal_candle_ms) for s in hits] == [("BTCUSDT", "LONG", LAST_OPEN)]
-    assert hits[0].entry_price == 88.0
+    assert hits[0].entry_price == CLOSES[-1] - 1
     assert hits[0].bars_ago == 0
     assert res["new_signals"] == 1
     assert res["symbols_scanned"] == 1

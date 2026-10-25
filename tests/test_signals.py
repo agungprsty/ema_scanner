@@ -110,64 +110,99 @@ def test_levels():
     assert levels("SHORT", 100.0) == (pytest.approx(97.9), pytest.approx(100.9))
 
 
-def _first_index(mask: pd.Series) -> int:
-    return int(mask[mask].index[0])
+def _pullback_then_rally() -> list[float]:
+    """Long climb, a pullback that turns Supertrend down on candle 84, then a rally that turns it
+    up on candle 91 with the close above EMA 50 and RSI near 60. Candle 21 also flips up, but
+    before EMA 50 is defined."""
+    climb = [100 + 0.6 * i + (0.4 if i % 2 else -0.4) for i in range(80)]
+    pullback = [climb[-1] - 1.5 * i for i in range(1, 9)]
+    return climb + pullback + [pullback[-1] + 2.0 * i for i in range(1, 15)]
 
 
-def test_long_on_cross_down_to_oversold():
-    # Chop around 100 keeps RSI near 50, then a steady fall drags it under 28
-    closes = [100 + (0.5 if i % 2 else -0.5) for i in range(30)] + [100 - 0.7 * i for i in range(1, 15)]
-    df = _frame(closes)
-    rsi = compute_rsi(df["close"])
-    i = _first_index(rsi <= 28)
+def test_long_on_a_supertrend_flip_up_that_passes_both_filters():
+    df = _frame(_pullback_then_rally())
+    _, up = compute_supertrend(df)
+    assert (up.iloc[90], up.iloc[91]) == (0.0, 1.0)
 
-    sigs = detect_signals(df.iloc[: i + 1], "BTCUSDT", lookback=3)
+    sigs = detect_signals(df.iloc[:92], "BTCUSDT", lookback=3)
 
     assert len(sigs) == 1
     sig = sigs[0]
     assert isinstance(sig, Signal)
     assert (sig.symbol, sig.side, sig.bars_ago) == ("BTCUSDT", "LONG", 0)
-    assert sig.prev_rsi > 28 >= sig.rsi
-    assert sig.entry_price == df["low"].iloc[i]
-    assert sig.candle_close == df["close"].iloc[i]
+    assert sig.candle_close > compute_ema(df["close"]).iloc[91]
+    assert 50 < sig.rsi < 80
+    assert sig.prev_rsi == pytest.approx(compute_rsi(df["close"]).iloc[90])
+    assert sig.entry_price == df["low"].iloc[91]
+    assert sig.candle_close == df["close"].iloc[91]
     assert sig.take_profit == pytest.approx(sig.entry_price * 1.021)
     assert sig.stop_loss == pytest.approx(sig.entry_price * 0.991)
-    assert sig.signal_candle_ms == T0_MS + i * 3_600_000
+    assert sig.signal_candle_ms == T0_MS + 91 * 3_600_000
 
 
-def test_short_on_cross_up_to_overbought():
-    closes = [100 + (0.5 if i % 2 else -0.5) for i in range(30)] + [100 + 0.7 * i for i in range(1, 15)]
-    df = _frame(closes)
-    i = _first_index(compute_rsi(df["close"]) >= 72)
-
-    sigs = detect_signals(df.iloc[: i + 1], "ETHUSDT", lookback=3)
-
-    assert [(s.side, s.bars_ago) for s in sigs] == [("SHORT", 0)]
-    sig = sigs[0]
-    assert sig.entry_price == df["high"].iloc[i]
-    assert sig.take_profit == pytest.approx(sig.entry_price * 0.979)
-    assert sig.stop_loss == pytest.approx(sig.entry_price * 1.009)
+def test_flip_failing_a_filter_is_ignored_end_to_end(monkeypatch):
+    df = _frame(_pullback_then_rally())
+    # Candle 21 flips up with RSI above 90 and no EMA yet, so the whole history has one signal
+    assert [s.bars_ago for s in detect_signals(df.iloc[:92], "X", lookback=92)] == [0]
+    monkeypatch.setattr(signals_mod, "RSI_LONG_MAX", 55.0)
+    assert detect_signals(df.iloc[:92], "X", lookback=3) == []
 
 
-def _with_rsi(monkeypatch, values):
-    monkeypatch.setattr(signals_mod, "compute_rsi", lambda close: pd.Series(values, dtype=float))
-    return _frame([100.0] * len(values))
+def _rigged(monkeypatch, up, rsi, ema, close=100.0):
+    """A frame whose Supertrend direction, RSI and EMA are the given lists, one per candle."""
+    n = len(up)
+    monkeypatch.setattr(signals_mod, "compute_supertrend", lambda df: (pd.Series([0.0] * n), pd.Series(up, dtype=float)))
+    monkeypatch.setattr(signals_mod, "compute_rsi", lambda close: pd.Series(rsi, dtype=float))
+    monkeypatch.setattr(signals_mod, "compute_ema", lambda close: pd.Series(ema, dtype=float))
+    return _frame([close] * n)
 
 
-def test_prev_exactly_at_threshold_does_not_signal(monkeypatch):
-    assert detect_signals(_with_rsi(monkeypatch, [28.0, 20]), "X", lookback=2) == []
-    assert detect_signals(_with_rsi(monkeypatch, [72.0, 80]), "X", lookback=2) == []
+def _sides(monkeypatch, up, rsi, ema):
+    return [s.side for s in detect_signals(_rigged(monkeypatch, up, rsi, ema), "X", lookback=len(up))]
 
 
-def test_nan_warmup_rows_are_skipped(monkeypatch):
-    df = _with_rsi(monkeypatch, [math.nan, math.nan, 20, 50])
-    assert detect_signals(df, "X", lookback=4) == []
+@pytest.mark.parametrize(
+    ("up", "rsi", "ema", "expected"),
+    [
+        ([0, 1], [55, 62], [99, 99], ["LONG"]),
+        ([0, 1], [55, 62], [101, 101], []),  # close below the EMA
+        ([0, 1], [55, 62], [100, 100], []),  # close on the EMA
+        ([0, 1], [70, 81], [99, 99], []),  # RSI already past 80
+        ([0, 1], [55, 49], [99, 99], []),  # RSI not above 50
+        ([0, 1], [55, 50.0], [99, 99], []),
+        ([0, 1], [55, 80.0], [99, 99], []),
+        ([1, 0], [45, 38], [101, 101], ["SHORT"]),
+        ([1, 0], [45, 38], [99, 99], []),  # close above the EMA
+        ([1, 0], [45, 19], [101, 101], []),  # RSI already past 20
+        ([1, 0], [45, 51], [101, 101], []),  # RSI not below 50
+        ([1, 0], [45, 20.0], [101, 101], []),
+        ([1, 0], [45, 50.0], [101, 101], []),
+        ([1, 1], [55, 62], [99, 99], []),  # an uptrend that holds is not a flip
+        ([0, 0], [45, 38], [101, 101], []),
+        ([math.nan, 1], [55, 62], [99, 99], []),  # warm-up
+        ([math.nan, 0], [45, 38], [101, 101], []),
+        ([0, 1], [55, math.nan], [99, 99], []),
+        ([0, 1], [55, 62], [99, math.nan], []),
+    ],
+)
+def test_each_rule_is_required(monkeypatch, up, rsi, ema, expected):
+    assert _sides(monkeypatch, up, rsi, ema) == expected
 
 
-def test_every_hit_in_lookback_is_returned_with_its_age(monkeypatch):
-    df = _with_rsi(monkeypatch, [50, 27, 50, 73, 60, 50])
+def test_short_entry_is_the_candle_high(monkeypatch):
+    [sig] = detect_signals(_rigged(monkeypatch, [1, 0], [45, 38], [101, 101]), "ETHUSDT", lookback=2)
+    assert (sig.side, sig.entry_price, sig.rsi, sig.prev_rsi) == ("SHORT", 101.0, 38, 45)
+    assert sig.take_profit == pytest.approx(101.0 * 0.979)
+    assert sig.stop_loss == pytest.approx(101.0 * 1.009)
+
+
+def test_every_flip_in_lookback_is_returned_with_its_age(monkeypatch):
+    up = [0, 1, 1, 0, 0, 0]
+    rsi = [50, 62, 60, 38, 40, 45]
+    ema = [99, 99, 99, 101, 101, 101]
+    df = _rigged(monkeypatch, up, rsi, ema)
 
     sigs = detect_signals(df, "X", lookback=5)
 
-    assert [(s.side, s.bars_ago, s.rsi, s.prev_rsi) for s in sigs] == [("LONG", 4, 27, 50), ("SHORT", 2, 73, 50)]
+    assert [(s.side, s.bars_ago, s.rsi, s.prev_rsi) for s in sigs] == [("LONG", 4, 62, 50), ("SHORT", 2, 38, 60)]
     assert [s.side for s in detect_signals(df, "X", lookback=3)] == ["SHORT"]
