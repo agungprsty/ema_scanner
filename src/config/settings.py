@@ -99,8 +99,8 @@ RSI_OVERBOUGHT = float(os.getenv("RSI_OVERBOUGHT", "72"))
 TP_PERCENT = float(os.getenv("TP_PERCENT", "2"))
 SL_PERCENT = float(os.getenv("SL_PERCENT", "1"))
 # Windows are set in hours so they mean the same time on every TIMEFRAME, then counted in candles
-FILL_WINDOW_HOURS = float(os.getenv("FILL_WINDOW_HOURS", "12"))
-MAX_HOLD_HOURS = float(os.getenv("MAX_HOLD_HOURS", "6"))
+FILL_WINDOW_HOURS = float(os.getenv("FILL_WINDOW_HOURS", "6"))
+MAX_HOLD_HOURS = float(os.getenv("MAX_HOLD_HOURS", "12"))
 FILL_WINDOW_CANDLES = max(1, math.ceil(FILL_WINDOW_HOURS * 3_600_000 / TIMEFRAME_MS))
 MAX_HOLD_CANDLES = max(1, math.ceil(MAX_HOLD_HOURS * 3_600_000 / TIMEFRAME_MS))
 # Exchange fees for opening and closing a position, in percent of notional
