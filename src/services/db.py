@@ -113,7 +113,7 @@ class WatchlistModel(Base):
 
 
 class SignalModel(Base):
-    """An RSI signal and the limit-entry trade replayed from it."""
+    """A Supertrend + EMA + RSI signal and the limit-entry trade replayed from it."""
 
     __tablename__ = "signals"
     __table_args__ = (

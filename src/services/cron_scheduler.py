@@ -56,7 +56,7 @@ async def _alert(transitions: list[dict], run_ms: int) -> None:
 
 
 async def run_job(client) -> dict:
-    """Scan the watchlist's closed candles for RSI crosses, store them, replay active trades, alert.
+    """Scan the watchlist's closed candles for filtered Supertrend flips, store them, replay active trades, alert.
 
     Raises when the database is not ready, so the run is marked failed instead of finding nothing.
     """

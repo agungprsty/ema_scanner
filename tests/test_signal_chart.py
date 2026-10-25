@@ -103,7 +103,7 @@ async def test_closed_signal_charts_its_own_trade_window_with_warmup(env):
     closes = [c["close"] for c in _candles(start_ms - WARMUP * H1, end_ms, H1)]
     ema = closes[0]
     for close in closes[1:]:
-        ema += (close - ema) * 2 / (main.SIGNAL_CHART_EMA + 1)
+        ema += (close - ema) * 2 / (main.EMA_PERIOD + 1)
     assert data["ema"][-1]["value"] == pytest.approx(ema)
     # Volume delta is taker buys minus taker sells: 2 * buy - volume
     assert [p["time"] for p in data["volume_delta"]] == [c["time"] for c in data["candles"]]

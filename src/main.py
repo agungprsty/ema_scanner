@@ -37,17 +37,21 @@ from src.api.security import (
 )
 from src.config.settings import (
     DRY_RUN,
+    EMA_PERIOD,
     FILL_WINDOW_CANDLES,
     INTERVAL_MS,
     MAX_HOLD_CANDLES,
     MAX_SYMBOLS,
     ROUND_TRIP_FEE_PERCENT,
-    RSI_OVERBOUGHT,
-    RSI_OVERSOLD,
+    RSI_LONG_MAX,
+    RSI_MIDLINE,
     RSI_PERIOD,
+    RSI_SHORT_MIN,
     SESSION_COOKIE_SECURE,
     SESSION_TTL_HOURS,
     SL_PERCENT,
+    SUPERTREND_ATR_PERIOD,
+    SUPERTREND_FACTOR,
     TIMEFRAME,
     TIMEFRAME_MS,
     TP_PERCENT,
@@ -88,7 +92,7 @@ from src.services.redis_client import (
     is_redis_connected,
     set_cached_json,
 )
-from src.strategy.signals import compute_rsi
+from src.strategy.signals import compute_ema, compute_rsi
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -120,11 +124,11 @@ async def lifespan(app: FastAPI):
     await close_db()
 
 
-APP_VERSION = "3.1.0"
+APP_VERSION = "3.2.0"
 
 app = FastAPI(
     title="Simpletrade",
-    description="Binance Futures RSI 28/72 limit-entry scanner with PostgreSQL, Redis and a per-candle scheduler",
+    description="Binance Futures Supertrend + EMA + RSI limit-entry scanner with PostgreSQL, Redis and a per-candle scheduler",
     version=APP_VERSION,
     lifespan=lifespan,
 )
@@ -410,9 +414,13 @@ async def get_info():
         "timeframe": TIMEFRAME,
         "interval_ms": TIMEFRAME_MS,
         "strategy": {
+            "supertrend_atr_period": SUPERTREND_ATR_PERIOD,
+            "supertrend_factor": SUPERTREND_FACTOR,
+            "ema_period": EMA_PERIOD,
             "rsi_period": RSI_PERIOD,
-            "oversold": RSI_OVERSOLD,
-            "overbought": RSI_OVERBOUGHT,
+            "rsi_midline": RSI_MIDLINE,
+            "rsi_long_max": RSI_LONG_MAX,
+            "rsi_short_min": RSI_SHORT_MIN,
             "tp_percent": TP_PERCENT,
             "sl_percent": SL_PERCENT,
             "fill_window_candles": FILL_WINDOW_CANDLES,
@@ -593,7 +601,6 @@ async def remove_journal_entry(signal_id: int):
 SIGNAL_CANDLES_BEFORE = 30
 SIGNAL_CANDLES_AFTER = 6
 SIGNAL_RSI_WARMUP = 300  # extra bars fetched before the window so the first charted RSI and EMA have settled
-SIGNAL_CHART_EMA = 50
 # A closed trade's window never changes once all its candles have closed
 SIGNAL_CANDLES_FINAL_TTL = 7 * 24 * 3600
 
@@ -620,7 +627,7 @@ def _chart_payload(sig: dict, candles: list[dict], start_ms: int) -> dict:
     """Candles from `start_ms` on, with RSI and EMA over the whole fetch so warm-up bars are dropped, not zeroed."""
     close = pd.Series([c["close"] for c in candles], dtype=float)
     rsi = compute_rsi(close)
-    ema = close.ewm(span=SIGNAL_CHART_EMA, min_periods=SIGNAL_CHART_EMA, adjust=False).mean()
+    ema = compute_ema(close)
     start_s = start_ms // 1000
     shown = [i for i, c in enumerate(candles) if c["time"] >= start_s]
 

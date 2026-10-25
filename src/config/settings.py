@@ -90,14 +90,12 @@ if TIMEFRAME not in INTERVAL_MS:
     raise ValueError(f"TIMEFRAME={TIMEFRAME!r} is not supported, use one of: {', '.join(INTERVAL_MS)}")
 TIMEFRAME_MS = INTERVAL_MS[TIMEFRAME]
 
-# RSI strategy: limit entry at the signal candle's low (LONG) or high (SHORT)
-RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
-RSI_OVERSOLD = float(os.getenv("RSI_OVERSOLD", "28"))
-RSI_OVERBOUGHT = float(os.getenv("RSI_OVERBOUGHT", "72"))
-# Entry filter: a Supertrend flip, confirmed by the close against the EMA and RSI inside its band
+# Entry filter: a Supertrend flip, confirmed by the close against the EMA and RSI inside its band.
+# The limit entry sits at the signal candle's low (LONG) or high (SHORT)
 SUPERTREND_ATR_PERIOD = int(os.getenv("SUPERTREND_ATR_PERIOD", "10"))
 SUPERTREND_FACTOR = float(os.getenv("SUPERTREND_FACTOR", "3"))
 EMA_PERIOD = int(os.getenv("EMA_PERIOD", "50"))
+RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
 # LONG needs RSI_MIDLINE < RSI < RSI_LONG_MAX, SHORT needs RSI_SHORT_MIN < RSI < RSI_MIDLINE
 RSI_MIDLINE = float(os.getenv("RSI_MIDLINE", "50"))
 RSI_LONG_MAX = float(os.getenv("RSI_LONG_MAX", "80"))
@@ -121,7 +119,7 @@ if SL_PERCENT <= ROUND_TRIP_FEE_PERCENT:
     raise ValueError("SL_PERCENT must be above ROUND_TRIP_FEE_PERCENT, the fees alone would cost the whole risk")
 
 # Scanning & Concurrency
-# Candles fetched per scan; Wilder RSI needs a long history to match charting platforms
+# Candles fetched per scan; Wilder RSI, ATR and the EMA need a long history to match charting platforms
 SCAN_CANDLES = int(os.getenv("SCAN_CANDLES", "500"))
 MAX_SYMBOLS = int(os.getenv("MAX_SYMBOLS", "50"))
 SCAN_CONCURRENCY = int(os.getenv("SCAN_CONCURRENCY", "10"))
