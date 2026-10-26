@@ -1,7 +1,7 @@
 {
   "name": "simple-trade",
   "version": "1.0.0",
-  "description": "Crossline (project `simple-trade`) scans Binance USDⓈ-M futures for RSI(14) crosses into oversold (28) or overbought (72) on one configurable timeframe (default 1h). Each signal becomes a limit order at the signal candle's low or high, with a fixed take profit and stop loss. The app follows every order through fill and exit, and keeps a running win rate, fill rate and result in R.",
+  "description": "Crossline (project `simple-trade`) scans Binance USDⓈ-M futures for Supertrend(10, 3) flips confirmed by EMA 50 and RSI(14) on one configurable timeframe (default 30m). Each signal becomes a limit order at the signal candle's low or high, with a fixed take profit and stop loss. The app follows every order through fill and exit, and keeps a running win rate, fill rate and result in R.",
   "main": "index.js",
   "directories": {
     "test": "tests"

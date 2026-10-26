@@ -1,13 +1,21 @@
 # Crossline
 
-Crossline (project `simple-trade`) scans Binance USDⓈ-M futures for RSI(14) crosses into oversold (28) or overbought (72) on one configurable timeframe (default 30m, so the job runs every 30 minutes). Each signal becomes a limit order at the signal candle's low or high, with a fixed take profit and stop loss. The app follows every order through fill and exit, and keeps a running win rate, fill rate and result in R.
+Crossline (project `simple-trade`) scans Binance USDⓈ-M futures for Supertrend(10, 3) flips confirmed by EMA 50 and RSI(14) on one configurable timeframe (default 30m, so the job runs every 30 minutes). Each signal becomes a limit order at the signal candle's low or high, with a fixed take profit and stop loss. The app follows every order through fill and exit, and keeps a running win rate, fill rate and result in R.
 
 It runs as a FastAPI service backed by PostgreSQL and Redis, with a small dashboard for active and closed signals, the trade journal and the watchlist.
 
 ## Strategy
 
-1. RSI(14), Wilder smoothing, computed on closed candles of `TIMEFRAME` from the last `SCAN_CANDLES` candles (default 500), so values match charting platforms.
-2. **LONG** when RSI crosses down to the oversold level: previous RSI > 28 and current RSI <= 28. **SHORT** when RSI crosses up to the overbought level: previous RSI < 72 and current RSI >= 72.
+1. Supertrend (ATR 10, factor 3, as TradingView's `ta.supertrend`), EMA 50 of the close and RSI(14) with Wilder smoothing, computed on closed candles of `TIMEFRAME` from the last `SCAN_CANDLES` candles (default 500), so values match charting platforms.
+2. A signal needs all three on the same closed candle; a flip that fails either filter is ignored:
+
+| | LONG | SHORT |
+|---|---|---|
+| Supertrend | turns up on this candle (green) | turns down on this candle (red) |
+| Close vs EMA 50 | above | below |
+| RSI(14) | above 50 and below 80 | below 50 and above 20 |
+
+A Supertrend that stays up or down does not signal again; only the candle where it flips does.
 3. Levels, all fixed at signal time:
 
 | | LONG | SHORT |
@@ -18,7 +26,7 @@ It runs as a FastAPI service backed by PostgreSQL and Redis, with a small dashbo
 
 `TP_PERCENT` and `SL_PERCENT` are net of the round-trip fee (`ROUND_TRIP_FEE_PERCENT=0.1`): the target sits the fee further out (2 + 0.1 = 2.1%) and the stop the fee closer in (1 − 0.1 = 0.9%), so a target nets +2% and a stop −1% after fees, a true 1:2.
 
-A symbol runs at most one trade per side: a new cross is skipped when an earlier signal on the same symbol and side was still PENDING or OPEN at its candle. The opposite side is still taken.
+A symbol runs at most one trade per side: a new signal is skipped when an earlier signal on the same symbol and side was still PENDING or OPEN at its candle. The opposite side is still taken.
 
 Only closed candles count, for both detection and tracking. A candle that is still forming is never used.
 
@@ -71,15 +79,19 @@ All settings come from `.env` (see `.env.example`).
 | Setting | Default | Meaning |
 |---|---|---|
 | `TIMEFRAME` | `30m` | One of 1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d. Anything else stops the app at startup. |
+| `SUPERTREND_ATR_PERIOD` | `10` | Supertrend ATR length |
+| `SUPERTREND_FACTOR` | `3` | Supertrend band width in ATRs |
+| `EMA_PERIOD` | `50` | Trend filter EMA length, also drawn on the signal chart |
 | `RSI_PERIOD` | `14` | RSI length |
-| `RSI_OVERSOLD` | `28` | LONG trigger level |
-| `RSI_OVERBOUGHT` | `72` | SHORT trigger level |
+| `RSI_MIDLINE` | `50` | LONG needs RSI above it, SHORT below it |
+| `RSI_LONG_MAX` | `80` | LONG needs RSI below it |
+| `RSI_SHORT_MIN` | `20` | SHORT needs RSI above it. Startup checks `0 <= RSI_SHORT_MIN < RSI_MIDLINE < RSI_LONG_MAX <= 100` |
 | `TP_PERCENT` | `2` | Take profit, net gain in percent after fees |
 | `SL_PERCENT` | `1` | Stop loss, net loss in percent after fees; also the planned risk for R. Must be above the fee |
 | `FILL_WINDOW_HOURS` | `6` | How long the limit waits for a fill |
 | `MAX_HOLD_HOURS` | `12` | How long a filled trade is held before it expires |
 | `ROUND_TRIP_FEE_PERCENT` | `0.1` | Fees for opening plus closing, subtracted from P/L |
-| `SCAN_CANDLES` | `500` | Candles fetched per symbol for RSI |
+| `SCAN_CANDLES` | `500` | Candles fetched per symbol for the indicators |
 | `MAX_SYMBOLS` | `50` | Watchlist symbols scanned per run |
 | `SCAN_CONCURRENCY` | `10` | Parallel klines requests |
 | `CRON_ENABLED` | `true` | Run the scheduled job |
@@ -118,10 +130,10 @@ Server, database, Redis, Binance and Telegram credentials are documented in `.en
 
 ```
 src/
-  config/settings.py           Timeframe, RSI, TP/SL and window settings
+  config/settings.py           Timeframe, indicator, TP/SL and window settings
   data_feed/binance_client.py  Binance futures client (HMAC/RSA)
   data_feed/ohlcv.py           Kline fetching
-  strategy/rsi.py              RSI, signal detection and trade levels
+  strategy/signals.py          Supertrend, EMA, RSI, signal detection and trade levels
   strategy/outcome.py          Fill/exit lifecycle and P/L
   services/db.py               Schema, signal storage, evaluation, journal, watchlist
   services/redis_client.py     Redis cache and scheduler locks
@@ -248,7 +260,7 @@ Logs go to stdout, one JSON object per line with `timestamp`, `level`, `logger`,
   - **OPEN:** side and entry are fixed (409 otherwise); the stop and target move, the stop even past the entry (break-even, trailing) as long as it stays on the loss side of the target. The new levels apply from the next candle, earlier candles keep the old ones, and R stays against the risk at the fill (`risk_percent`).
   - Before saving, the old levels are replayed up to now: if they already filled or closed since the last run, or the fill or hold window has no candle left, or a new side already has a trade on the symbol, the edit gives 409. Out-of-order prices give 422 per field.
   - A signal Telegram already announced gets a message with the new levels. The signal page's **Edit levels** form fills the target at 1:2 after fees while the order awaits a fill, until you type your own.
-- `GET /api/signals/{signal_id}/chart` returns the candles around one trade with three series on the same times: `rsi`, `ema` (EMA 50 of the close) and `volume_delta` (taker buy minus taker sell volume per candle, in the base asset). The window runs from 30 candles before the signal to now while it is active, or to 6 candles after the exit once it has closed. Closed charts are cached for 7 days. Returns 503 with `Retry-After` while the Binance request budget is used up.
+- `GET /api/signals/{signal_id}/chart` returns the candles around one trade with three series on the same times: `rsi`, `ema` (the `EMA_PERIOD` EMA of the close, the same one the entry filter uses) and `volume_delta` (taker buy minus taker sell volume per candle, in the base asset). The window runs from 30 candles before the signal to now while it is active, or to 6 candles after the exit once it has closed. Closed charts are cached for 7 days. Returns 503 with `Retry-After` while the Binance request budget is used up.
 - `GET /api/summary` takes the same filters as `/api/signals` (without paging) and returns signal counts per status, fill rate, win rate (target hits over closed trades; unfilled orders are left out), net P/L, total and average R, and max drawdown in R.
 
 ### Watchlist
@@ -297,6 +309,23 @@ Breaking: every `GET /api/*` except `/api/health` and `/api/info` now needs cred
 4. Log in at `/login` and check `/dashboard`. Browsers that stored the old API key drop it the first time they open the dashboard.
 
 Rollback is the previous image; it ignores the new tables.
+
+## Upgrading from the RSI 28/72 version (3.2.0)
+
+Only the entry rule changes: entries, levels, windows, the schema and the API shape stay, apart from the keys under `strategy` in `/api/info`. Signals already stored keep being tracked to their exit.
+
+1. In the server `.env`, remove `RSI_OVERSOLD` and `RSI_OVERBOUGHT` (they are ignored if left) and add any of the settings above that should differ from the defaults.
+2. Deploy as usual.
+
+The summary counts every stored signal, so the win rate and R mix both strategies until the old ones are cleared. To start the statistics fresh, back up and clear the signals on the server, in the deploy directory. This deletes every signal and journal entry; the watchlist and accounts stay:
+
+```bash
+C="docker compose -f docker-compose.prod.yml"
+$C exec -T postgres pg_dump -U postgres -d simple-trade -t signals -t signal_journal > signals-rsi-backup-$(date +%F).sql
+test -s signals-rsi-backup-$(date +%F).sql && $C exec -T postgres psql -U postgres -d simple-trade -c 'TRUNCATE signals RESTART IDENTITY CASCADE;'
+```
+
+Rollback is the previous image; nothing in the database changed shape.
 
 ## Upgrading from the MACD version
 

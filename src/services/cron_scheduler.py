@@ -25,7 +25,7 @@ from src.services.db import (
     release_signal_alerts,
 )
 from src.services.redis_client import acquire_lock, release_lock
-from src.strategy.rsi import detect_signals
+from src.strategy.signals import detect_signals
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ async def _alert(transitions: list[dict], run_ms: int) -> None:
 
 
 async def run_job(client) -> dict:
-    """Scan the watchlist's closed candles for RSI crosses, store them, replay active trades, alert.
+    """Scan the watchlist's closed candles for filtered Supertrend flips, store them, replay active trades, alert.
 
     Raises when the database is not ready, so the run is marked failed instead of finding nothing.
     """
@@ -178,7 +178,7 @@ class Scheduler:
                 skipped = (target - last) // TIMEFRAME_MS - 1 if last else 0
                 if skipped > 0:
                     logger.warning(
-                        "[CRON] %d boundaries skipped after a long run; crosses older than %d candles are lost",
+                        "[CRON] %d boundaries skipped after a long run; signals older than %d candles are lost",
                         skipped,
                         CRON_LOOKBACK_CANDLES,
                     )

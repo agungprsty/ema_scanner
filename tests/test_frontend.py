@@ -166,7 +166,7 @@ def test_chart_draws_rsi_pane_and_skips_levels_when_not_filled():
     source = SIGNAL_JS.read_text()
     assert "/chart?v=2`" in source
     assert "autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } })," in source
-    assert "[config.oversold, config.overbought]" in source
+    assert "[config.rsi_short_min, config.rsi_midline, config.rsi_long_max]" in source
     assert "time: p.time + UTC7_OFFSET_SEC" in source
     assert "intervalMs(sig.timeframe)" in source
     assert "if (sig.status !== 'NOT_FILLED') {" in source

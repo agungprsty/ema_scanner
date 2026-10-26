@@ -44,7 +44,7 @@ from src.config.settings import (
     TIMEFRAME,
 )
 from src.strategy.outcome import Trade, resolve, resolve_exit, trade_return
-from src.strategy.rsi import Signal
+from src.strategy.signals import Signal
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +113,7 @@ class WatchlistModel(Base):
 
 
 class SignalModel(Base):
-    """An RSI signal and the limit-entry trade replayed from it."""
+    """A Supertrend + EMA + RSI signal and the limit-entry trade replayed from it."""
 
     __tablename__ = "signals"
     __table_args__ = (
@@ -294,7 +294,7 @@ def fill_start_ms(signal_candle_ms: int, levels_edited_ms: int | None, interval_
 def build_signal_insert(s: Signal, timeframe: str = TIMEFRAME):
     """INSERT for one hit, returning the row only when it is new. Skipped when already stored, or
     when the symbol has a trade on the same side that is still active or closed after this hit's
-    candle, so a symbol never runs two trades in one direction. A cross the scan lookback sees
+    candle, so a symbol never runs two trades in one direction. A flip the scan lookback sees
     again after that trade closed is still skipped, since it happened while the trade was live."""
     values = {
         "symbol": s.symbol,
@@ -310,7 +310,7 @@ def build_signal_insert(s: Signal, timeframe: str = TIMEFRAME):
     }
     columns = SignalModel.__table__.c
     live = live_same_side(s.symbol, s.side, timeframe, s.signal_candle_ms)
-    # One candle crosses one way, so a row on it on either side means this hit is already stored,
+    # One candle flips one way, so a row on it on either side means this hit is already stored,
     # even after an admin flipped that row's side
     same_candle = select(SignalModel.id).where(
         SignalModel.symbol == s.symbol,
@@ -525,7 +525,7 @@ async def insert_signals(signals: list[Signal], timeframe: str = TIMEFRAME) -> l
     # runs (Scheduler._lock), so take pg_advisory_xact_lock first if it ever runs several
     rows = []
     async with _session_maker() as session:
-        # One statement each, oldest first, so of two crosses in one run the earlier opens the trade
+        # One statement each, oldest first, so of two signals in one run the earlier opens the trade
         for s in sorted(signals, key=lambda s: s.signal_candle_ms):
             rows += (await session.execute(build_signal_insert(s, timeframe))).scalars().all()
         await session.commit()

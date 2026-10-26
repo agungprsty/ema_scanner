@@ -103,7 +103,7 @@ async def test_health_endpoint():
         assert data["redis"] is True
         assert "cron" in data
         assert data["timeframe"] == settings.TIMEFRAME
-        assert data["version"] == "3.1.0"
+        assert data["version"] == "3.2.0"
 
 
 @pytest.mark.asyncio
@@ -128,13 +128,17 @@ async def test_info_endpoint():
         assert resp.status_code == 200
         data = resp.json()["data"]
         assert data["app"] == "Simpletrade"
-        assert data["version"] == "3.1.0"
+        assert data["version"] == "3.2.0"
         assert data["timeframe"] == settings.TIMEFRAME
         assert data["interval_ms"] == settings.TIMEFRAME_MS
         assert data["strategy"] == {
+            "supertrend_atr_period": settings.SUPERTREND_ATR_PERIOD,
+            "supertrend_factor": settings.SUPERTREND_FACTOR,
+            "ema_period": settings.EMA_PERIOD,
             "rsi_period": settings.RSI_PERIOD,
-            "oversold": settings.RSI_OVERSOLD,
-            "overbought": settings.RSI_OVERBOUGHT,
+            "rsi_midline": settings.RSI_MIDLINE,
+            "rsi_long_max": settings.RSI_LONG_MAX,
+            "rsi_short_min": settings.RSI_SHORT_MIN,
             "tp_percent": settings.TP_PERCENT,
             "sl_percent": settings.SL_PERCENT,
             "fill_window_candles": settings.FILL_WINDOW_CANDLES,
