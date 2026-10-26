@@ -69,11 +69,12 @@ document.addEventListener('DOMContentLoaded', () => {
     $('detail-outcome').innerHTML = outcomeHtml(sig.status);
 
     $('detail-rsi-label').textContent = `RSI(${config.rsi_period})`;
-    $('legend-rsi').textContent = `RSI (${config.rsi_period}) ${config.oversold}/${config.overbought}`;
-    // From the RSI move, not the side: an admin may have flipped the side since
-    const crossedDown = sig.rsi < sig.prev_rsi;
-    $('detail-rsi').innerHTML = formatRsi(sig.rsi) + `<span class="hint">Crossed ${crossedDown
-      ? `below ${config.oversold}` : `above ${config.overbought}`} from ${formatRsi(sig.prev_rsi)}</span>`;
+    $('legend-ema').textContent = `EMA ${config.ema_period}`;
+    $('legend-rsi').textContent = `RSI (${config.rsi_period}) ${config.rsi_short_min}/${config.rsi_midline}/${config.rsi_long_max}`;
+    // The band this side's entry filter required, then the RSI one candle before
+    const band = isLong ? `${config.rsi_midline}–${config.rsi_long_max}` : `${config.rsi_short_min}–${config.rsi_midline}`;
+    $('detail-rsi').innerHTML = formatRsi(sig.rsi)
+      + `<span class="hint">Band ${band}, previous ${formatRsi(sig.prev_rsi)}</span>`;
     // Net of fees, the same reward and risk R is measured against
     // The target in R against the trade's 1R, which stays the risk at the fill after an admin moves the stop
     const atTarget = tradeReturn(sig, base, sig.take_profit);
@@ -502,7 +503,7 @@ document.addEventListener('DOMContentLoaded', () => {
       rsiSeries.setData(shift(payload.rsi));
       // Green when taker buys outweigh taker sells in the candle, red otherwise
       deltaSeries.setData(shift(payload.volume_delta).map(p => ({ ...p, color: p.value >= 0 ? longColor : shortColor })));
-      [config.oversold, config.overbought].forEach(price => rsiSeries.createPriceLine({
+      [config.rsi_short_min, config.rsi_midline, config.rsi_long_max].forEach(price => rsiSeries.createPriceLine({
         price,
         color: color('--text-3'),
         lineWidth: 1,
@@ -586,6 +587,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   initAuth();
   bindLogout();
-  // RSI levels and the fee come from /api/info; the defaults in config apply until it answers
+  // Indicator settings and the fee come from /api/info; the defaults in config apply until it answers
   loadStrategyConfig().catch(() => {}).finally(() => loadSignal(signalId));
 });

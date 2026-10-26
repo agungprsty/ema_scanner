@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#0f1012">
-  <title>simple-trade — RSI 28/72 Limit-Entry Signals</title>
+  <title>simple-trade — Supertrend + EMA + RSI Limit-Entry Signals</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -43,7 +43,7 @@
             <span>Binance USDⓈ-M Futures Scanner</span>
           </div>
           <h1 class="text-3xl sm:text-4xl lg:text-[40px] font-semibold tracking-tight text-brand-text leading-tight mb-4">
-            RSI 28/72 limit-entry signals for Binance USDⓈ-M futures
+            Supertrend + EMA 50 + RSI limit-entry signals for Binance USDⓈ-M futures
           </h1>
           <p class="text-base text-brand-muted leading-relaxed mb-8">
             Automated limit orders at extremes, built-in TP/SL tracking, and trade-window charts.
@@ -65,8 +65,12 @@
             </div>
             <div class="flex flex-col gap-2.5 text-xs text-brand-muted">
               <div class="flex justify-between">
-                <span>RSI (14)</span>
-                <span class="font-mono font-medium text-trade-long">24.80 (Oversold)</span>
+                <span>Supertrend (10, 3)</span>
+                <span class="font-mono font-medium text-trade-long">Flipped up</span>
+              </div>
+              <div class="flex justify-between">
+                <span>Close vs EMA 50 &middot; RSI (14)</span>
+                <span class="font-mono font-medium text-trade-long">Above &middot; 62.40</span>
               </div>
               <div class="flex justify-between">
                 <span>Signal Candle Low</span>
@@ -94,7 +98,7 @@
                 <span class="font-mono font-semibold text-brand-text">ETHUSDT</span>
                 <span class="px-2 py-0.5 rounded text-[11px] font-mono font-semibold tracking-wider bg-trade-short-bg text-trade-short border border-trade-short/30">SHORT</span>
               </span>
-              <span class="font-mono"><span class="text-trade-short">RSI 76.10</span> &middot; limit pending</span>
+              <span class="font-mono"><span class="text-trade-short">Supertrend down &middot; RSI 38.20</span> &middot; limit pending</span>
             </div>
           </div>
         </div>
@@ -107,7 +111,7 @@
         <div class="mb-9 max-w-2xl">
           <p class="text-xs font-semibold uppercase tracking-wider text-trade-entry mb-2">Methodology</p>
           <h2 class="text-2xl font-semibold text-brand-text tracking-tight mb-2.5">How the strategy works</h2>
-          <p class="text-sm text-brand-muted leading-relaxed">Every closed candle is systematically analyzed against disciplined RSI boundary criteria.</p>
+          <p class="text-sm text-brand-muted leading-relaxed">Every closed candle is checked for a Supertrend flip, confirmed by trend (EMA 50) and momentum (RSI).</p>
         </div>
 
         <div class="grid md:grid-cols-3 gap-5">
@@ -118,8 +122,8 @@
           </div>
           <div class="bg-surface border border-line rounded p-6">
             <div class="w-7 h-7 rounded-full bg-surface-2 border border-line-strong flex items-center justify-center text-xs font-mono font-semibold text-trade-entry mb-4">2</div>
-            <h3 class="text-base font-semibold text-brand-text mb-2">Extreme Limit Entry</h3>
-            <p class="text-xs text-brand-muted leading-relaxed">When 14-period RSI reaches ≤28 (Oversold) or ≥72 (Overbought), a limit entry is set at the extreme high or low of that candle.</p>
+            <h3 class="text-base font-semibold text-brand-text mb-2">Filtered Trend Entry</h3>
+            <p class="text-xs text-brand-muted leading-relaxed">When Supertrend flips with the close on the same side of EMA 50 and RSI between 50 and 80 (long) or 20 and 50 (short), a limit entry is set at the low or high of that candle.</p>
           </div>
           <div class="bg-surface border border-line rounded p-6">
             <div class="w-7 h-7 rounded-full bg-surface-2 border border-line-strong flex items-center justify-center text-xs font-mono font-semibold text-trade-entry mb-4">3</div>
@@ -211,19 +215,24 @@
             </thead>
             <tbody class="divide-y divide-line text-brand-muted">
               <tr>
-                <td class="px-4 sm:px-5 py-3 text-brand-text font-medium">RSI Period</td>
-                <td class="px-4 sm:px-5 py-3 font-mono font-medium text-trade-entry">14</td>
-                <td class="px-4 sm:px-5 py-3 text-brand-faint">Standard Wilder's RSI calculation period.</td>
+                <td class="px-4 sm:px-5 py-3 text-brand-text font-medium">Supertrend</td>
+                <td class="px-4 sm:px-5 py-3 font-mono font-medium text-trade-entry">ATR 10 &times; 3</td>
+                <td class="px-4 sm:px-5 py-3 text-brand-faint">A flip up is a LONG candidate, a flip down a SHORT candidate.</td>
               </tr>
               <tr>
-                <td class="px-4 sm:px-5 py-3 text-brand-text font-medium">Oversold Threshold</td>
-                <td class="px-4 sm:px-5 py-3 font-mono font-medium text-trade-entry">&le; 28.0</td>
-                <td class="px-4 sm:px-5 py-3 text-brand-faint">Generates a LONG signal with limit entry at candle low.</td>
+                <td class="px-4 sm:px-5 py-3 text-brand-text font-medium">Trend Filter</td>
+                <td class="px-4 sm:px-5 py-3 font-mono font-medium text-trade-entry">EMA 50</td>
+                <td class="px-4 sm:px-5 py-3 text-brand-faint">The candle must close above it for a LONG, below it for a SHORT.</td>
               </tr>
               <tr>
-                <td class="px-4 sm:px-5 py-3 text-brand-text font-medium">Overbought Threshold</td>
-                <td class="px-4 sm:px-5 py-3 font-mono font-medium text-trade-entry">&ge; 72.0</td>
-                <td class="px-4 sm:px-5 py-3 text-brand-faint">Generates a SHORT signal with limit entry at candle high.</td>
+                <td class="px-4 sm:px-5 py-3 text-brand-text font-medium">RSI Filter (14)</td>
+                <td class="px-4 sm:px-5 py-3 font-mono font-medium text-trade-entry">50&ndash;80 / 20&ndash;50</td>
+                <td class="px-4 sm:px-5 py-3 text-brand-faint">LONG needs RSI above 50 and below 80, SHORT below 50 and above 20.</td>
+              </tr>
+              <tr>
+                <td class="px-4 sm:px-5 py-3 text-brand-text font-medium">Limit Entry</td>
+                <td class="px-4 sm:px-5 py-3 font-mono font-medium text-trade-entry">Low / High</td>
+                <td class="px-4 sm:px-5 py-3 text-brand-faint">Set at the signal candle's low for a LONG, high for a SHORT.</td>
               </tr>
               <tr>
                 <td class="px-4 sm:px-5 py-3 text-brand-text font-medium">Take Profit (TP)</td>

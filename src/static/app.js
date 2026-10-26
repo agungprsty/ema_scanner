@@ -192,7 +192,8 @@ document.addEventListener('DOMContentLoaded', () => {
   async function loadConfig() {
     try {
       await loadStrategyConfig();
-      $('brand-meta').textContent = `RSI ${config.oversold}/${config.overbought} scanner · ${config.timeframe} · Binance USDⓈ-M futures`;
+      $('brand-meta').textContent = `Supertrend ${config.supertrend_atr_period}/${config.supertrend_factor} · EMA ${config.ema_period}`
+        + ` · RSI ${config.rsi_period} · ${config.timeframe} · Binance USDⓈ-M futures`;
     } catch {
       // keep defaults
     }
@@ -255,8 +256,9 @@ document.addEventListener('DOMContentLoaded', () => {
   function emptySignalsText() {
     if (hasFilters()) return 'No signals match these filters.';
     if (activeTab === 'history') return 'No closed signals yet.';
-    return `No trade is awaiting fill or open. Signals appear when RSI(${config.rsi_period}) crosses `
-      + `${config.oversold} or ${config.overbought} on a closed candle.`;
+    return `No trade is awaiting fill or open. Signals appear when Supertrend flips on a closed candle `
+      + `with the close on the trend side of EMA ${config.ema_period} and RSI(${config.rsi_period}) between `
+      + `${config.rsi_midline} and ${config.rsi_long_max} (long) or ${config.rsi_short_min} and ${config.rsi_midline} (short).`;
   }
 
   function renderSignals(list) {

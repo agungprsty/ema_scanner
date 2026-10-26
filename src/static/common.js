@@ -6,7 +6,10 @@ const TZ = 'Asia/Jakarta';
 const TF_UNIT_MS = { m: 60 * 1000, h: 60 * 60 * 1000, d: 24 * 60 * 60 * 1000 };
 
 // Defaults until /api/info answers
-const config = { timeframe: '', rsi_period: 14, oversold: 28, overbought: 72, fee_percent: 0.1 };
+const config = {
+  timeframe: '', supertrend_atr_period: 10, supertrend_factor: 3, ema_period: 50,
+  rsi_period: 14, rsi_midline: 50, rsi_long_max: 80, rsi_short_min: 20, fee_percent: 0.1,
+};
 
 const $ = (id) => document.getElementById(id);
 

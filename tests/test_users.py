@@ -447,7 +447,7 @@ async def test_page_routing_and_navigation(auth_db):
         # Unauthenticated / -> 200 Landing Page
         landing = await client.get("/", follow_redirects=False)
         assert landing.status_code == 200
-        assert "RSI 28/72" in landing.text
+        assert "Supertrend + EMA 50 + RSI" in landing.text
 
 
 async def test_static_html_files_not_served():
