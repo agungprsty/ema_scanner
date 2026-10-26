@@ -178,7 +178,7 @@ class Scheduler:
                 skipped = (target - last) // TIMEFRAME_MS - 1 if last else 0
                 if skipped > 0:
                     logger.warning(
-                        "[CRON] %d boundaries skipped after a long run; crosses older than %d candles are lost",
+                        "[CRON] %d boundaries skipped after a long run; signals older than %d candles are lost",
                         skipped,
                         CRON_LOOKBACK_CANDLES,
                     )
