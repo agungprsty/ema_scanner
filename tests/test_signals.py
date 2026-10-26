@@ -11,7 +11,7 @@ pytestmark = pytest.mark.unit
 T0 = pd.Timestamp("2026-01-01")
 T0_MS = 1_767_225_600_000
 
-# Generated once from backtest.calculate_rsi(period=14); backtest itself is not imported in CI
+# Generated once from the standalone Wilder RSI that backtest.py carried before it imported this module
 PARITY_CLOSES = [
     100, 101.5, 100.8, 102.3, 103.1, 102.0, 101.2, 103.8, 104.5, 104.1,
     105.6, 104.9, 103.7, 104.2, 106.0, 105.3, 104.0, 102.6, 103.4, 101.9,

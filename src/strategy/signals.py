@@ -33,7 +33,7 @@ class Signal:
 
 
 def compute_rsi(close: pd.Series, period: int = RSI_PERIOD) -> pd.Series:
-    """Wilder RSI, identical to backtest.calculate_rsi; NaN until `period` deltas are seen."""
+    """Wilder RSI, as charting platforms compute it; NaN until `period` deltas are seen."""
     delta = close.diff()
     gain = delta.clip(lower=0)
     loss = -1 * delta.clip(upper=0)
